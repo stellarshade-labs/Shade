@@ -34,7 +34,9 @@ export async function handleRelay(req: Request, res: Response) {
       ? 'http://localhost:8000'
       : 'https://horizon-testnet.stellar.org';
 
-    const server = new Horizon.Server(horizonUrl);
+    const server = new Horizon.Server(horizonUrl, {
+      allowHttp: network === 'local',
+    });
 
     let innerTx: Transaction;
     try {
@@ -54,6 +56,8 @@ export async function handleRelay(req: Request, res: Response) {
       innerTx,
       networkPassphrase
     );
+
+    feeBumpTx.sign(relayerKeypair);
 
     console.log(`[Relay] Submitting fee-bumped transaction...`);
 

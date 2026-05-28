@@ -55,7 +55,9 @@ export async function handleSponsor(req: Request, res: Response) {
       ? 'http://localhost:8000'
       : 'https://horizon-testnet.stellar.org';
 
-    const server = new Horizon.Server(horizonUrl);
+    const server = new Horizon.Server(horizonUrl, {
+      allowHttp: network === 'local',
+    });
 
     let accountExists = false;
     try {
@@ -76,19 +78,19 @@ export async function handleSponsor(req: Request, res: Response) {
 
     const relayerAccount = await server.loadAccount(relayerKeypair.publicKey());
 
+    // CAP-0033 sponsoring requires the sponsored account's signature,
+    // which we don't have (stealth private key is only known to recipient).
+    // Instead, the relayer directly creates and funds the stealth account
+    // with the minimum base reserve so the sender can then pay into it.
+    const startingBalance = amount ? String(amount) : '1';
+
     const transaction = new TransactionBuilder(relayerAccount, {
       fee: '100',
       networkPassphrase
     })
-    .addOperation(Operation.beginSponsoringFutureReserves({
-      sponsoredId: address
-    }))
     .addOperation(Operation.createAccount({
       destination: address,
-      startingBalance: '0'
-    }))
-    .addOperation(Operation.endSponsoringFutureReserves({
-      source: address
+      startingBalance
     }))
     .setTimeout(30)
     .build();

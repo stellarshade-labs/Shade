@@ -201,16 +201,16 @@ const myAddresses = scanAnnouncements(
 );
 ```
 
-#### `checkViewTag(viewPrivKey: Uint8Array, ephemeralPubKey: Uint8Array, expectedTag: number): boolean`
+#### `checkViewTag(viewPrivKey: Uint8Array, ephemeralPubKey: Uint8Array, expectedTag: number): { matches: boolean; sharedSecret?: Uint8Array }`
 
-Fast pre-filter check before expensive EC operations.
+Fast pre-filter check before expensive EC operations. Returns the shared secret on match so callers can reuse it without recomputing the ECDH.
 
 **Parameters:**
 - `viewPrivKey`: Receiver's view private key
 - `ephemeralPubKey`: Ephemeral public key from announcement
 - `expectedTag`: Expected view tag (0-255)
 
-**Returns:** `true` if view tag matches
+**Returns:** Object with `matches` boolean and optional `sharedSecret` (32 bytes, present only when `matches` is true)
 
 #### `isMyStealthAddress(viewPrivKey: Uint8Array, spendPubKey: Uint8Array, ephemeralPubKey: Uint8Array, stealthAddress: string): boolean`
 
@@ -269,49 +269,7 @@ Convert Stellar address to ed25519 public key.
 
 **Throws:** `InvalidStellarAddress` if invalid format
 
-#### `encodePrivateKey(privKey: Uint8Array): string`
-
-Convert ed25519 private key to Stellar secret.
-
-**Parameters:**
-- `privKey`: 32-byte ed25519 private key
-
-**Returns:** Stellar secret in S... format
-
-#### `decodePrivateKey(secret: string): Uint8Array`
-
-Convert Stellar secret to ed25519 private key.
-
-**Parameters:**
-- `secret`: Stellar secret (S... format)
-
-**Returns:** 32-byte ed25519 private key
-
-**Throws:** `InvalidStellarSecret` if invalid format
-
 ### Advanced Features
-
-#### `createKeystore(keys: StealthKeys, password: string): KeystoreFile`
-
-Encrypt stealth keys with password for secure storage.
-
-**Parameters:**
-- `keys`: Stealth keys to encrypt
-- `password`: Password for encryption
-
-**Returns:** Encrypted keystore file (JSON-serializable)
-
-#### `decryptKeystore(keystore: KeystoreFile, password: string): StealthKeys`
-
-Decrypt keystore to recover stealth keys.
-
-**Parameters:**
-- `keystore`: Encrypted keystore file
-- `password`: Decryption password
-
-**Returns:** Decrypted stealth keys
-
-**Throws:** `InvalidPassword` if password is incorrect
 
 #### `proveOwnership(stealthPrivKey: Uint8Array, message: Uint8Array): ProofOfOwnership`
 
@@ -399,9 +357,6 @@ interface StealthAddress {
 - `InvalidPublicKey` - Public key not on ed25519 curve
 - `InvalidScalar` - Scalar not in valid range [0, L-1]
 - `InvalidMetaAddress` - Invalid meta-address format or checksum
-- `InvalidStellarAddress` - Invalid Stellar address format
-- `InvalidStellarSecret` - Invalid Stellar secret format
-- `InvalidPassword` - Incorrect keystore password
 - `PointAtInfinity` - Invalid EC point operation result
 
 ## Links

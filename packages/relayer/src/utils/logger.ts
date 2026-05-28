@@ -86,7 +86,6 @@ class StructuredLogger {
       this.info('Request received', {
         method: req.method,
         path: req.path,
-        headers: req.headers,
         ip: req.ip
       }, requestId);
 

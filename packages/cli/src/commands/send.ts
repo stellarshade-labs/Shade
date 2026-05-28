@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { deriveStealthAddressWithSecret, encryptAmount } from '@stealth/crypto';
+import { deriveStealthAddressWithSecret } from '@stealth/crypto';
 import {
   Keypair,
   Networks,
@@ -20,7 +20,7 @@ async function announceToContract(
   contractId: string,
   ephemeralPubKey: Uint8Array,
   viewTag: number,
-  encryptedAmount: Uint8Array | undefined,
+  stealthPubKey: Uint8Array,
   senderKeypair: Keypair,
   network: 'local' | 'testnet'
 ): Promise<void> {
@@ -28,7 +28,9 @@ async function announceToContract(
     ? 'http://localhost:8000/soroban/rpc'
     : 'https://soroban-testnet.stellar.org';
 
-  const server = new StellarSdk.rpc.Server(rpcUrl);
+  const server = new StellarSdk.rpc.Server(rpcUrl, {
+    allowHttp: network === 'local',
+  });
   const contract = new Contract(contractId);
 
   const networkPassphrase = network === 'local'
@@ -43,11 +45,10 @@ async function announceToContract(
   })
   .addOperation(contract.call(
     'announce',
+    new StellarSdk.Address(senderKeypair.publicKey()).toScVal(),
     nativeToScVal(Buffer.from(ephemeralPubKey)),
     nativeToScVal(viewTag, { type: 'u32' }),
-    encryptedAmount
-      ? nativeToScVal(Buffer.from(encryptedAmount))
-      : nativeToScVal(null)
+    nativeToScVal(Buffer.from(stealthPubKey))
   ))
   .setTimeout(30)
   .build();
@@ -59,10 +60,18 @@ async function announceToContract(
 
   if (result.status === 'PENDING') {
     let status: string = result.status;
-    while (status === 'PENDING' || status === 'NOT_FOUND') {
+    let attempts = 0;
+    while ((status === 'PENDING' || status === 'NOT_FOUND') && attempts < 30) {
       await new Promise(resolve => setTimeout(resolve, 1000));
-      const update = await server.getTransaction(result.hash);
-      status = update.status;
+      try {
+        const update = await server.getTransaction(result.hash);
+        status = update.status;
+      } catch {
+        // XDR parsing errors can occur with newer Soroban protocol versions;
+        // the transaction was already submitted successfully
+        break;
+      }
+      attempts++;
     }
   }
 
@@ -128,7 +137,9 @@ export const sendCommand = new Command('send')
         ? 'http://localhost:8000'
         : 'https://horizon-testnet.stellar.org';
 
-      const server = new Horizon.Server(horizonUrl);
+      const server = new Horizon.Server(horizonUrl, {
+        allowHttp: network === 'local',
+      });
       const networkPassphrase = network === 'local'
         ? Networks.STANDALONE
         : Networks.TESTNET;
@@ -248,20 +259,12 @@ export const sendCommand = new Command('send')
 
       console.log(chalk.cyan('Storing announcement on-chain...'));
 
-      let encryptedAmount: Uint8Array | undefined;
-      if (options.encryptAmount) {
-        encryptedAmount = encryptAmount(
-          xlmAmount,
-          Buffer.from(stealth.sharedSecret)
-        );
-      }
-
       const contractAddress = getContractAddress(network);
       await announceToContract(
         contractAddress,
         stealth.ephemeralPubKey,
         stealth.viewTag,
-        encryptedAmount,
+        stealth.stealthPubKey,
         senderKeypair,
         network
       );

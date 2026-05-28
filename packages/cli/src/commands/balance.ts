@@ -22,13 +22,19 @@ async function fetchAllAnnouncements(
     ? 'http://localhost:8000/soroban/rpc'
     : 'https://soroban-testnet.stellar.org';
 
-  const server = new StellarSdk.rpc.Server(rpcUrl);
+  const server = new StellarSdk.rpc.Server(rpcUrl, {
+    allowHttp: network === 'local',
+  });
   const contract = new StellarSdk.Contract(contractId);
 
   const announcements: Announcement[] = [];
 
   try {
-    const getLogs = contract.call('get_announcements');
+    const getLogs = contract.call(
+      'get_announcements',
+      StellarSdk.nativeToScVal(0, { type: 'u64' }),
+      StellarSdk.nativeToScVal(1000, { type: 'u64' })
+    );
     const sim = await server.simulateTransaction(
       new StellarSdk.TransactionBuilder(
         new StellarSdk.Account('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF', '0'),
@@ -76,7 +82,9 @@ async function getAccountBalance(
     ? 'http://localhost:8000'
     : 'https://horizon-testnet.stellar.org';
 
-  const server = new Horizon.Server(horizonUrl);
+  const server = new Horizon.Server(horizonUrl, {
+    allowHttp: network === 'local',
+  });
 
   try {
     const account = await server.accounts().accountId(address).call();

@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { recoverStealthPrivateKey, scanAnnouncements } from '@stealth/crypto';
+import { recoverStealthPrivateKey, scanAnnouncements, signWithStealthKey } from '@stealth/crypto';
 import {
   Keypair,
   Networks,
@@ -35,11 +35,17 @@ async function fetchAnnouncementsForAddress(
     ? 'http://localhost:8000/soroban/rpc'
     : 'https://soroban-testnet.stellar.org';
 
-  const server = new StellarSdk.rpc.Server(rpcUrl);
+  const server = new StellarSdk.rpc.Server(rpcUrl, {
+    allowHttp: network === 'local',
+  });
   const contract = new StellarSdk.Contract(contractId);
 
   try {
-    const getLogs = contract.call('get_announcements');
+    const getLogs = contract.call(
+      'get_announcements',
+      StellarSdk.nativeToScVal(0, { type: 'u64' }),
+      StellarSdk.nativeToScVal(1000, { type: 'u64' })
+    );
     const sim = await server.simulateTransaction(
       new TransactionBuilder(
         new Account('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF', '0'),
@@ -102,7 +108,8 @@ async function submitViaRelay(
   relayUrl: string
 ): Promise<string> {
   try {
-    const response = await axios.post(relayUrl, {
+    const url = relayUrl.endsWith('/relay') ? relayUrl : `${relayUrl}/relay`;
+    const response = await axios.post(url, {
       xdr
     }, {
       headers: { 'Content-Type': 'application/json' }
@@ -169,13 +176,15 @@ export const withdrawCommand = new Command('withdraw')
         ephemeralPubKey
       );
 
-      const stealthKeypair = Keypair.fromRawEd25519Seed(Buffer.from(stealthPrivKey));
+      // stealthPrivKey is a raw scalar, not an ed25519 seed
 
       const horizonUrl = network === 'local'
         ? 'http://localhost:8000'
         : 'https://horizon-testnet.stellar.org';
 
-      const server = new Horizon.Server(horizonUrl);
+      const server = new Horizon.Server(horizonUrl, {
+        allowHttp: network === 'local',
+      });
       const networkPassphrase = network === 'local'
         ? Networks.STANDALONE
         : Networks.TESTNET;
@@ -210,7 +219,13 @@ export const withdrawCommand = new Command('withdraw')
       } else {
         console.log(chalk.cyan('Building payment transaction...'));
 
-        const amount = (balance - 0.00001).toFixed(7);
+        // Reserve 1 XLM base reserve + 0.00001 fee (unless relay pays the fee)
+        const reserve = options.relay ? 1 : 1.00001;
+        if (balance <= reserve) {
+          console.error(chalk.red(`Error: Balance ${balance} XLM is too low to send (need >${reserve} XLM). Use --merge to close the account.`));
+          process.exit(1);
+        }
+        const amount = (balance - reserve).toFixed(7);
 
         transaction = new TransactionBuilder(account, {
           fee: '100',
@@ -225,7 +240,12 @@ export const withdrawCommand = new Command('withdraw')
         .build();
       }
 
-      transaction.sign(stealthKeypair);
+      // Sign using raw scalar signing (DKSAP stealth keys are raw scalars,
+      // not ed25519 seeds, so Keypair.fromRawEd25519Seed won't work)
+      const txHash_ = transaction.hash();
+      const signature = signWithStealthKey(txHash_, stealthPrivKey);
+      const keypairForHint = Keypair.fromPublicKey(stealthAddress);
+      transaction.addSignature(keypairForHint.publicKey(), Buffer.from(signature).toString('base64'));
 
       let txHash: string;
 
@@ -246,7 +266,12 @@ export const withdrawCommand = new Command('withdraw')
       console.log(chalk.gray(`Transaction: ${txHash}`));
 
     } catch (error: any) {
-      console.error(chalk.red('Error withdrawing:'), error.message);
+      const codes = error.response?.data?.extras?.result_codes;
+      if (codes) {
+        console.error(chalk.red('Error withdrawing:'), codes.transaction, codes.operations);
+      } else {
+        console.error(chalk.red('Error withdrawing:'), error.message);
+      }
       process.exit(1);
     }
   });

@@ -40,6 +40,12 @@ pub enum DataKey {
     AnnouncementCount,
 }
 
+/// TTL constants for persistent storage.
+/// Minimum TTL before auto-extension (roughly 30 days at ~5s/ledger).
+const TTL_THRESHOLD: u32 = 518_400;
+/// TTL to extend to when threshold is hit (roughly 90 days).
+const TTL_EXTEND_TO: u32 = 1_555_200;
+
 #[contract]
 pub struct RegistryContract;
 
@@ -72,9 +78,11 @@ impl RegistryContract {
         };
 
         // Store in persistent storage
+        let key = DataKey::MetaAddress(owner.clone());
+        env.storage().persistent().set(&key, &entry);
         env.storage()
             .persistent()
-            .set(&DataKey::MetaAddress(owner.clone()), &entry);
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
 
         // Emit event for off-chain indexing
         env.events().publish(
@@ -92,10 +100,16 @@ impl RegistryContract {
     /// # Returns
     /// Meta-address entry if registered, panics otherwise
     pub fn lookup(env: Env, owner: Address) -> MetaAddressEntry {
+        let key = DataKey::MetaAddress(owner);
+        let entry: MetaAddressEntry = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic!("Meta-address not found"));
         env.storage()
             .persistent()
-            .get(&DataKey::MetaAddress(owner))
-            .unwrap_or_else(|| panic!("Meta-address not found"))
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+        entry
     }
 
     /// Announce a stealth payment.
@@ -142,6 +156,9 @@ impl RegistryContract {
         env.storage()
             .persistent()
             .set(&DataKey::Announcements, &announcements);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Announcements, TTL_THRESHOLD, TTL_EXTEND_TO);
 
         // Update counter
         let count: u64 = env
@@ -152,6 +169,9 @@ impl RegistryContract {
         env.storage()
             .persistent()
             .set(&DataKey::AnnouncementCount, &(count + 1));
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::AnnouncementCount, TTL_THRESHOLD, TTL_EXTEND_TO);
 
         // Emit event for off-chain indexing
         env.events().publish(

@@ -101,11 +101,7 @@ describe('encryptAmount', () => {
     const invalidSecret = new Uint8Array(16); // Wrong length
     const amount = 100;
 
-    // The function doesn't validate input length, it will still work but with undefined behavior
-    // This is a design choice - the caller is responsible for providing valid input
-    const encrypted = encryptAmount(amount, invalidSecret);
-    expect(encrypted).toBeInstanceOf(Uint8Array);
-    expect(encrypted.length).toBe(8);
+    expect(() => encryptAmount(amount, invalidSecret)).toThrow('Invalid shared secret');
   });
 
   it('should fail to decrypt with wrong shared secret', () => {

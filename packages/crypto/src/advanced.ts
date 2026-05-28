@@ -16,6 +16,10 @@ import { sha256 } from '@noble/hashes/sha256';
  * @returns 8-byte encrypted amount
  */
 export function encryptAmount(amount: number, sharedSecret: Uint8Array): Uint8Array {
+  if (sharedSecret.length !== 32) {
+    throw new Error(`Invalid shared secret: expected 32 bytes, got ${sharedSecret.length}`);
+  }
+
   // Create key material
   const keyInput = new Uint8Array(32 + 6);
   keyInput.set(sharedSecret, 0);

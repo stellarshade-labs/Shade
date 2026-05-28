@@ -50,7 +50,9 @@ async function initRelayer() {
       ? 'http://localhost:8000'
       : 'https://horizon-testnet.stellar.org';
 
-    const horizonServer = new Horizon.Server(horizonUrl);
+    const horizonServer = new Horizon.Server(horizonUrl, {
+      allowHttp: NETWORK === 'local',
+    });
 
     try {
       const account = await horizonServer.loadAccount(keypair.publicKey());

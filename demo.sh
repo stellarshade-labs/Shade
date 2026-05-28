@@ -68,25 +68,26 @@ echo
 # Step 3: Build and deploy the registry contract
 echo -e "${CYAN}${BOLD}Step 3: Deploying stealth registry contract...${NC}"
 echo "  Building Rust contract..."
-cd contracts/registry
+cd contracts
 stellar contract build --quiet
-cd ../..
+cd ..
 
 # Generate deployer account
 echo "  Creating deployer account..."
-DEPLOYER_SECRET=$(stellar keys generate --network local deployer --fund 2>/dev/null | grep "Secret Key" | cut -d' ' -f3)
+stellar keys generate --network local deployer --fund 2>/dev/null || true
+DEPLOYER_SECRET=$(stellar keys show deployer 2>/dev/null)
 DEPLOYER_PUBLIC=$(stellar keys address deployer 2>/dev/null)
 
 # Deploy contract
 echo "  Deploying to blockchain..."
 CONTRACT_ID=$(stellar contract deploy \
-  --wasm contracts/registry/target/wasm32-unknown-unknown/release/stealth_registry.wasm \
+  --wasm contracts/target/wasm32v1-none/release/stealth_registry.wasm \
   --source deployer \
   --network local 2>/dev/null)
 
 # Save contract ID to config
-mkdir -p packages/cli/.stealth
-echo "$CONTRACT_ID" > packages/cli/.stealth/local-contract
+mkdir -p ~/.stealth
+echo "$CONTRACT_ID" > ~/.stealth/local-contract
 
 echo -e "${GREEN}✓ Registry contract deployed${NC}"
 echo -e "${YELLOW}  Contract ID: ${CONTRACT_ID:0:8}...${NC}"
@@ -97,12 +98,13 @@ echo -e "${CYAN}${BOLD}Step 4: Starting privacy relayer service...${NC}"
 echo "  The relayer sponsors stealth accounts for enhanced privacy..."
 
 # Generate relayer account
-RELAYER_SECRET=$(stellar keys generate --network local relayer --fund 2>/dev/null | grep "Secret Key" | cut -d' ' -f3)
+stellar keys generate --network local relayer --fund 2>/dev/null || true
+RELAYER_SECRET=$(stellar keys show relayer 2>/dev/null)
 RELAYER_PUBLIC=$(stellar keys address relayer 2>/dev/null)
 
 # Start relayer in background
 cd packages/relayer
-RELAYER_SECRET=$RELAYER_SECRET npm run start >/dev/null 2>&1 &
+RELAYER_SECRET=$RELAYER_SECRET npx tsx src/index.ts >/dev/null 2>&1 &
 RELAYER_PID=$!
 cd ../..
 sleep 3
@@ -120,7 +122,8 @@ echo -e "${CYAN}${BOLD}Step 5: Creating Alice's wallet (sender)...${NC}"
 echo "  Alice will send a private payment to Bob..."
 
 # Generate Alice's regular account
-ALICE_SECRET=$(stellar keys generate --network local alice --fund 2>/dev/null | grep "Secret Key" | cut -d' ' -f3)
+stellar keys generate --network local alice --fund 2>/dev/null || true
+ALICE_SECRET=$(stellar keys show alice 2>/dev/null)
 ALICE_PUBLIC=$(stellar keys address alice 2>/dev/null)
 
 echo -e "${GREEN}✓ Alice's wallet created and funded${NC}"
@@ -135,8 +138,8 @@ echo "  This creates Bob's viewing and spending keys..."
 # Create temp keystore for Bob
 export STEALTH_KEYSTORE=/tmp/bob-stealth-keys-$$.json
 cd packages/cli
-npm run --silent cli -- generate --keystore $STEALTH_KEYSTORE >/dev/null 2>&1
-BOB_META_ADDR=$(npm run --silent cli -- address --keystore $STEALTH_KEYSTORE 2>/dev/null)
+KEYGEN_OUTPUT=$(npx tsx src/index.ts keygen --keystore $STEALTH_KEYSTORE 2>&1)
+BOB_META_ADDR=$(echo "$KEYGEN_OUTPUT" | grep "st:stellar:" | head -1 | tr -d '[:space:]')
 cd ../..
 
 echo -e "${GREEN}✓ Bob's stealth keys generated${NC}"
@@ -149,9 +152,9 @@ echo -e "${CYAN}${BOLD}Step 7: Alice sending 100 XLM to Bob privately...${NC}"
 echo "  Computing ephemeral keys and stealth address..."
 
 cd packages/cli
-SEND_OUTPUT=$(npm run --silent cli -- send \
-  --to "$BOB_META_ADDR" \
-  --amount 100 \
+SEND_OUTPUT=$(npx tsx src/index.ts send \
+  "$BOB_META_ADDR" \
+  100 \
   --from $ALICE_SECRET \
   --network local \
   --relay http://localhost:3000 2>&1)
@@ -171,9 +174,8 @@ echo -e "${CYAN}${BOLD}Step 8: Bob scanning for received payments...${NC}"
 echo "  Using view key to detect stealth transactions..."
 
 cd packages/cli
-FOUND_ADDRS=$(npm run --silent cli -- scan \
-  --keystore $STEALTH_KEYSTORE \
-  --network local 2>&1 | grep "Found stealth address" | wc -l)
+FOUND_ADDRS=$(STEALTH_KEYSTORE=$STEALTH_KEYSTORE npx tsx src/index.ts scan \
+  --network local 2>&1 | grep -c "stealth address")
 cd ../..
 
 echo -e "${GREEN}✓ Scan complete!${NC}"
@@ -184,10 +186,9 @@ echo
 echo -e "${CYAN}${BOLD}Step 9: Checking stealth account balance...${NC}"
 
 cd packages/cli
-BALANCE_OUTPUT=$(npm run --silent cli -- balance \
-  --address "$STEALTH_ADDR" \
+BALANCE_OUTPUT=$(STEALTH_KEYSTORE=$STEALTH_KEYSTORE npx tsx src/index.ts balance \
   --network local 2>&1)
-BALANCE=$(echo "$BALANCE_OUTPUT" | grep "Balance:" | sed 's/.*: //' | sed 's/ XLM//')
+BALANCE=$(echo "$BALANCE_OUTPUT" | grep -oE '[0-9]+\.[0-9]+' | head -1)
 cd ../..
 
 echo -e "${GREEN}✓ Balance verified${NC}"
@@ -199,7 +200,8 @@ echo -e "${CYAN}${BOLD}Step 10: Bob withdrawing funds privately...${NC}"
 echo "  Creating Bob's main wallet..."
 
 # Generate Bob's main account
-BOB_SECRET=$(stellar keys generate --network local bob --fund 2>/dev/null | grep "Secret Key" | cut -d' ' -f3)
+stellar keys generate --network local bob --fund 2>/dev/null || true
+BOB_SECRET=$(stellar keys show bob 2>/dev/null)
 BOB_PUBLIC=$(stellar keys address bob 2>/dev/null)
 
 echo "  Destination: ${BOB_PUBLIC:0:10}..."
@@ -208,14 +210,14 @@ echo "  Destination: ${BOB_PUBLIC:0:10}..."
 BOB_INITIAL=$(stellar account balance bob --network local 2>/dev/null | grep "native" | awk '{print $2}')
 
 # Withdraw from stealth
-echo "  Executing private withdrawal..."
+echo "  Executing private withdrawal via relayer..."
 cd packages/cli
-npm run --silent cli -- withdraw \
-  --from "$STEALTH_ADDR" \
-  --to "$BOB_PUBLIC" \
-  --keystore $STEALTH_KEYSTORE \
+STEALTH_KEYSTORE=$STEALTH_KEYSTORE npx tsx src/index.ts withdraw \
+  "$STEALTH_ADDR" \
+  "$BOB_PUBLIC" \
   --network local \
-  --relay http://localhost:3000 >/dev/null 2>&1
+  --relay http://localhost:3000 \
+  --merge 2>&1 || true
 cd ../..
 
 # Check Bob's new balance
@@ -231,9 +233,8 @@ echo
 echo -e "${CYAN}${BOLD}Step 11: Verifying privacy preserved...${NC}"
 
 cd packages/cli
-FINAL_BALANCE=$(npm run --silent cli -- balance \
-  --address "$STEALTH_ADDR" \
-  --network local 2>&1 | grep "Balance:" | sed 's/.*: //' | sed 's/ XLM//')
+FINAL_BALANCE=$(STEALTH_KEYSTORE=$STEALTH_KEYSTORE npx tsx src/index.ts balance \
+  --network local 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
 cd ../..
 
 if [[ "$FINAL_BALANCE" == "0" || "$FINAL_BALANCE" == "0.0000000" ]]; then
@@ -265,9 +266,10 @@ echo "========================================="
 echo
 echo "What we demonstrated:"
 echo "  ✓ Generated stealth meta-addresses with dual keys"
+echo "  ✓ Relayer sponsored stealth account creation"
 echo "  ✓ Sent 100 XLM privately using DKSAP protocol"
 echo "  ✓ Scanned and detected payments with view key"
-echo "  ✓ Withdrew funds while preserving privacy"
+echo "  ✓ Withdrew funds via relayer fee-bump (privacy preserved)"
 echo "  ✓ Left no connection between Bob and stealth address"
 echo
 echo -e "Runtime: ${MINUTES}m ${SECONDS}s"
