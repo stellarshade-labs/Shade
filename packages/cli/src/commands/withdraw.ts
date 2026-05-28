@@ -4,130 +4,218 @@ import {
   Keypair,
   Networks,
   TransactionBuilder,
-  Operation,
-  Asset,
-  Account,
+  Contract,
   StrKey,
-  Horizon
+  nativeToScVal,
+  Asset,
 } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
+import { sha256 } from '@noble/hashes/sha256';
 import { loadKeystore } from '../utils/keystore.js';
 import { getContractAddress } from '../utils/config.js';
 import chalk from 'chalk';
-import axios from 'axios';
 
-interface Announcement {
+interface MatchedAnnouncement {
   ephemeralPubKey: Uint8Array;
-  viewTag: number;
+  stealthPubKey: Uint8Array;
   stealthAddress: string;
-  encryptedAmount?: string;
-  ledger: number;
+  token: string;
+  amount: bigint;
 }
 
-async function fetchAnnouncementsForAddress(
+function createSimulationTx(
+  operation: StellarSdk.xdr.Operation,
+  networkPassphrase: string,
+): StellarSdk.Transaction {
+  return new TransactionBuilder(
+    new StellarSdk.Account('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF', '0'),
+    { fee: '100', networkPassphrase },
+  )
+    .addOperation(operation)
+    .setTimeout(30)
+    .build();
+}
+
+function i128ToBigEndian(value: bigint): Uint8Array {
+  const buf = new Uint8Array(16);
+  const dv = new DataView(buf.buffer);
+  // i128 big-endian: high 64 bits then low 64 bits
+  dv.setBigInt64(0, value >> 64n);
+  dv.setBigUint64(8, value & 0xFFFFFFFFFFFFFFFFn);
+  return buf;
+}
+
+function u64ToBigEndian(value: bigint): Uint8Array {
+  const buf = new Uint8Array(8);
+  const dv = new DataView(buf.buffer);
+  dv.setBigUint64(0, value);
+  return buf;
+}
+
+/** Build the withdraw message hash — must be byte-identical to the contract's build_withdraw_message */
+function buildWithdrawMessage(
+  stealthPk: Uint8Array,
+  tokenAddress: string,
+  amount: bigint,
+  destination: string,
+  nonce: bigint,
+): Uint8Array {
+  // Format: SHA256(stealth_pk(32) || token_strkey(56) || amount_be(16) || dest_strkey(56) || nonce_be(8))
+  const tokenBytes = Buffer.from(tokenAddress, 'utf-8'); // 56 bytes StrKey
+  const destBytes = Buffer.from(destination, 'utf-8');   // 56 bytes StrKey
+
+  if (tokenBytes.length !== 56) throw new Error(`Token address must be 56 bytes StrKey, got ${tokenBytes.length}`);
+  if (destBytes.length !== 56) throw new Error(`Destination must be 56 bytes StrKey, got ${destBytes.length}`);
+  const amountBytes = i128ToBigEndian(amount);           // 16 bytes
+  const nonceBytes = u64ToBigEndian(nonce);              // 8 bytes
+
+  const msg = new Uint8Array(32 + tokenBytes.length + 16 + destBytes.length + 8);
+  let offset = 0;
+  msg.set(stealthPk, offset); offset += 32;
+  msg.set(tokenBytes, offset); offset += tokenBytes.length;
+  msg.set(amountBytes, offset); offset += 16;
+  msg.set(destBytes, offset); offset += destBytes.length;
+  msg.set(nonceBytes, offset);
+
+  return sha256(msg);
+}
+
+async function findMatchingAnnouncement(
   stealthAddress: string,
   contractId: string,
-  network: 'local' | 'testnet',
+  server: StellarSdk.rpc.Server,
+  networkPassphrase: string,
   viewPrivKey: Uint8Array,
-  spendPubKey: Uint8Array
-): Promise<Uint8Array | null> {
-  const rpcUrl = network === 'local'
-    ? 'http://localhost:8000/soroban/rpc'
-    : 'https://soroban-testnet.stellar.org';
+  spendPubKey: Uint8Array,
+): Promise<MatchedAnnouncement | null> {
+  const contract = new Contract(contractId);
 
-  const server = new StellarSdk.rpc.Server(rpcUrl, {
-    allowHttp: network === 'local',
+  const op = contract.call(
+    'get_announcements',
+    nativeToScVal(0, { type: 'u64' }),
+    nativeToScVal(1000, { type: 'u64' }),
+  );
+  const sim = await server.simulateTransaction(
+    createSimulationTx(op, networkPassphrase),
+  );
+
+  if (!StellarSdk.rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) {
+    return null;
+  }
+
+  const decoded = StellarSdk.scValToNative(sim.result.retval) as any[];
+  const announcements = decoded.map((ann) => {
+    const stealthPk = new Uint8Array(ann.stealth_pk);
+    return {
+      ephemeralPubKey: new Uint8Array(ann.ephemeral_pk),
+      viewTag: ann.view_tag as number,
+      stealthPubKey: stealthPk,
+      stealthAddr: StrKey.encodeEd25519PublicKey(Buffer.from(stealthPk)),
+      token: ann.token?.toString?.() || 'unknown',
+      amount: BigInt(ann.amount || 0),
+    };
   });
-  const contract = new StellarSdk.Contract(contractId);
 
-  try {
-    const getLogs = contract.call(
-      'get_announcements',
-      StellarSdk.nativeToScVal(0, { type: 'u64' }),
-      StellarSdk.nativeToScVal(1000, { type: 'u64' })
-    );
-    const sim = await server.simulateTransaction(
-      new TransactionBuilder(
-        new Account('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF', '0'),
-        {
-          fee: '100',
-          networkPassphrase: network === 'local'
-            ? Networks.STANDALONE
-            : Networks.TESTNET
-        }
-      )
-      .addOperation(getLogs)
-      .setTimeout(30)
-      .build()
-    );
+  const matches = scanAnnouncements(
+    viewPrivKey,
+    spendPubKey,
+    announcements.map((a) => ({
+      ephemeralPubKey: a.ephemeralPubKey,
+      viewTag: a.viewTag,
+      stealthAddress: a.stealthAddr,
+    })),
+  );
 
-    if (StellarSdk.rpc.Api.isSimulationSuccess(sim)) {
-      const result = sim.result?.retval;
-      if (result) {
-        const decoded = StellarSdk.scValToNative(result) as any[];
-        const announcements: Announcement[] = decoded.map(ann => {
-          const stealthPk = new Uint8Array(ann.stealth_pk);
-          const announcementStealthAddress = StrKey.encodeEd25519PublicKey(Buffer.from(stealthPk));
-          return {
-            ephemeralPubKey: new Uint8Array(ann.ephemeral_pk),
-            viewTag: ann.view_tag,
-            stealthAddress: announcementStealthAddress,
-            encryptedAmount: ann.encrypted_amount,
-            ledger: Number(ann.sequence || 0)
-          };
-        });
-
-        const stealthAddresses = scanAnnouncements(
-          viewPrivKey,
-          spendPubKey,
-          announcements.map(a => ({
-            ephemeralPubKey: a.ephemeralPubKey,
-            viewTag: a.viewTag,
-            stealthAddress: a.stealthAddress
-          }))
-        );
-
-        for (const stealth of stealthAddresses) {
-          if (stealth.address === stealthAddress) {
-            // Find the corresponding announcement to get the ephemeral key
-            const announcement = announcements.find(a => a.stealthAddress === stealthAddress);
-            return announcement?.ephemeralPubKey || null;
-          }
-        }
+  for (const match of matches) {
+    if (match.address === stealthAddress) {
+      const ann = announcements.find((a) => a.stealthAddr === stealthAddress);
+      if (ann) {
+        return {
+          ephemeralPubKey: ann.ephemeralPubKey,
+          stealthPubKey: ann.stealthPubKey,
+          stealthAddress: ann.stealthAddr,
+          token: ann.token,
+          amount: ann.amount,
+        };
       }
     }
-  } catch (error) {
-    console.error(chalk.yellow('Warning: Could not fetch announcements'));
   }
 
   return null;
 }
 
-async function submitViaRelay(
-  xdr: string,
-  relayUrl: string
-): Promise<string> {
-  try {
-    const url = relayUrl.endsWith('/relay') ? relayUrl : `${relayUrl}/relay`;
-    const response = await axios.post(url, {
-      xdr
-    }, {
-      headers: { 'Content-Type': 'application/json' }
-    });
+async function getNonce(
+  contractId: string,
+  stealthPk: Uint8Array,
+  server: StellarSdk.rpc.Server,
+  networkPassphrase: string,
+): Promise<bigint> {
+  const contract = new Contract(contractId);
+  const op = contract.call('get_nonce', nativeToScVal(Buffer.from(stealthPk)));
+  const sim = await server.simulateTransaction(
+    createSimulationTx(op, networkPassphrase),
+  );
 
-    return response.data.txHash;
-  } catch (error: any) {
-    throw new Error(`Relay error: ${error.response?.data?.error || error.message}`);
+  if (StellarSdk.rpc.Api.isSimulationSuccess(sim) && sim.result?.retval) {
+    return BigInt(StellarSdk.scValToNative(sim.result.retval));
   }
+  return 0n;
+}
+
+async function getContractBalance(
+  contractId: string,
+  stealthPk: Uint8Array,
+  tokenAddress: string,
+  server: StellarSdk.rpc.Server,
+  networkPassphrase: string,
+): Promise<bigint> {
+  const contract = new Contract(contractId);
+  const op = contract.call(
+    'get_balance',
+    nativeToScVal(Buffer.from(stealthPk)),
+    new StellarSdk.Address(tokenAddress).toScVal(),
+  );
+  const sim = await server.simulateTransaction(
+    createSimulationTx(op, networkPassphrase),
+  );
+
+  if (StellarSdk.rpc.Api.isSimulationSuccess(sim) && sim.result?.retval) {
+    return BigInt(StellarSdk.scValToNative(sim.result.retval));
+  }
+  return 0n;
+}
+
+async function waitForTransaction(
+  server: StellarSdk.rpc.Server,
+  hash: string,
+  verbose?: boolean,
+): Promise<void> {
+  let attempts = 0;
+  while (attempts < 30) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    try {
+      const result = await server.getTransaction(hash);
+      if (result.status === 'SUCCESS') return;
+      if (result.status === 'FAILED') throw new Error('Transaction failed on-chain');
+    } catch (e: any) {
+      if (e.message === 'Transaction failed on-chain') throw e;
+      if (verbose) console.log(chalk.gray(`  Polling: ${e.message}`));
+    }
+    attempts++;
+  }
+  if (verbose) console.log(chalk.yellow('  Transaction confirmation timed out'));
 }
 
 export const withdrawCommand = new Command('withdraw')
-  .description('Withdraw funds from a stealth address')
+  .description('Withdraw tokens from the stealth pool')
   .argument('<stealth-address>', 'Stealth address to withdraw from')
-  .argument('<destination>', 'Destination address')
+  .argument('<destination>', 'Destination Stellar address')
   .option('--network <network>', 'Network to use', 'local')
+  .option('--amount <amount>', 'Amount to withdraw (default: full balance)')
+  .option('--asset <asset>', 'Asset to withdraw (default: native XLM, or CODE:ISSUER)')
+  .option('--fee-payer <secret>', 'Secret key of account paying the Soroban fee')
   .option('--relay <url>', 'Relay URL for fee-bumped submission')
-  .option('--merge', 'Use account merge instead of payment')
+  .option('--verbose', 'Show detailed output')
   .action(async (stealthAddress: string, destination: string, options) => {
     try {
       const network = options.network as 'local' | 'testnet';
@@ -148,129 +236,192 @@ export const withdrawCommand = new Command('withdraw')
         process.exit(1);
       }
 
-      console.log(chalk.cyan('Finding announcement for stealth address...'));
+      if (!options.feePayer) {
+        console.error(chalk.red('Error: --fee-payer <secret> is required'));
+        console.error(chalk.gray('  A funded account must pay the Soroban invocation fee'));
+        console.error(chalk.gray('  Optionally add --relay <url> for the relayer to fee-bump'));
+        process.exit(1);
+      }
+
+      const networkPassphrase = network === 'local'
+        ? Networks.STANDALONE
+        : Networks.TESTNET;
+
+      const rpcUrl = network === 'local'
+        ? 'http://localhost:8000/soroban/rpc'
+        : 'https://soroban-testnet.stellar.org';
+
+      const server = new StellarSdk.rpc.Server(rpcUrl, {
+        allowHttp: network === 'local',
+      });
+
+      const contractAddress = getContractAddress(network);
+
+      // Resolve token
+      let tokenAddress: string;
+      if (!options.asset || options.asset === 'native' || options.asset === 'XLM') {
+        tokenAddress = Asset.native().contractId(networkPassphrase);
+      } else {
+        const parts = options.asset.split(':');
+        if (parts.length !== 2 || !parts[0] || !parts[1]) {
+          console.error(chalk.red('Error: Invalid asset format. Use CODE:ISSUER'));
+          process.exit(1);
+        }
+        tokenAddress = new Asset(parts[0], parts[1]).contractId(networkPassphrase);
+      }
 
       const viewPrivKey = Buffer.from(keystore.viewPrivateKey, 'hex');
       const spendPrivKey = Buffer.from(keystore.spendPrivateKey, 'hex');
       const spendPubKey = Buffer.from(keystore.spendPublicKey, 'hex');
 
-      const contractAddress = getContractAddress(network);
-      const ephemeralPubKey = await fetchAnnouncementsForAddress(
+      // Find the matching announcement
+      console.log(chalk.cyan('Finding announcement for stealth address...'));
+
+      const matched = await findMatchingAnnouncement(
         stealthAddress,
         contractAddress,
-        network,
+        server,
+        networkPassphrase,
         viewPrivKey,
-        spendPubKey
+        spendPubKey,
       );
 
-      if (!ephemeralPubKey) {
+      if (!matched) {
         console.error(chalk.red('Error: Could not find announcement for this stealth address'));
         process.exit(1);
       }
 
+      // Recover stealth private key
       console.log(chalk.cyan('Recovering stealth private key...'));
-
       const stealthPrivKey = recoverStealthPrivateKey(
         spendPrivKey,
         viewPrivKey,
-        ephemeralPubKey
+        matched.ephemeralPubKey,
       );
 
-      // stealthPrivKey is a raw scalar, not an ed25519 seed
+      // Get contract balance
+      const balance = await getContractBalance(
+        contractAddress,
+        matched.stealthPubKey,
+        tokenAddress,
+        server,
+        networkPassphrase,
+      );
 
-      const horizonUrl = network === 'local'
-        ? 'http://localhost:8000'
-        : 'https://horizon-testnet.stellar.org';
-
-      const server = new Horizon.Server(horizonUrl, {
-        allowHttp: network === 'local',
-      });
-      const networkPassphrase = network === 'local'
-        ? Networks.STANDALONE
-        : Networks.TESTNET;
-
-      console.log(chalk.cyan('Loading stealth account...'));
-
-      const account = await server.loadAccount(stealthAddress);
-      const xlmBalance = account.balances.find(b => b.asset_type === 'native');
-      const balance = parseFloat(xlmBalance?.balance || '0');
-
-      if (balance <= 0) {
-        console.error(chalk.yellow('Warning: Stealth account has no balance'));
+      if (balance <= 0n) {
+        console.error(chalk.yellow('Stealth address has no balance in the pool'));
         process.exit(0);
       }
 
-      console.log(chalk.gray(`Balance: ${balance} XLM`));
+      const displayBalance = (Number(balance) / 1e7).toFixed(7);
+      console.log(chalk.gray(`  Pool balance: ${displayBalance}`));
 
-      let transaction: any;
-
-      if (options.merge) {
-        console.log(chalk.cyan('Building account merge transaction...'));
-
-        transaction = new TransactionBuilder(account, {
-          fee: '100',
-          networkPassphrase
-        })
-        .addOperation(Operation.accountMerge({
-          destination: destination
-        }))
-        .setTimeout(30)
-        .build();
-      } else {
-        console.log(chalk.cyan('Building payment transaction...'));
-
-        // Reserve 1 XLM base reserve + 0.00001 fee (unless relay pays the fee)
-        const reserve = options.relay ? 1 : 1.00001;
-        if (balance <= reserve) {
-          console.error(chalk.red(`Error: Balance ${balance} XLM is too low to send (need >${reserve} XLM). Use --merge to close the account.`));
+      // Determine withdraw amount
+      let withdrawAmount: bigint;
+      if (options.amount) {
+        withdrawAmount = BigInt(Math.round(parseFloat(options.amount) * 1e7));
+        if (withdrawAmount > balance) {
+          console.error(chalk.red(`Error: Requested ${options.amount} but balance is ${displayBalance}`));
           process.exit(1);
         }
-        const amount = (balance - reserve).toFixed(7);
-
-        transaction = new TransactionBuilder(account, {
-          fee: '100',
-          networkPassphrase
-        })
-        .addOperation(Operation.payment({
-          destination: destination,
-          asset: Asset.native(),
-          amount: amount
-        }))
-        .setTimeout(30)
-        .build();
+      } else {
+        withdrawAmount = balance;
       }
 
-      // Sign using raw scalar signing (DKSAP stealth keys are raw scalars,
-      // not ed25519 seeds, so Keypair.fromRawEd25519Seed won't work)
-      const txHash_ = transaction.hash();
-      const signature = signWithStealthKey(txHash_, stealthPrivKey);
-      const keypairForHint = Keypair.fromPublicKey(stealthAddress);
-      transaction.addSignature(keypairForHint.publicKey(), Buffer.from(signature).toString('base64'));
+      // Get nonce
+      const currentNonce = await getNonce(
+        contractAddress,
+        matched.stealthPubKey,
+        server,
+        networkPassphrase,
+      );
+      const nonce = currentNonce + 1n;
 
+      if (options.verbose) {
+        console.log(chalk.gray(`  Token:  ${tokenAddress}`));
+        console.log(chalk.gray(`  Nonce:  ${nonce}`));
+        console.log(chalk.gray(`  Amount: ${withdrawAmount} (stroops)`));
+      }
+
+      // Build and sign the withdraw message
+      console.log(chalk.cyan('Signing withdraw message...'));
+
+      const messageHash = buildWithdrawMessage(
+        matched.stealthPubKey,
+        tokenAddress,
+        withdrawAmount,
+        destination,
+        nonce,
+      );
+
+      const signature = signWithStealthKey(messageHash, stealthPrivKey);
+
+      // Build Soroban transaction
+      console.log(chalk.cyan('Building withdraw transaction...'));
+
+      const feePayerKeypair = Keypair.fromSecret(options.feePayer);
+
+      const contract = new Contract(contractAddress);
+      const feePayerAccount = await server.getAccount(feePayerKeypair.publicKey());
+
+      const withdrawTx = new TransactionBuilder(feePayerAccount, {
+        fee: '100',
+        networkPassphrase,
+      })
+        .addOperation(
+          contract.call(
+            'withdraw',
+            nativeToScVal(Buffer.from(matched.stealthPubKey)),
+            new StellarSdk.Address(tokenAddress).toScVal(),
+            nativeToScVal(withdrawAmount, { type: 'i128' }),
+            new StellarSdk.Address(destination).toScVal(),
+            nativeToScVal(nonce, { type: 'u64' }),
+            nativeToScVal(Buffer.from(signature)),
+          ),
+        )
+        .setTimeout(30)
+        .build();
+
+      const prepared = await server.prepareTransaction(withdrawTx);
+      prepared.sign(feePayerKeypair);
+
+      // Submit
       let txHash: string;
 
       if (options.relay) {
         console.log(chalk.cyan('Submitting via relay...'));
-        txHash = await submitViaRelay(
-          transaction.toEnvelope().toXDR('base64'),
-          options.relay
-        );
+        const url = options.relay.endsWith('/relay') ? options.relay : `${options.relay}/relay`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ xdr: prepared.toEnvelope().toXDR('base64') }),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(`Relay error: ${(err as any).error}`);
+        }
+        const data = (await res.json()) as any;
+        txHash = data.txHash;
       } else {
         console.log(chalk.cyan('Submitting transaction...'));
-        const response = await server.submitTransaction(transaction);
-        txHash = response.hash;
+        const result = await server.sendTransaction(prepared);
+        if (result.status === 'ERROR') {
+          throw new Error('Transaction submission failed');
+        }
+        if (result.status === 'PENDING') {
+          await waitForTransaction(server, result.hash, options.verbose);
+        }
+        txHash = result.hash;
       }
 
-      const withdrawnAmount = options.merge ? balance : balance - 0.00001;
-      console.log(chalk.green(`✓ Withdrawn ${withdrawnAmount.toFixed(7)} XLM to ${destination}`));
-      console.log(chalk.gray(`Transaction: ${txHash}`));
+      const displayWithdraw = (Number(withdrawAmount) / 1e7).toFixed(7);
+      console.log(chalk.green(`\u2713 Withdrawn ${displayWithdraw} to ${destination}`));
+      console.log(chalk.gray(`  Tx hash: ${txHash}`));
 
     } catch (error: any) {
-      const codes = error.response?.data?.extras?.result_codes;
-      if (codes) {
-        console.error(chalk.red('Error withdrawing:'), codes.transaction, codes.operations);
-      } else {
-        console.error(chalk.red('Error withdrawing:'), error.message);
+      console.error(chalk.red('Error withdrawing:'), error.message);
+      if (options.verbose && error.stack) {
+        console.error(chalk.gray(error.stack));
       }
       process.exit(1);
     }

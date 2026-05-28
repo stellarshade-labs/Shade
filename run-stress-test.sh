@@ -78,13 +78,13 @@ app.use((req, res, next) => {
 // Health endpoint
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
-// Sponsor endpoint with validation
-app.post('/sponsor', (req, res) => {
-  const { address } = req.body;
-  if (!address || address.length !== 56 || !address.startsWith('G')) {
-    return res.status(400).json({ error: 'Invalid Stellar address format' });
+// Relay endpoint (accepts XDR)
+app.post('/relay', (req, res) => {
+  const { xdr } = req.body;
+  if (!xdr || typeof xdr !== 'string') {
+    return res.status(400).json({ error: 'Missing or invalid XDR' });
   }
-  res.json({ success: true, sponsored: address });
+  res.json({ success: true, txHash: 'mock-hash' });
 });
 
 const server = app.listen(3001, () => {
@@ -111,28 +111,23 @@ sleep 2
 # Test rate limiting
 echo "Testing rate limiting..."
 for i in {1..15}; do
-  curl -s -X POST http://localhost:3001/sponsor \
-    -H "Content-Type: application/json" \
-    -d "{\"address\":\"GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF\"}" \
-    > /dev/null 2>&1
+  curl -s http://localhost:3001/health > /dev/null 2>&1
 done
 
-if curl -s -X POST http://localhost:3001/sponsor \
-  -H "Content-Type: application/json" \
-  -d "{\"address\":\"GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF\"}" 2>&1 | grep -q "Rate limited"; then
+if curl -s http://localhost:3001/health 2>&1 | grep -q "Rate limited"; then
   echo "✓ Rate limiting works"
 else
   echo "✗ Rate limiting failed"
 fi
 
-# Test validation
-echo "Testing request validation..."
-if curl -s -X POST http://localhost:3001/sponsor \
+# Test relay validation
+echo "Testing relay validation..."
+if curl -s -X POST http://localhost:3001/relay \
   -H "Content-Type: application/json" \
-  -d "{\"address\":\"invalid\"}" 2>&1 | grep -q "Invalid Stellar address"; then
-  echo "✓ Address validation works"
+  -d "{}" 2>&1 | grep -q "Missing or invalid XDR"; then
+  echo "✓ Relay validation works"
 else
-  echo "✗ Address validation failed"
+  echo "✗ Relay validation failed"
 fi
 
 # Test graceful shutdown

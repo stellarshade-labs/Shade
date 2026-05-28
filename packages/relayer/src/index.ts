@@ -2,7 +2,6 @@ import express from 'express';
 import cors from 'cors';
 import { Keypair, Horizon } from '@stellar/stellar-sdk';
 import { initRelayRoute, handleRelay } from './routes/relay.js';
-import { initSponsorRoute, handleSponsor } from './routes/sponsor.js';
 import RateLimiter from './utils/rateLimit.js';
 import { logger } from './utils/logger.js';
 import dotenv from 'dotenv';
@@ -81,14 +80,12 @@ async function initRelayer() {
     }
 
     initRelayRoute(keypair);
-    initSponsorRoute(keypair);
 
     app.get('/health', (_, res) => {
       res.json({ status: 'ok', network: NETWORK });
     });
 
     app.post('/relay', handleRelay);
-    app.post('/sponsor', handleSponsor);
 
     const httpServer = app.listen(PORT, '0.0.0.0', () => {
       logger.info('Relayer started', { port: PORT, network: NETWORK });
@@ -96,7 +93,6 @@ async function initRelayer() {
       console.log(`[Relayer] Network: ${NETWORK}`);
       console.log(`[Relayer] Rate limit: 10 requests/minute per IP`);
       console.log(`[Relayer] Endpoints:`);
-      console.log(`  POST /sponsor - Sponsor stealth account creation`);
       console.log(`  POST /relay   - Fee-bump transaction submission`);
       console.log(`  GET  /health  - Health check`);
     });

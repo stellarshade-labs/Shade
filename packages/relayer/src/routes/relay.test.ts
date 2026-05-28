@@ -63,7 +63,7 @@ describe('handleRelay', () => {
       successful: true
     });
 
-    const mockFeeBumpTx = {} as any;
+    const mockFeeBumpTx = { sign: vi.fn() } as any;
     (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(mockFeeBumpTx);
 
     await handleRelay(mockReq as Request, mockRes as Response);
@@ -105,7 +105,7 @@ describe('handleRelay', () => {
     mockServerInstance.fetchBaseFee.mockResolvedValue(100);
     mockServerInstance.submitTransaction.mockRejectedValue(new Error('Network error'));
 
-    const mockFeeBumpTx = {} as any;
+    const mockFeeBumpTx = { sign: vi.fn() } as any;
     (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(mockFeeBumpTx);
 
     await handleRelay(mockReq as Request, mockRes as Response);
@@ -135,7 +135,7 @@ describe('handleRelay', () => {
     };
     mockServerInstance.submitTransaction.mockRejectedValue(error);
 
-    const mockFeeBumpTx = {} as any;
+    const mockFeeBumpTx = { sign: vi.fn() } as any;
     (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(mockFeeBumpTx);
 
     await handleRelay(mockReq as Request, mockRes as Response);

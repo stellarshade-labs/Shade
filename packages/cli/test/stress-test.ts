@@ -150,11 +150,8 @@ class StressTest {
       let rateLimited = false;
 
       for (let i = 0; i < 15; i++) {
-        const address = Keypair.random().publicKey();
-        const response = await fetch(`${this.relayerUrl}/sponsor`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ address })
+        const response = await fetch(`${this.relayerUrl}/health`, {
+          method: 'GET',
         });
 
         if (response.status === 429) {

@@ -1,53 +1,50 @@
 import { Command } from 'commander';
 import { scanAnnouncements } from '@stealth/crypto';
-import { Horizon, StrKey, Networks } from '@stellar/stellar-sdk';
+import { StrKey, Networks, Contract, nativeToScVal } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { loadKeystore } from '../utils/keystore.js';
 import { getContractAddress } from '../utils/config.js';
+import Table from 'cli-table3';
 import chalk from 'chalk';
 
 interface Announcement {
   ephemeralPubKey: Uint8Array;
   viewTag: number;
+  stealthPubKey: Uint8Array;
   stealthAddress: string;
-  encryptedAmount?: string;
-  ledger: number;
+  token: string;
+  amount: bigint;
+}
+
+function createSimulationTx(
+  operation: StellarSdk.xdr.Operation,
+  networkPassphrase: string
+): StellarSdk.Transaction {
+  return new StellarSdk.TransactionBuilder(
+    new StellarSdk.Account('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF', '0'),
+    { fee: '100', networkPassphrase }
+  )
+    .addOperation(operation)
+    .setTimeout(30)
+    .build();
 }
 
 async function fetchAllAnnouncements(
   contractId: string,
-  network: 'local' | 'testnet'
+  server: StellarSdk.rpc.Server,
+  networkPassphrase: string,
 ): Promise<Announcement[]> {
-  const rpcUrl = network === 'local'
-    ? 'http://localhost:8000/soroban/rpc'
-    : 'https://soroban-testnet.stellar.org';
-
-  const server = new StellarSdk.rpc.Server(rpcUrl, {
-    allowHttp: network === 'local',
-  });
-  const contract = new StellarSdk.Contract(contractId);
-
+  const contract = new Contract(contractId);
   const announcements: Announcement[] = [];
 
   try {
-    const getLogs = contract.call(
+    const op = contract.call(
       'get_announcements',
-      StellarSdk.nativeToScVal(0, { type: 'u64' }),
-      StellarSdk.nativeToScVal(1000, { type: 'u64' })
+      nativeToScVal(0, { type: 'u64' }),
+      nativeToScVal(1000, { type: 'u64' })
     );
     const sim = await server.simulateTransaction(
-      new StellarSdk.TransactionBuilder(
-        new StellarSdk.Account('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF', '0'),
-        {
-          fee: '100',
-          networkPassphrase: network === 'local'
-            ? Networks.STANDALONE
-            : Networks.TESTNET
-        }
-      )
-      .addOperation(getLogs)
-      .setTimeout(30)
-      .build()
+      createSimulationTx(op, networkPassphrase)
     );
 
     if (StellarSdk.rpc.Api.isSimulationSuccess(sim)) {
@@ -60,9 +57,10 @@ async function fetchAllAnnouncements(
           announcements.push({
             ephemeralPubKey: new Uint8Array(ann.ephemeral_pk),
             viewTag: ann.view_tag,
+            stealthPubKey: stealthPk,
             stealthAddress,
-            encryptedAmount: ann.encrypted_amount,
-            ledger: Number(ann.sequence || 0)
+            token: ann.token?.toString?.() || 'unknown',
+            amount: BigInt(ann.amount || 0),
           });
         }
       }
@@ -74,32 +72,32 @@ async function fetchAllAnnouncements(
   return announcements;
 }
 
-async function getAccountBalance(
-  address: string,
-  network: 'local' | 'testnet'
-): Promise<number> {
-  const horizonUrl = network === 'local'
-    ? 'http://localhost:8000'
-    : 'https://horizon-testnet.stellar.org';
+async function getContractBalance(
+  contractId: string,
+  stealthPk: Uint8Array,
+  tokenAddress: string,
+  server: StellarSdk.rpc.Server,
+  networkPassphrase: string,
+): Promise<bigint> {
+  const contract = new Contract(contractId);
+  const op = contract.call(
+    'get_balance',
+    nativeToScVal(Buffer.from(stealthPk)),
+    new StellarSdk.Address(tokenAddress).toScVal(),
+  );
 
-  const server = new Horizon.Server(horizonUrl, {
-    allowHttp: network === 'local',
-  });
+  const sim = await server.simulateTransaction(
+    createSimulationTx(op, networkPassphrase)
+  );
 
-  try {
-    const account = await server.accounts().accountId(address).call();
-    const xlmBalance = account.balances.find(b => b.asset_type === 'native');
-    return parseFloat(xlmBalance?.balance || '0');
-  } catch (error: any) {
-    if (error?.response?.status === 404) {
-      return 0;
-    }
-    throw error;
+  if (StellarSdk.rpc.Api.isSimulationSuccess(sim) && sim.result?.retval) {
+    return BigInt(StellarSdk.scValToNative(sim.result.retval));
   }
+  return 0n;
 }
 
 export const balanceCommand = new Command('balance')
-  .description('Show total balance across all stealth addresses')
+  .description('Show total balance across all stealth payments')
   .option('--network <network>', 'Network to use', 'local')
   .action(async (options) => {
     try {
@@ -111,56 +109,96 @@ export const balanceCommand = new Command('balance')
         process.exit(1);
       }
 
-      console.log(chalk.cyan('Scanning for stealth addresses...'));
+      const networkPassphrase = network === 'local'
+        ? Networks.STANDALONE
+        : Networks.TESTNET;
+
+      const rpcUrl = network === 'local'
+        ? 'http://localhost:8000/soroban/rpc'
+        : 'https://soroban-testnet.stellar.org';
+
+      const server = new StellarSdk.rpc.Server(rpcUrl, {
+        allowHttp: network === 'local',
+      });
+
+      console.log(chalk.cyan('Scanning for stealth payments...'));
 
       const contractAddress = getContractAddress(network);
-      const announcements = await fetchAllAnnouncements(contractAddress, network);
+      const announcements = await fetchAllAnnouncements(
+        contractAddress,
+        server,
+        networkPassphrase,
+      );
 
       if (announcements.length === 0) {
         console.log(chalk.yellow('No announcements found'));
-        console.log(chalk.green('Total balance: 0 XLM'));
+        console.log(chalk.green('Total balance: 0'));
         return;
       }
 
       const viewPrivKey = Buffer.from(keystore.viewPrivateKey, 'hex');
       const spendPubKey = Buffer.from(keystore.spendPublicKey, 'hex');
 
-      const stealthAddresses = scanAnnouncements(
+      const matches = scanAnnouncements(
         viewPrivKey,
         spendPubKey,
         announcements.map(a => ({
           ephemeralPubKey: a.ephemeralPubKey,
           viewTag: a.viewTag,
-          stealthAddress: a.stealthAddress
+          stealthAddress: a.stealthAddress,
         }))
       );
 
-      if (stealthAddresses.length === 0) {
-        console.log(chalk.yellow('No stealth addresses found for your keys'));
-        console.log(chalk.green('Total balance: 0 XLM'));
+      if (matches.length === 0) {
+        console.log(chalk.yellow('No stealth payments found for your keys'));
+        console.log(chalk.green('Total balance: 0'));
         return;
       }
 
-      console.log(chalk.gray(`Found ${stealthAddresses.length} stealth address(es)`));
+      console.log(chalk.gray(`Found ${matches.length} stealth payment(s), querying balances...`));
 
-      let totalBalance = 0;
-      let addressCount = 0;
+      // Group balances by token
+      const tokenBalances = new Map<string, bigint>();
 
-      for (const stealth of stealthAddresses) {
-        const stellarAddress = stealth.address;
-        const balance = await getAccountBalance(stellarAddress, network);
+      const table = new Table({
+        head: ['Stealth Address', 'Token', 'Balance'],
+        colWidths: [58, 58, 18],
+      });
 
-        if (balance > 0) {
-          console.log(chalk.gray(`  ${stellarAddress}: ${balance.toFixed(7)} XLM`));
-          addressCount++;
+      for (const match of matches) {
+        if (!match) continue;
+
+        const ann = announcements.find(a => a.stealthAddress === match.address);
+        if (!ann) continue;
+
+        const balance = await getContractBalance(
+          contractAddress,
+          ann.stealthPubKey,
+          ann.token,
+          server,
+          networkPassphrase,
+        );
+
+        if (balance > 0n) {
+          const prev = tokenBalances.get(ann.token) || 0n;
+          tokenBalances.set(ann.token, prev + balance);
+
+          const displayBalance = (Number(balance) / 1e7).toFixed(7);
+          table.push([match.address, ann.token, displayBalance]);
         }
-
-        totalBalance += balance;
       }
 
-      console.log(chalk.green(`\nTotal balance: ${totalBalance.toFixed(7)} XLM`));
-      if (addressCount > 0) {
-        console.log(chalk.gray(`Across ${addressCount} funded stealth address(es)`));
+      if (tokenBalances.size === 0) {
+        console.log(chalk.yellow('All stealth balances are zero'));
+        return;
+      }
+
+      console.log(table.toString());
+
+      console.log(chalk.green('\nTotal balances:'));
+      for (const [token, total] of tokenBalances) {
+        const display = (Number(total) / 1e7).toFixed(7);
+        console.log(chalk.green(`  ${token}: ${display}`));
       }
 
     } catch (error: any) {

@@ -72,3 +72,10 @@ export {
   hashToScalar,
   viewTag,
 } from './hash.js';
+
+// HD key derivation (BIP-39 mnemonic support)
+export {
+  generateMnemonic,
+  validateMnemonic,
+  mnemonicToStealthKeys,
+} from './hd.js';
