@@ -1,0 +1,18 @@
+{
+  "name": "stellar-stealth-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Stealth address SDK for Stellar — DKSAP on ed25519",
+  "scripts": {
+    "test": "npm run test --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "devDependencies": {
+    "tsx": "^4.0.0",
+    "typescript": "^5.5.0"
+  }
+}
