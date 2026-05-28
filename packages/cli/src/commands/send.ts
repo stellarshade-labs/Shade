@@ -7,12 +7,10 @@ import {
   Operation,
   Asset,
   Horizon,
-  StrKey,
   Contract,
-  nativeToScVal,
-  scValToNative
+  nativeToScVal
 } from '@stellar/stellar-sdk';
-import { Server as SorobanServer } from '@stellar/stellar-sdk/lib/soroban';
+import * as StellarSdk from '@stellar/stellar-sdk';
 import { getContractAddress } from '../utils/config.js';
 import { withRetry, formatError, validateMetaAddress } from '../utils/network.js';
 import chalk from 'chalk';
@@ -30,7 +28,7 @@ async function announceToContract(
     ? 'http://localhost:8000/soroban/rpc'
     : 'https://soroban-testnet.stellar.org';
 
-  const server = new SorobanServer(rpcUrl);
+  const server = new StellarSdk.rpc.Server(rpcUrl);
   const contract = new Contract(contractId);
 
   const networkPassphrase = network === 'local'
@@ -60,7 +58,7 @@ async function announceToContract(
   const result = await server.sendTransaction(prepared);
 
   if (result.status === 'PENDING') {
-    let status = result.status;
+    let status: string = result.status;
     while (status === 'PENDING' || status === 'NOT_FOUND') {
       await new Promise(resolve => setTimeout(resolve, 1000));
       const update = await server.getTransaction(result.hash);
@@ -150,7 +148,7 @@ export const sendCommand = new Command('send')
           console.log(chalk.gray(`  Account exists`));
         }
       } catch (error: any) {
-        if (error?.response?.status !== 404) {
+        if ((error as any)?.response?.status !== 404) {
           throw error;
         }
         if (options.verbose) {
@@ -183,7 +181,7 @@ export const sendCommand = new Command('send')
         if (options.relay) {
           console.log(chalk.cyan('Creating sponsored stealth account via relay...'));
 
-          const response = await withRetry(
+          await withRetry(
             async () => {
               const res = await fetch(`${options.relay}/sponsor`, {
                 method: 'POST',
@@ -192,7 +190,7 @@ export const sendCommand = new Command('send')
               });
               if (!res.ok) {
                 const error = await res.json();
-                throw new Error(`Relay error: ${error.error}`);
+                throw new Error(`Relay error: ${(error as any).error}`);
               }
               return res;
             },

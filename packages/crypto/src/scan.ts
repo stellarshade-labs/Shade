@@ -9,10 +9,20 @@ import { encodePublicKey } from './stellar-keys.js';
  * This is a fast pre-filter before doing the expensive EC operations.
  * Only computes the shared secret and extracts the first byte for comparison.
  *
- * @param viewPrivKey Receiver's view private key
- * @param ephemeralPubKey Ephemeral public key from announcement
- * @param expectedTag Expected view tag from announcement
+ * @param viewPrivKey - Receiver's 32-byte view private key
+ * @param ephemeralPubKey - 32-byte ephemeral public key from announcement
+ * @param expectedTag - Expected view tag from announcement (0-255)
  * @returns True if view tag matches
+ * @throws {Error} If key lengths are invalid or tag is out of range
+ *
+ * @example
+ * ```typescript
+ * // Fast filtering before full verification
+ * if (checkViewTag(viewPrivKey, announcement.ephemeralPubKey, announcement.viewTag)) {
+ *   // Only do expensive verification for matches
+ *   const fullCheck = isMyStealthAddress(...);
+ * }
+ * ```
  */
 export function checkViewTag(
   viewPrivKey: Uint8Array,
@@ -47,10 +57,28 @@ export function checkViewTag(
  * This optimization provides ~25x speedup for large announcement sets
  * by avoiding expensive EC operations on non-matching announcements.
  *
- * @param viewPrivKey Receiver's view private key
- * @param spendPubKey Receiver's spend public key
- * @param announcements List of announcements to scan
+ * @param viewPrivKey - Receiver's 32-byte view private key
+ * @param spendPubKey - Receiver's 32-byte spend public key
+ * @param announcements - List of announcements to scan
  * @returns Array of stealth addresses belonging to the receiver
+ * @throws {Error} If key lengths are invalid
+ *
+ * @example
+ * ```typescript
+ * // Scan blockchain announcements
+ * const announcements = await fetchAnnouncements();
+ * const myAddresses = scanAnnouncements(
+ *   keys.viewPrivKey,
+ *   keys.metaAddress.spendPubKey,
+ *   announcements
+ * );
+ *
+ * // Check balances of discovered addresses
+ * for (const addr of myAddresses) {
+ *   const balance = await getBalance(addr.address);
+ *   console.log(`${addr.address}: ${balance} XLM`);
+ * }
+ * ```
  */
 export function scanAnnouncements(
   viewPrivKey: Uint8Array,
@@ -104,11 +132,29 @@ export function scanAnnouncements(
 /**
  * Check if a specific stealth address belongs to the receiver.
  *
- * @param viewPrivKey Receiver's view private key
- * @param spendPubKey Receiver's spend public key
- * @param ephemeralPubKey Ephemeral public key from announcement
- * @param stealthAddress Stealth address to check
+ * Performs full DKSAP verification to determine ownership of a stealth address.
+ *
+ * @param viewPrivKey - Receiver's 32-byte view private key
+ * @param spendPubKey - Receiver's 32-byte spend public key
+ * @param ephemeralPubKey - 32-byte ephemeral public key from announcement
+ * @param stealthAddress - Stellar address to check (G... format)
  * @returns True if the stealth address belongs to the receiver
+ * @throws {Error} If key lengths are invalid
+ *
+ * @example
+ * ```typescript
+ * // Check if a payment is for you
+ * const isMine = isMyStealthAddress(
+ *   keys.viewPrivKey,
+ *   keys.metaAddress.spendPubKey,
+ *   announcement.ephemeralPubKey,
+ *   announcement.stealthAddress
+ * );
+ *
+ * if (isMine) {
+ *   console.log('Found payment to:', announcement.stealthAddress);
+ * }
+ * ```
  */
 export function isMyStealthAddress(
   viewPrivKey: Uint8Array,

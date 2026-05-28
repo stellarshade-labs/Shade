@@ -7,9 +7,24 @@ import { ed25519 } from '@noble/curves/ed25519';
  * which can be verified against the stealth public key.
  * Used by relayers to verify withdrawal requests are from legitimate owners.
  *
- * @param stealthPrivKey The stealth private key (32 bytes)
- * @param challenge The challenge to sign (typically a nonce or timestamp)
- * @returns The ed25519 signature (64 bytes)
+ * @param stealthPrivKey - The 32-byte stealth private key (scalar)
+ * @param challenge - The challenge to sign (typically a nonce or timestamp)
+ * @returns The 64-byte ed25519 signature
+ * @throws {Error} If private key is not 32 bytes or challenge is empty
+ *
+ * @example
+ * ```typescript
+ * // Create ownership proof for withdrawal request
+ * const challenge = new TextEncoder().encode(`withdraw:${Date.now()}`);
+ * const proof = proveOwnership(stealthPrivKey, challenge);
+ *
+ * // Submit to relayer
+ * await relayer.requestWithdrawal({
+ *   stealthAddress,
+ *   proof,
+ *   challenge
+ * });
+ * ```
  */
 export function proveOwnership(
   stealthPrivKey: Uint8Array,
@@ -22,7 +37,8 @@ export function proveOwnership(
     throw new Error('Challenge cannot be empty');
   }
 
-  // Sign the challenge with the stealth private key
+  // The stealth private key is a scalar, we need to use it as a seed for ed25519
+  // This matches how Stellar SDK handles private keys
   const signature = ed25519.sign(challenge, stealthPrivKey);
 
   return signature;
@@ -34,10 +50,28 @@ export function proveOwnership(
  * Verifies an ed25519 signature against the stealth public key.
  * Used by relayers to authenticate withdrawal requests.
  *
- * @param stealthPubKey The stealth public key (32 bytes)
- * @param challenge The challenge that was signed
- * @param signature The signature to verify (64 bytes)
+ * @param stealthPubKey - The 32-byte stealth public key
+ * @param challenge - The challenge that was signed
+ * @param signature - The 64-byte signature to verify
  * @returns True if the signature is valid, false otherwise
+ * @throws {Error} If key/signature lengths are invalid or challenge is empty
+ *
+ * @example
+ * ```typescript
+ * // Verify withdrawal request (relayer side)
+ * const isValid = verifyOwnership(
+ *   stealthPubKey,
+ *   challenge,
+ *   signature
+ * );
+ *
+ * if (isValid) {
+ *   // Process withdrawal
+ *   await sponsorTransaction(stealthAddress, destination, amount);
+ * } else {
+ *   throw new Error('Invalid ownership proof');
+ * }
+ * ```
  */
 export function verifyOwnership(
   stealthPubKey: Uint8Array,

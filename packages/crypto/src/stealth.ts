@@ -33,8 +33,25 @@ export interface StealthDerivation {
  * 5. Compute stealth public key P = K_spend + s*G
  * 6. Extract view tag from shared secret
  *
- * @param metaAddr Receiver's stealth meta-address
+ * @param metaAddr - Receiver's stealth meta-address containing spend and view public keys
  * @returns Derived stealth address and announcement data
+ * @throws {InvalidPublicKey} If meta-address keys are invalid or not on curve
+ *
+ * @example
+ * ```typescript
+ * const receiver = generateMetaAddress();
+ * const stealth = deriveStealthAddress(receiver.metaAddress);
+ *
+ * // Send XLM to stealth.stealthAddress
+ * console.log('Send to:', stealth.stealthAddress);
+ *
+ * // Publish announcement data
+ * announcePayment({
+ *   ephemeralPubKey: stealth.ephemeralPubKey,
+ *   viewTag: stealth.viewTag,
+ *   stealthAddress: stealth.stealthAddress
+ * });
+ * ```
  */
 export function deriveStealthAddress(metaAddr: StealthMetaAddress): StealthDerivation {
   if (!metaAddr) {
@@ -88,9 +105,16 @@ export function deriveStealthAddress(metaAddr: StealthMetaAddress): StealthDeriv
  * Convenience function that creates a meta-address and derives
  * a stealth address from it.
  *
- * @param spendPubKey Receiver's spend public key
- * @param viewPubKey Receiver's view public key
+ * @param spendPubKey - Receiver's 32-byte spend public key
+ * @param viewPubKey - Receiver's 32-byte view public key
  * @returns Derived stealth address and announcement data
+ * @throws {InvalidPublicKey} If public keys are invalid
+ *
+ * @example
+ * ```typescript
+ * const stealth = computeStealthAddress(spendPubKey, viewPubKey);
+ * console.log('Send to:', stealth.stealthAddress);
+ * ```
  */
 export function computeStealthAddress(
   spendPubKey: Uint8Array,

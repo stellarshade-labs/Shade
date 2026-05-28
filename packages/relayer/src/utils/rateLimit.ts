@@ -24,7 +24,7 @@ class RateLimiter {
     if (forwarded) {
       return forwarded.split(',')[0].trim();
     }
-    return req.ip || req.socket.remoteAddress || 'unknown';
+    return req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
   }
 
   private getBucket(clientId: string): TokenBucket {
@@ -77,7 +77,7 @@ class RateLimiter {
       }
 
       bucket.tokens--;
-      next();
+      return next();
     };
   }
 

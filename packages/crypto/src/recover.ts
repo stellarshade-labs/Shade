@@ -13,10 +13,28 @@ import { hashToScalar } from './hash.js';
  * - Sign transactions from the stealth address
  * - Derive the corresponding public key for verification
  *
- * @param spendPrivKey Receiver's spend private key
- * @param viewPrivKey Receiver's view private key
- * @param ephemeralPubKey Ephemeral public key from announcement
- * @returns 32-byte stealth private key
+ * @param spendPrivKey - Receiver's 32-byte spend private key
+ * @param viewPrivKey - Receiver's 32-byte view private key
+ * @param ephemeralPubKey - 32-byte ephemeral public key from announcement
+ * @returns 32-byte stealth private key for signing transactions
+ * @throws {Error} If key lengths are invalid
+ *
+ * @example
+ * ```typescript
+ * // Recover private key to withdraw funds
+ * const stealthPrivKey = recoverStealthPrivateKey(
+ *   keys.spendPrivKey,
+ *   keys.viewPrivKey,
+ *   announcement.ephemeralPubKey
+ * );
+ *
+ * // Use with Stellar SDK to sign transaction
+ * const keypair = Keypair.fromRawEd25519Seed(stealthPrivKey);
+ * transaction.sign(keypair);
+ *
+ * // IMPORTANT: Clear private key from memory after use
+ * stealthPrivKey.fill(0);
+ * ```
  */
 export function recoverStealthPrivateKey(
   spendPrivKey: Uint8Array,

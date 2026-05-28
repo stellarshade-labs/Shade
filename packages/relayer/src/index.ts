@@ -1,5 +1,5 @@
 import express from 'express';
-import { Keypair, Horizon, Networks } from '@stellar/stellar-sdk';
+import { Keypair, Horizon } from '@stellar/stellar-sdk';
 import { initRelayRoute, handleRelay } from './routes/relay.js';
 import { initSponsorRoute, handleSponsor } from './routes/sponsor.js';
 import RateLimiter from './utils/rateLimit.js';
@@ -40,10 +40,10 @@ async function initRelayer() {
       ? 'http://localhost:8000'
       : 'https://horizon-testnet.stellar.org';
 
-    const server = new Horizon.Server(horizonUrl);
+    const horizonServer = new Horizon.Server(horizonUrl);
 
     try {
-      const account = await server.loadAccount(keypair.publicKey());
+      const account = await horizonServer.loadAccount(keypair.publicKey());
       const xlmBalance = account.balances.find(b => b.asset_type === 'native');
       const balance = parseFloat(xlmBalance?.balance || '0');
 
@@ -71,14 +71,14 @@ async function initRelayer() {
     initRelayRoute(keypair);
     initSponsorRoute(keypair);
 
-    app.get('/health', (req, res) => {
+    app.get('/health', (_, res) => {
       res.json({ status: 'ok', network: NETWORK });
     });
 
     app.post('/relay', handleRelay);
     app.post('/sponsor', handleSponsor);
 
-    const server = app.listen(PORT, '0.0.0.0', () => {
+    const httpServer = app.listen(PORT, '0.0.0.0', () => {
       logger.info('Relayer started', { port: PORT, network: NETWORK });
       console.log(`[Relayer] Server listening on port ${PORT}`);
       console.log(`[Relayer] Network: ${NETWORK}`);
@@ -96,7 +96,7 @@ async function initRelayer() {
       logger.info(`Received ${signal}, starting graceful shutdown`);
       console.log(`\n[Relayer] Received ${signal}, shutting down gracefully...`);
 
-      server.close(() => {
+      httpServer.close(() => {
         logger.info('Server closed');
         console.log('[Relayer] Server closed');
         process.exit(0);

@@ -3,8 +3,6 @@ import {
   Keypair,
   Networks,
   TransactionBuilder,
-  Operation,
-  FeeBumpTransaction,
   Horizon,
   Transaction
 } from '@stellar/stellar-sdk';
@@ -47,7 +45,7 @@ export async function handleRelay(req: Request, res: Response) {
 
     console.log(`[Relay] Wrapping transaction in fee bump...`);
 
-    const account = await server.loadAccount(relayerKeypair.publicKey());
+    await server.loadAccount(relayerKeypair.publicKey());
     const baseFee = await server.fetchBaseFee();
 
     const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(

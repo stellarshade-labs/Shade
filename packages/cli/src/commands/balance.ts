@@ -9,6 +9,7 @@ import chalk from 'chalk';
 interface Announcement {
   ephemeralPubKey: Uint8Array;
   viewTag: number;
+  stealthAddress: string;
   encryptedAmount?: string;
   ledger: number;
 }
@@ -21,7 +22,7 @@ async function fetchAllAnnouncements(
     ? 'http://localhost:8000/soroban/rpc'
     : 'https://soroban-testnet.stellar.org';
 
-  const server = new StellarSdk.SorobanRpc.Server(rpcUrl);
+  const server = new StellarSdk.rpc.Server(rpcUrl);
   const contract = new StellarSdk.Contract(contractId);
 
   const announcements: Announcement[] = [];
@@ -43,16 +44,19 @@ async function fetchAllAnnouncements(
       .build()
     );
 
-    if (StellarSdk.SorobanRpc.Api.isSimulationSuccess(sim)) {
+    if (StellarSdk.rpc.Api.isSimulationSuccess(sim)) {
       const result = sim.result?.retval;
       if (result) {
         const decoded = StellarSdk.scValToNative(result) as any[];
         for (const ann of decoded) {
+          const stealthPk = new Uint8Array(ann.stealth_pk);
+          const stealthAddress = StrKey.encodeEd25519PublicKey(Buffer.from(stealthPk));
           announcements.push({
-            ephemeralPubKey: new Uint8Array(ann.ephemeral_pub_key),
+            ephemeralPubKey: new Uint8Array(ann.ephemeral_pk),
             viewTag: ann.view_tag,
+            stealthAddress,
             encryptedAmount: ann.encrypted_amount,
-            ledger: Number(ann.ledger || 0)
+            ledger: Number(ann.sequence || 0)
           });
         }
       }
@@ -119,7 +123,7 @@ export const balanceCommand = new Command('balance')
         announcements.map(a => ({
           ephemeralPubKey: a.ephemeralPubKey,
           viewTag: a.viewTag,
-          encryptedAmount: a.encryptedAmount
+          stealthAddress: a.stealthAddress
         }))
       );
 
@@ -135,7 +139,7 @@ export const balanceCommand = new Command('balance')
       let addressCount = 0;
 
       for (const stealth of stealthAddresses) {
-        const stellarAddress = StrKey.encodeEd25519PublicKey(stealth.stealthPubKey);
+        const stellarAddress = stealth.address;
         const balance = await getAccountBalance(stellarAddress, network);
 
         if (balance > 0) {

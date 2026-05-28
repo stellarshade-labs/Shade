@@ -3,7 +3,6 @@ import { scanAnnouncements } from '@stealth/crypto';
 import { Horizon, StrKey, Networks } from '@stellar/stellar-sdk';
 import { loadKeystore } from '../utils/keystore.js';
 import { getContractAddress } from '../utils/config.js';
-import { withRetry, formatError } from '../utils/network.js';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import * as StellarSdk from '@stellar/stellar-sdk';
@@ -11,6 +10,7 @@ import * as StellarSdk from '@stellar/stellar-sdk';
 interface Announcement {
   ephemeralPubKey: Uint8Array;
   viewTag: number;
+  stealthAddress: string;
   encryptedAmount?: string;
   ledger: number;
 }
@@ -24,7 +24,7 @@ async function fetchAnnouncements(
     ? 'http://localhost:8000/soroban/rpc'
     : 'https://soroban-testnet.stellar.org';
 
-  const server = new StellarSdk.SorobanRpc.Server(rpcUrl);
+  const server = new StellarSdk.rpc.Server(rpcUrl);
   const contract = new StellarSdk.Contract(contractId);
 
   const announcements: Announcement[] = [];
@@ -46,17 +46,20 @@ async function fetchAnnouncements(
       .build()
     );
 
-    if (StellarSdk.SorobanRpc.Api.isSimulationSuccess(sim)) {
+    if (StellarSdk.rpc.Api.isSimulationSuccess(sim)) {
       const result = sim.result?.retval;
       if (result) {
         const decoded = StellarSdk.scValToNative(result) as any[];
         for (const ann of decoded) {
-          const ledger = Number(ann.ledger || 0);
+          const ledger = Number(ann.sequence || 0);
           if (sinceLedger && ledger < sinceLedger) continue;
 
+          const stealthPk = new Uint8Array(ann.stealth_pk);
+          const stealthAddress = StrKey.encodeEd25519PublicKey(Buffer.from(stealthPk));
           announcements.push({
-            ephemeralPubKey: new Uint8Array(ann.ephemeral_pub_key),
+            ephemeralPubKey: new Uint8Array(ann.ephemeral_pk),
             viewTag: ann.view_tag,
+            stealthAddress,
             encryptedAmount: ann.encrypted_amount,
             ledger
           });
@@ -136,7 +139,7 @@ export const scanCommand = new Command('scan')
         announcements.map(a => ({
           ephemeralPubKey: a.ephemeralPubKey,
           viewTag: a.viewTag,
-          encryptedAmount: a.encryptedAmount
+          stealthAddress: a.stealthAddress
         }))
       );
 
@@ -154,11 +157,13 @@ export const scanCommand = new Command('scan')
 
       for (let i = 0; i < stealthAddresses.length; i++) {
         const stealth = stealthAddresses[i];
+        if (!stealth) continue;
+
         const announcement = announcements.find(
-          a => Buffer.from(a.ephemeralPubKey).equals(Buffer.from(stealth.ephemeralPubKey))
+          a => a.stealthAddress === stealth.address
         );
 
-        const stellarAddress = StrKey.encodeEd25519PublicKey(stealth.stealthPubKey);
+        const stellarAddress = stealth.address;
         const balance = await getAccountBalance(stellarAddress, network);
         totalBalance += parseFloat(balance);
 

@@ -77,8 +77,19 @@ function base32Decode(str: string): Uint8Array {
 
 /**
  * Encode ed25519 public key to Stellar address format (G...).
- * @param pubKey 32-byte ed25519 public key
+ *
+ * Implements Stellar's StrKey encoding (SEP-23) using base32check format.
+ *
+ * @param pubKey - 32-byte ed25519 public key
  * @returns Stellar address in StrKey format (G...)
+ * @throws {Error} If public key is not exactly 32 bytes
+ *
+ * @example
+ * ```typescript
+ * const pubKey = new Uint8Array(32); // Your public key
+ * const address = encodePublicKey(pubKey);
+ * console.log(address); // "GABC...XYZ"
+ * ```
  */
 export function encodePublicKey(pubKey: Uint8Array): string {
   if (pubKey.length !== 32) {
@@ -103,8 +114,19 @@ export function encodePublicKey(pubKey: Uint8Array): string {
 
 /**
  * Decode Stellar address to ed25519 public key.
- * @param address Stellar address in StrKey format (G...)
+ *
+ * Implements Stellar's StrKey decoding (SEP-23) with checksum validation.
+ *
+ * @param address - Stellar address in StrKey format (G...)
  * @returns 32-byte ed25519 public key
+ * @throws {Error} If address format is invalid or checksum fails
+ *
+ * @example
+ * ```typescript
+ * const address = "GABC...XYZ";
+ * const pubKey = decodePublicKey(address);
+ * console.log(pubKey.length); // 32
+ * ```
  */
 export function decodePublicKey(address: string): Uint8Array {
   if (!address.startsWith('G')) {

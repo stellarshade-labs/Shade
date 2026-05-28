@@ -4,9 +4,7 @@ import {
   Networks,
   TransactionBuilder,
   Operation,
-  Horizon,
-  Account,
-  StrKey
+  Horizon
 } from '@stellar/stellar-sdk';
 import { validateStellarAddress, validateAmount } from '../utils/validation.js';
 import { logger } from '../utils/logger.js';

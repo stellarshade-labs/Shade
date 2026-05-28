@@ -7,7 +7,26 @@ import { InvalidMetaAddress, InvalidPublicKey } from './errors.js';
 
 /**
  * Generate a new stealth meta-address with random keys.
+ *
+ * Creates a complete stealth key pair using cryptographically secure
+ * random number generation. The resulting keys can be used for:
+ * - Receiving stealth payments (using the meta-address)
+ * - Scanning for incoming payments (using view private key)
+ * - Spending from stealth addresses (using spend private key)
+ *
  * @returns Complete stealth keys including private keys and meta-address
+ *
+ * @example
+ * ```typescript
+ * const keys = generateMetaAddress();
+ *
+ * // Share the meta-address publicly
+ * const encoded = encodeMetaAddress(keys.metaAddress);
+ * console.log('Share this:', encoded);
+ *
+ * // Keep private keys secure
+ * saveSecurely(keys.spendPrivKey, keys.viewPrivKey);
+ * ```
  */
 export function generateMetaAddress(): StealthKeys {
   // Generate two random 32-byte scalars (reduced mod L)
@@ -40,8 +59,25 @@ function generateRandomScalar(): Uint8Array {
 
 /**
  * Encode a stealth meta-address to a string format with checksum.
- * @param meta Stealth meta-address containing public keys
+ *
+ * Encodes the meta-address into a shareable string format that includes:
+ * - Protocol identifier ("st:stellar:")
+ * - Concatenated public keys (spend || view)
+ * - CRC32 checksum for error detection
+ *
+ * @param meta - Stealth meta-address containing spend and view public keys
  * @returns Encoded string in format "st:stellar:<hex(spend_pk || view_pk)><checksum>"
+ * @throws {InvalidMetaAddress} If public keys are invalid length or not on curve
+ *
+ * @example
+ * ```typescript
+ * const keys = generateMetaAddress();
+ * const encoded = encodeMetaAddress(keys.metaAddress);
+ * console.log(encoded); // "st:stellar:abc123...def456"
+ *
+ * // Share this encoded string with senders
+ * publishMetaAddress(encoded);
+ * ```
  */
 export function encodeMetaAddress(meta: StealthMetaAddress): string {
   if (meta.spendPubKey.length !== 32) {
@@ -86,9 +122,25 @@ export function encodeMetaAddress(meta: StealthMetaAddress): string {
 
 /**
  * Decode a string-encoded stealth meta-address with checksum validation.
- * @param encoded Encoded meta-address string
- * @returns Decoded stealth meta-address
- * @throws InvalidMetaAddress if format or checksum is invalid
+ *
+ * Parses an encoded meta-address string and validates:
+ * - Correct format and prefix
+ * - Valid hex encoding
+ * - Checksum integrity
+ * - Public keys are on curve
+ *
+ * @param encoded - Encoded meta-address string ("st:stellar:...")
+ * @returns Decoded stealth meta-address with public keys
+ * @throws {InvalidMetaAddress} If format, checksum, or keys are invalid
+ *
+ * @example
+ * ```typescript
+ * const encoded = "st:stellar:abc123...def456";
+ * const meta = decodeMetaAddress(encoded);
+ *
+ * // Use for deriving stealth addresses
+ * const stealth = deriveStealthAddress(meta);
+ * ```
  */
 export function decodeMetaAddress(encoded: string): StealthMetaAddress {
   if (!encoded.startsWith('st:stellar:')) {

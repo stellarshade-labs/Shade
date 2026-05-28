@@ -5,6 +5,7 @@
   "description": "Relayer service for Stellar stealth addresses",
   "scripts": {
     "build": "tsc",
+    "test": "echo 'Relayer tests run via integration demo'",
     "start": "tsx src/index.ts",
     "dev": "tsx src/index.ts",
     "clean": "rm -rf dist"

@@ -19,6 +19,7 @@ import axios from 'axios';
 interface Announcement {
   ephemeralPubKey: Uint8Array;
   viewTag: number;
+  stealthAddress: string;
   encryptedAmount?: string;
   ledger: number;
 }
@@ -34,7 +35,7 @@ async function fetchAnnouncementsForAddress(
     ? 'http://localhost:8000/soroban/rpc'
     : 'https://soroban-testnet.stellar.org';
 
-  const server = new StellarSdk.SorobanRpc.Server(rpcUrl);
+  const server = new StellarSdk.rpc.Server(rpcUrl);
   const contract = new StellarSdk.Contract(contractId);
 
   try {
@@ -54,16 +55,21 @@ async function fetchAnnouncementsForAddress(
       .build()
     );
 
-    if (StellarSdk.SorobanRpc.Api.isSimulationSuccess(sim)) {
+    if (StellarSdk.rpc.Api.isSimulationSuccess(sim)) {
       const result = sim.result?.retval;
       if (result) {
         const decoded = StellarSdk.scValToNative(result) as any[];
-        const announcements: Announcement[] = decoded.map(ann => ({
-          ephemeralPubKey: new Uint8Array(ann.ephemeral_pub_key),
-          viewTag: ann.view_tag,
-          encryptedAmount: ann.encrypted_amount,
-          ledger: Number(ann.ledger || 0)
-        }));
+        const announcements: Announcement[] = decoded.map(ann => {
+          const stealthPk = new Uint8Array(ann.stealth_pk);
+          const announcementStealthAddress = StrKey.encodeEd25519PublicKey(Buffer.from(stealthPk));
+          return {
+            ephemeralPubKey: new Uint8Array(ann.ephemeral_pk),
+            viewTag: ann.view_tag,
+            stealthAddress: announcementStealthAddress,
+            encryptedAmount: ann.encrypted_amount,
+            ledger: Number(ann.sequence || 0)
+          };
+        });
 
         const stealthAddresses = scanAnnouncements(
           viewPrivKey,
@@ -71,14 +77,15 @@ async function fetchAnnouncementsForAddress(
           announcements.map(a => ({
             ephemeralPubKey: a.ephemeralPubKey,
             viewTag: a.viewTag,
-            encryptedAmount: a.encryptedAmount
+            stealthAddress: a.stealthAddress
           }))
         );
 
-        const targetPubKey = StrKey.decodeEd25519PublicKey(stealthAddress);
         for (const stealth of stealthAddresses) {
-          if (Buffer.from(stealth.stealthPubKey).equals(Buffer.from(targetPubKey))) {
-            return stealth.ephemeralPubKey;
+          if (stealth.address === stealthAddress) {
+            // Find the corresponding announcement to get the ephemeral key
+            const announcement = announcements.find(a => a.stealthAddress === stealthAddress);
+            return announcement?.ephemeralPubKey || null;
           }
         }
       }
@@ -162,7 +169,7 @@ export const withdrawCommand = new Command('withdraw')
         ephemeralPubKey
       );
 
-      const stealthKeypair = Keypair.fromRawEd25519Seed(stealthPrivKey);
+      const stealthKeypair = Keypair.fromRawEd25519Seed(Buffer.from(stealthPrivKey));
 
       const horizonUrl = network === 'local'
         ? 'http://localhost:8000'

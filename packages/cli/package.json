@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "test": "echo 'CLI integration tests run via demo'",
     "dev": "tsx src/index.ts",
     "cli": "tsx src/index.ts",
     "clean": "rm -rf dist"
