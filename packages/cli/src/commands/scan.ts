@@ -3,6 +3,7 @@ import { scanAnnouncements } from '@stealth/crypto';
 import { Horizon, StrKey, Networks } from '@stellar/stellar-sdk';
 import { loadKeystore } from '../utils/keystore.js';
 import { getContractAddress } from '../utils/config.js';
+import { withRetry, formatError } from '../utils/network.js';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import * as StellarSdk from '@stellar/stellar-sdk';
@@ -95,10 +96,15 @@ export const scanCommand = new Command('scan')
   .description('Scan for stealth addresses you own')
   .option('--network <network>', 'Network to use', 'local')
   .option('--since-ledger <ledger>', 'Only scan announcements since this ledger', parseInt)
+  .option('--verbose', 'Show detailed scan progress')
   .action(async (options) => {
     try {
       const network = options.network as 'local' | 'testnet';
-      const keystore = await loadKeystore();
+      const keystore = await loadKeystore().catch(() => {
+        console.error(chalk.red('Error: Missing keystore'));
+        console.error(chalk.gray("  Run 'stealth keygen' first to create keys"));
+        process.exit(1);
+      });
 
       if (!keystore.viewPrivateKey) {
         console.error(chalk.red('Error: No view private key in keystore'));

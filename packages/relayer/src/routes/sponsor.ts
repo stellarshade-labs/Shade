@@ -8,6 +8,8 @@ import {
   Account,
   StrKey
 } from '@stellar/stellar-sdk';
+import { validateStellarAddress, validateAmount } from '../utils/validation.js';
+import { logger } from '../utils/logger.js';
 
 let relayerKeypair: Keypair | null = null;
 
@@ -16,15 +18,34 @@ export function initSponsorRoute(keypair: Keypair) {
 }
 
 export async function handleSponsor(req: Request, res: Response) {
+  const requestId = (req as any).requestId;
+
   try {
     if (!relayerKeypair) {
+      logger.error('Relayer not initialized', {}, requestId);
       return res.status(500).json({ error: 'Relayer not initialized' });
     }
 
-    const { address } = req.body;
+    const { address, amount } = req.body;
 
-    if (!address || !StrKey.isValidEd25519PublicKey(address)) {
-      return res.status(400).json({ error: 'Invalid Stellar address' });
+    if (!validateStellarAddress(address)) {
+      logger.warn('Invalid address format', { address }, requestId);
+      return res.status(400).json({
+        error: 'Invalid Stellar address format',
+        expected: 'G... format (56 characters)'
+      });
+    }
+
+    if (amount !== undefined) {
+      const validAmount = validateAmount(amount);
+      if (!validAmount) {
+        logger.warn('Invalid amount', { amount }, requestId);
+        return res.status(400).json({
+          error: 'Invalid amount',
+          minimum: 1,
+          maximum: 1000000
+        });
+      }
     }
 
     const network = process.env.NETWORK || 'local';
@@ -49,10 +70,11 @@ export async function handleSponsor(req: Request, res: Response) {
     }
 
     if (accountExists) {
+      logger.info('Account already exists', { address }, requestId);
       return res.status(400).json({ error: 'Account already exists' });
     }
 
-    console.log(`[Sponsor] Creating sponsored account: ${address}`);
+    logger.info('Creating sponsored account', { address }, requestId);
 
     const relayerAccount = await server.loadAccount(relayerKeypair.publicKey());
 
@@ -77,7 +99,10 @@ export async function handleSponsor(req: Request, res: Response) {
 
     const response = await server.submitTransaction(transaction);
 
-    console.log(`[Sponsor] Account created: ${response.hash}`);
+    logger.info('Account sponsored successfully', {
+      address,
+      txHash: response.hash
+    }, requestId);
 
     return res.json({
       txHash: response.hash,
@@ -86,12 +111,17 @@ export async function handleSponsor(req: Request, res: Response) {
     });
 
   } catch (error: any) {
-    console.error('[Sponsor] Error:', error.message);
+    logger.error('Sponsor request failed', {
+      error: error.message,
+      stack: error.stack
+    }, requestId);
 
     if (error.response?.data?.extras?.result_codes) {
+      const codes = error.response.data.extras.result_codes;
       return res.status(400).json({
         error: 'Transaction failed',
-        codes: error.response.data.extras.result_codes
+        codes,
+        message: codes.transaction || codes.operations?.join(', ')
       });
     }
 

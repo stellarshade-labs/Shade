@@ -6,7 +6,9 @@
   "description": "Stealth address SDK for Stellar — DKSAP on ed25519",
   "scripts": {
     "test": "npm run test --workspaces --if-present",
-    "build": "npm run build --workspaces --if-present"
+    "build": "npm run build --workspaces --if-present",
+    "stress-test": "tsx packages/cli/test/stress-test.ts",
+    "relayer:dev": "cd packages/relayer && npm run dev"
   },
   "workspaces": [
     "packages/*"

@@ -1,5 +1,4 @@
-import { deriveStealthAddress as deriveStealthAddressBasic } from './stealth.js';
-import type { StealthMetaAddress, Announcement } from './types.js';
+// Advanced stealth address functions
 import type { StealthDerivation } from './stealth.js';
 import { scalarMult, scalarMultBase, pointAdd } from './ed25519.js';
 import { hashToScalar, viewTag } from './hash.js';
@@ -24,7 +23,7 @@ export function encryptAmount(amount: number, sharedSecret: Uint8Array): Uint8Ar
 
   const encrypted = Buffer.allocUnsafe(8);
   for (let i = 0; i < 8; i++) {
-    encrypted[i] = amountBytes[i] ^ key[i];
+    encrypted[i] = amountBytes[i]! ^ key[i]!;
   }
 
   return encrypted;
@@ -35,7 +34,7 @@ export function decryptAmount(encrypted: Uint8Array, sharedSecret: Uint8Array): 
   const decrypted = Buffer.allocUnsafe(8);
 
   for (let i = 0; i < 8; i++) {
-    decrypted[i] = encrypted[i] ^ key[i];
+    decrypted[i] = encrypted[i]! ^ key[i]!;
   }
 
   return decrypted.readDoubleLE(0);
@@ -45,7 +44,7 @@ export interface StealthDerivationWithSecret extends StealthDerivation {
   sharedSecret: Uint8Array;
 }
 
-export function deriveStealthAddress(
+export function deriveStealthAddressWithSecret(
   spendPubKey: Uint8Array,
   viewPubKey: Uint8Array,
   ephemeralPrivKey: Uint8Array

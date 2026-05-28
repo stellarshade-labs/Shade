@@ -1,15 +1,23 @@
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToNumberLE, numberToBytesLE } from '@noble/curves/abstract/utils';
 import { L } from './ed25519.js';
+import { InvalidScalar } from './errors.js';
 
 /**
  * Hash data to a scalar value modulo curve order L.
  * @param data Input data to hash
  * @returns 32-byte scalar (little-endian, reduced mod L)
+ * @throws InvalidScalar if hash produces zero scalar
  */
 export function hashToScalar(data: Uint8Array): Uint8Array {
   const hash = sha256(data);
   const scalar = bytesToNumberLE(hash) % L;
+
+  // In the extremely unlikely event the hash produces zero mod L
+  if (scalar === 0n) {
+    throw new InvalidScalar('Hash produced zero scalar');
+  }
+
   return numberToBytesLE(scalar, 32);
 }
 

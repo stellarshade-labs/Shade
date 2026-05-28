@@ -1,9 +1,10 @@
 import { randomBytes } from '@noble/hashes/utils';
 import { bytesToNumberLE, numberToBytesLE } from '@noble/curves/abstract/utils';
 import type { StealthMetaAddress } from './types.js';
-import { L, scalarMultBase, scalarMult, pointAdd } from './ed25519.js';
+import { L, scalarMultBase, scalarMult, pointAdd, validatePoint } from './ed25519.js';
 import { hashToScalar, viewTag } from './hash.js';
 import { encodePublicKey } from './stellar-keys.js';
+import { InvalidPublicKey } from './errors.js';
 
 /**
  * Stealth address derivation result.
@@ -36,12 +37,19 @@ export interface StealthDerivation {
  * @returns Derived stealth address and announcement data
  */
 export function deriveStealthAddress(metaAddr: StealthMetaAddress): StealthDerivation {
+  if (!metaAddr) {
+    throw new InvalidPublicKey('Meta-address is required');
+  }
   if (metaAddr.spendPubKey.length !== 32) {
-    throw new Error('Invalid spend public key length');
+    throw new InvalidPublicKey('Invalid spend public key length');
   }
   if (metaAddr.viewPubKey.length !== 32) {
-    throw new Error('Invalid view public key length');
+    throw new InvalidPublicKey('Invalid view public key length');
   }
+
+  // Validate both keys are on curve
+  validatePoint(metaAddr.spendPubKey);
+  validatePoint(metaAddr.viewPubKey);
 
   // Step 1: Generate random ephemeral scalar r
   const r = generateRandomScalar();

@@ -1,4 +1,5 @@
 export * from './types.js';
+export * from './errors.js';
 export * from './ed25519.js';
 export * from './hash.js';
 export * from './keys.js';

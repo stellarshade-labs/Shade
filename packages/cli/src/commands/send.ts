@@ -1,17 +1,20 @@
 import { Command } from 'commander';
-import { deriveStealthAddress, encryptAmount } from '@stealth/crypto';
+import { deriveStealthAddressWithSecret, encryptAmount } from '@stealth/crypto';
 import {
   Keypair,
   Networks,
   TransactionBuilder,
   Operation,
   Asset,
-  Account,
   Horizon,
-  StrKey
+  StrKey,
+  Contract,
+  nativeToScVal,
+  scValToNative
 } from '@stellar/stellar-sdk';
-import * as StellarSdk from '@stellar/stellar-sdk';
+import { Server as SorobanServer } from '@stellar/stellar-sdk/lib/soroban';
 import { getContractAddress } from '../utils/config.js';
+import { withRetry, formatError, validateMetaAddress } from '../utils/network.js';
 import chalk from 'chalk';
 import { randomBytes } from 'crypto';
 
@@ -27,8 +30,8 @@ async function announceToContract(
     ? 'http://localhost:8000/soroban/rpc'
     : 'https://soroban-testnet.stellar.org';
 
-  const server = new StellarSdk.SorobanRpc.Server(rpcUrl);
-  const contract = new StellarSdk.Contract(contractId);
+  const server = new SorobanServer(rpcUrl);
+  const contract = new Contract(contractId);
 
   const networkPassphrase = network === 'local'
     ? Networks.STANDALONE
@@ -42,11 +45,11 @@ async function announceToContract(
   })
   .addOperation(contract.call(
     'announce',
-    StellarSdk.nativeToScVal(Buffer.from(ephemeralPubKey)),
-    StellarSdk.nativeToScVal(viewTag, { type: 'u32' }),
+    nativeToScVal(Buffer.from(ephemeralPubKey)),
+    nativeToScVal(viewTag, { type: 'u32' }),
     encryptedAmount
-      ? StellarSdk.nativeToScVal(Buffer.from(encryptedAmount))
-      : StellarSdk.nativeToScVal(null)
+      ? nativeToScVal(Buffer.from(encryptedAmount))
+      : nativeToScVal(null)
   ))
   .setTimeout(30)
   .build();
@@ -76,23 +79,20 @@ export const sendCommand = new Command('send')
   .option('--from <secret>', 'Sender secret key')
   .option('--relay <url>', 'Relay URL for sponsored creation')
   .option('--encrypt-amount', 'Encrypt the amount in the announcement')
+  .option('--verbose', 'Show detailed RPC requests and transaction details')
   .action(async (metaAddress: string, amount: string, options) => {
     try {
       const network = options.network as 'local' | 'testnet';
 
-      const parts = metaAddress.split(':');
-      if (parts.length !== 2) {
-        console.error(chalk.red('Error: Invalid meta-address format (expected spend_key:view_key)'));
+      const metaKeys = validateMetaAddress(metaAddress);
+      if (!metaKeys) {
+        console.error(chalk.red('Error: Invalid meta-address format'));
+        console.error(chalk.gray('  Expected format: <64-hex-chars>:<64-hex-chars>'));
+        console.error(chalk.gray('  Example: a1b2c3...d4e5:f6g7h8...i9j0'));
         process.exit(1);
       }
 
-      const spendPubKey = Buffer.from(parts[0], 'hex');
-      const viewPubKey = Buffer.from(parts[1], 'hex');
-
-      if (spendPubKey.length !== 32 || viewPubKey.length !== 32) {
-        console.error(chalk.red('Error: Invalid public key length'));
-        process.exit(1);
-      }
+      const { spendPubKey, viewPubKey } = metaKeys;
 
       const xlmAmount = parseFloat(amount);
       if (isNaN(xlmAmount) || xlmAmount <= 0) {
@@ -111,13 +111,18 @@ export const sendCommand = new Command('send')
       console.log(chalk.cyan('Deriving stealth address...'));
 
       const ephemeralPrivKey = randomBytes(32);
-      const stealth = deriveStealthAddress(
+      const stealth = deriveStealthAddressWithSecret(
         spendPubKey,
         viewPubKey,
         ephemeralPrivKey
       );
 
-      const stealthAddress = StrKey.encodeEd25519PublicKey(stealth.stealthPubKey);
+      if (options.verbose) {
+        console.log(chalk.gray('  Ephemeral public key:', Buffer.from(stealth.ephemeralPubKey).toString('hex')));
+        console.log(chalk.gray('  Shared secret:', Buffer.from(stealth.sharedSecret).toString('hex')));
+      }
+
+      const stealthAddress = stealth.stealthAddress;
       console.log(chalk.gray(`  Stealth address: ${stealthAddress}`));
       console.log(chalk.gray(`  View tag: ${stealth.viewTag}`));
 
@@ -132,15 +137,32 @@ export const sendCommand = new Command('send')
 
       let stealthAccountExists = false;
       try {
-        await server.loadAccount(stealthAddress);
+        if (options.verbose) {
+          console.log(chalk.gray(`  Checking if stealth account exists...`));
+        }
+        await withRetry(
+          () => server.loadAccount(stealthAddress),
+          'load stealth account',
+          { verbose: options.verbose }
+        );
         stealthAccountExists = true;
+        if (options.verbose) {
+          console.log(chalk.gray(`  Account exists`));
+        }
       } catch (error: any) {
         if (error?.response?.status !== 404) {
           throw error;
         }
+        if (options.verbose) {
+          console.log(chalk.gray(`  Account does not exist`));
+        }
       }
 
-      const senderAccount = await server.loadAccount(senderKeypair.publicKey());
+      const senderAccount = await withRetry(
+        () => server.loadAccount(senderKeypair.publicKey()),
+        'load sender account',
+        { verbose: options.verbose }
+      );
       let transaction: any;
 
       if (stealthAccountExists) {
@@ -161,16 +183,22 @@ export const sendCommand = new Command('send')
         if (options.relay) {
           console.log(chalk.cyan('Creating sponsored stealth account via relay...'));
 
-          const response = await fetch(`${options.relay}/sponsor`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ address: stealthAddress })
-          });
-
-          if (!response.ok) {
-            const error = await response.json();
-            throw new Error(`Relay error: ${error.error}`);
-          }
+          const response = await withRetry(
+            async () => {
+              const res = await fetch(`${options.relay}/sponsor`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ address: stealthAddress })
+              });
+              if (!res.ok) {
+                const error = await res.json();
+                throw new Error(`Relay error: ${error.error}`);
+              }
+              return res;
+            },
+            'sponsor account via relay',
+            { verbose: options.verbose }
+          );
 
           console.log(chalk.gray('  Account sponsored successfully'));
 
@@ -205,8 +233,17 @@ export const sendCommand = new Command('send')
 
       transaction.sign(senderKeypair);
 
+      if (options.verbose) {
+        console.log(chalk.gray(`  Transaction hash: ${transaction.hash().toString('hex')}`));
+        console.log(chalk.gray(`  Fee: ${transaction.fee} stroops`));
+      }
+
       console.log(chalk.cyan('Submitting transaction...'));
-      const result = await server.submitTransaction(transaction);
+      const result = await withRetry(
+        () => server.submitTransaction(transaction),
+        'submit transaction',
+        { verbose: options.verbose }
+      );
 
       console.log(chalk.green(`✓ Sent ${xlmAmount} XLM to stealth address`));
       console.log(chalk.gray(`  Transaction: ${result.hash}`));
@@ -234,7 +271,11 @@ export const sendCommand = new Command('send')
       console.log(chalk.green('✓ Payment sent and announced successfully'));
 
     } catch (error: any) {
-      console.error(chalk.red('Error sending:'), error.message);
+      const formattedError = formatError(error);
+      console.error(chalk.red('Error sending:'), formattedError);
+      if (options.verbose && error.stack) {
+        console.error(chalk.gray(error.stack));
+      }
       process.exit(1);
     }
   });
