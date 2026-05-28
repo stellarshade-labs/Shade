@@ -40,7 +40,7 @@ describe('Scan Performance Benchmarks', () => {
     }
   });
 
-  it('should scan 10,000 announcements with view tag optimization in < 1 second', () => {
+  it('should scan 10,000 announcements with view tag optimization in reasonable time', () => {
     const allAnnouncements: Announcement[] = [];
 
     // Distribute real announcements evenly throughout
@@ -62,7 +62,8 @@ describe('Scan Performance Benchmarks', () => {
     const viewTagStart = performance.now();
     let tagMatchCount = 0;
     for (const announcement of allAnnouncements) {
-      if (checkViewTag(viewPrivKey, announcement.ephemeralPubKey, announcement.viewTag)) {
+      const result = checkViewTag(viewPrivKey, announcement.ephemeralPubKey, announcement.viewTag);
+      if (result.matches) {
         tagMatchCount++;
       }
     }

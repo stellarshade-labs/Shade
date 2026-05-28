@@ -1,18 +1,35 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Request, Response } from 'express';
-import { handleSponsor } from './sponsor';
-import { Keypair, Account, TransactionBuilder, Operation, Networks } from '@stellar/stellar-sdk';
+import { handleSponsor, initSponsorRoute } from './sponsor';
+import { Keypair } from '@stellar/stellar-sdk';
 
-// Mock Stellar SDK
+const { mockServerInstance } = vi.hoisted(() => ({
+  mockServerInstance: {
+    loadAccount: vi.fn(),
+    submitTransaction: vi.fn()
+  }
+}));
+
 vi.mock('@stellar/stellar-sdk', async () => {
   const actual = await vi.importActual('@stellar/stellar-sdk');
   return {
     ...actual,
     Horizon: {
-      Server: vi.fn().mockImplementation(() => ({
-        loadAccount: vi.fn(),
-        submitTransaction: vi.fn()
-      }))
+      Server: vi.fn().mockImplementation(function() { return mockServerInstance; })
+    },
+    TransactionBuilder: vi.fn().mockImplementation(function() {
+      return {
+        addOperation: vi.fn().mockReturnThis(),
+        setTimeout: vi.fn().mockReturnThis(),
+        build: vi.fn().mockReturnValue({
+          sign: vi.fn()
+        })
+      };
+    }),
+    Operation: {
+      beginSponsoringFutureReserves: vi.fn(),
+      createAccount: vi.fn(),
+      endSponsoringFutureReserves: vi.fn()
     }
   };
 });
@@ -20,25 +37,22 @@ vi.mock('@stellar/stellar-sdk', async () => {
 describe('handleSponsor', () => {
   let mockReq: Partial<Request>;
   let mockRes: Partial<Response>;
-  let mockServer: any;
-  let mockKeypair: any;
+  let mockKeypair: Keypair;
 
   beforeEach(() => {
     vi.clearAllMocks();
 
     mockKeypair = Keypair.random();
+    initSponsorRoute(mockKeypair);
 
-    mockServer = {
-      loadAccount: vi.fn(),
-      submitTransaction: vi.fn()
-    };
+    const validAddress = 'GDXLKEY5TR4IDEV7FZWYFG6MA6M24YDCX5HENQ7DTESBE233EHT6HHGK';
 
     mockReq = {
       body: {
-        stealthAddress: Keypair.random().publicKey(),
-        amount: '10'
-      }
-    };
+        address: validAddress
+      },
+      requestId: 'test-request-id'
+    } as any;
 
     mockRes = {
       status: vi.fn().mockReturnThis(),
@@ -46,145 +60,138 @@ describe('handleSponsor', () => {
     };
   });
 
-  it('should sponsor a valid stealth account', async () => {
-    const mockAccount = new Account(mockKeypair.publicKey(), '100');
-    mockServer.loadAccount.mockResolvedValue(mockAccount);
+  it('should sponsor a new account', async () => {
+    mockServerInstance.loadAccount
+      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockResolvedValueOnce({
+        sequenceNumber: vi.fn().mockReturnValue('100'),
+        accountId: mockKeypair.publicKey()
+      });
 
-    const mockTxResponse = {
+    mockServerInstance.submitTransaction.mockResolvedValue({
       hash: 'test-tx-hash',
       successful: true
-    };
-    mockServer.submitTransaction.mockResolvedValue(mockTxResponse);
+    });
 
-    await handleSponsor(
-      mockReq as Request,
-      mockRes as Response,
-      mockServer,
-      mockKeypair
-    );
+    await handleSponsor(mockReq as Request, mockRes as Response);
 
-    expect(mockServer.loadAccount).toHaveBeenCalledWith(mockKeypair.publicKey());
-    expect(mockServer.submitTransaction).toHaveBeenCalled();
     expect(mockRes.json).toHaveBeenCalledWith({
-      success: true,
       txHash: 'test-tx-hash',
-      sponsor: mockKeypair.publicKey(),
-      message: 'Account sponsored successfully'
+      success: true,
+      sponsored: 'GDXLKEY5TR4IDEV7FZWYFG6MA6M24YDCX5HENQ7DTESBE233EHT6HHGK'
     });
   });
 
-  it('should validate stealth address format', async () => {
-    mockReq.body!.stealthAddress = 'invalid-address';
+  it('should validate address format', async () => {
+    mockReq.body!.address = 'invalid-address';
 
-    await handleSponsor(
-      mockReq as Request,
-      mockRes as Response,
-      mockServer,
-      mockKeypair
-    );
+    await handleSponsor(mockReq as Request, mockRes as Response);
 
     expect(mockRes.status).toHaveBeenCalledWith(400);
     expect(mockRes.json).toHaveBeenCalledWith({
-      error: 'Invalid stealth address format'
-    });
-    expect(mockServer.loadAccount).not.toHaveBeenCalled();
-  });
-
-  it('should validate amount', async () => {
-    mockReq.body!.amount = '-10';
-
-    await handleSponsor(
-      mockReq as Request,
-      mockRes as Response,
-      mockServer,
-      mockKeypair
-    );
-
-    expect(mockRes.status).toHaveBeenCalledWith(400);
-    expect(mockRes.json).toHaveBeenCalledWith({
-      error: 'Invalid amount: must be positive'
+      error: 'Invalid Stellar address format',
+      expected: 'G... format (56 characters)'
     });
   });
 
-  it('should handle missing parameters', async () => {
+  it('should handle missing address', async () => {
     mockReq.body = {};
 
-    await handleSponsor(
-      mockReq as Request,
-      mockRes as Response,
-      mockServer,
-      mockKeypair
-    );
+    await handleSponsor(mockReq as Request, mockRes as Response);
 
     expect(mockRes.status).toHaveBeenCalledWith(400);
     expect(mockRes.json).toHaveBeenCalledWith({
-      error: 'Missing required parameters: stealthAddress, amount'
+      error: 'Invalid Stellar address format',
+      expected: 'G... format (56 characters)'
     });
   });
 
-  it('should handle account load errors', async () => {
-    mockServer.loadAccount.mockRejectedValue(new Error('Account not found'));
+  it('should validate amount if provided', async () => {
+    mockReq.body!.amount = 0.5;
 
-    await handleSponsor(
-      mockReq as Request,
-      mockRes as Response,
-      mockServer,
-      mockKeypair
-    );
+    await handleSponsor(mockReq as Request, mockRes as Response);
 
-    expect(mockRes.status).toHaveBeenCalledWith(500);
+    expect(mockRes.status).toHaveBeenCalledWith(400);
     expect(mockRes.json).toHaveBeenCalledWith({
-      error: 'Failed to load sponsor account'
+      error: 'Invalid amount',
+      minimum: 1,
+      maximum: 1000000
+    });
+  });
+
+  it('should reject if account already exists', async () => {
+    mockServerInstance.loadAccount.mockResolvedValue({});
+
+    await handleSponsor(mockReq as Request, mockRes as Response);
+
+    expect(mockRes.status).toHaveBeenCalledWith(400);
+    expect(mockRes.json).toHaveBeenCalledWith({
+      error: 'Account already exists'
     });
   });
 
   it('should handle transaction submission errors', async () => {
-    const mockAccount = new Account(mockKeypair.publicKey(), '100');
-    mockServer.loadAccount.mockResolvedValue(mockAccount);
-    mockServer.submitTransaction.mockRejectedValue(new Error('Transaction failed'));
+    mockServerInstance.loadAccount
+      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockResolvedValueOnce({
+        sequenceNumber: vi.fn().mockReturnValue('100'),
+        accountId: mockKeypair.publicKey()
+      });
 
-    await handleSponsor(
-      mockReq as Request,
-      mockRes as Response,
-      mockServer,
-      mockKeypair
-    );
+    mockServerInstance.submitTransaction.mockRejectedValue(new Error('Network error'));
+
+    await handleSponsor(mockReq as Request, mockRes as Response);
 
     expect(mockRes.status).toHaveBeenCalledWith(500);
     expect(mockRes.json).toHaveBeenCalledWith({
-      error: 'Failed to submit sponsorship transaction'
+      error: 'Network error'
     });
   });
 
-  it('should handle maximum amount limit', async () => {
-    mockReq.body!.amount = '10000'; // Exceeds typical limit
+  it('should handle transaction result codes', async () => {
+    mockServerInstance.loadAccount
+      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockResolvedValueOnce({
+        sequenceNumber: vi.fn().mockReturnValue('100'),
+        accountId: mockKeypair.publicKey()
+      });
 
-    await handleSponsor(
-      mockReq as Request,
-      mockRes as Response,
-      mockServer,
-      mockKeypair
-    );
+    const error: any = new Error('Transaction failed');
+    error.response = {
+      data: {
+        extras: {
+          result_codes: {
+            transaction: 'tx_failed',
+            operations: ['op_underfunded']
+          }
+        }
+      }
+    };
+    mockServerInstance.submitTransaction.mockRejectedValue(error);
+
+    await handleSponsor(mockReq as Request, mockRes as Response);
 
     expect(mockRes.status).toHaveBeenCalledWith(400);
     expect(mockRes.json).toHaveBeenCalledWith({
-      error: 'Amount exceeds maximum limit'
+      error: 'Transaction failed',
+      codes: {
+        transaction: 'tx_failed',
+        operations: ['op_underfunded']
+      },
+      message: 'tx_failed'
     });
   });
 
-  it('should handle non-numeric amount', async () => {
-    mockReq.body!.amount = 'abc';
+  it('should validate amount upper limit', async () => {
+    mockReq.body!.amount = 2000000;
 
-    await handleSponsor(
-      mockReq as Request,
-      mockRes as Response,
-      mockServer,
-      mockKeypair
-    );
+    await handleSponsor(mockReq as Request, mockRes as Response);
 
     expect(mockRes.status).toHaveBeenCalledWith(400);
     expect(mockRes.json).toHaveBeenCalledWith({
-      error: 'Invalid amount: must be a number'
+      error: 'Invalid amount',
+      minimum: 1,
+      maximum: 1000000
     });
   });
 });

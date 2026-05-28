@@ -42,8 +42,18 @@ export function encryptAmount(amount: number, sharedSecret: Uint8Array): Uint8Ar
  * @param encrypted - The 8-byte encrypted amount
  * @param sharedSecret - The 32-byte shared secret from ECDH
  * @returns The decrypted amount
+ * @throws {Error} If encrypted is not exactly 8 bytes
+ * @throws {Error} If sharedSecret is not exactly 32 bytes
  */
 export function decryptAmount(encrypted: Uint8Array, sharedSecret: Uint8Array): number {
+  // Validate inputs
+  if (encrypted.length !== 8) {
+    throw new Error(`Invalid encrypted amount: expected 8 bytes, got ${encrypted.length}`);
+  }
+  if (sharedSecret.length !== 32) {
+    throw new Error(`Invalid shared secret: expected 32 bytes, got ${sharedSecret.length}`);
+  }
+
   // Create key material
   const keyInput = new Uint8Array(32 + 6);
   keyInput.set(sharedSecret, 0);

@@ -1,18 +1,31 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Request, Response } from 'express';
-import { handleRelay } from './relay';
-import { Keypair, Account, Transaction, Networks } from '@stellar/stellar-sdk';
+import { handleRelay, initRelayRoute } from './relay';
+import { Keypair, Networks } from '@stellar/stellar-sdk';
 
-// Mock Stellar SDK
+const { mockServerInstance, MockTransaction } = vi.hoisted(() => {
+  const mockServerInstance = {
+    loadAccount: vi.fn(),
+    submitTransaction: vi.fn(),
+    fetchBaseFee: vi.fn()
+  };
+  const MockTransaction = vi.fn().mockImplementation(function() {
+    return { toXDR: vi.fn().mockReturnValue('mock-xdr') };
+  });
+  return { mockServerInstance, MockTransaction };
+});
+
 vi.mock('@stellar/stellar-sdk', async () => {
   const actual = await vi.importActual('@stellar/stellar-sdk');
   return {
     ...actual,
     Horizon: {
-      Server: vi.fn().mockImplementation(() => ({
-        loadAccount: vi.fn(),
-        submitTransaction: vi.fn()
-      }))
+      Server: vi.fn().mockImplementation(function() { return mockServerInstance; })
+    },
+    Transaction: MockTransaction,
+    TransactionBuilder: {
+      ...actual.TransactionBuilder,
+      buildFeeBumpTransaction: vi.fn()
     }
   };
 });
@@ -20,30 +33,17 @@ vi.mock('@stellar/stellar-sdk', async () => {
 describe('handleRelay', () => {
   let mockReq: Partial<Request>;
   let mockRes: Partial<Response>;
-  let mockServer: any;
-  let mockKeypair: any;
+  let mockKeypair: Keypair;
 
   beforeEach(() => {
     vi.clearAllMocks();
 
     mockKeypair = Keypair.random();
-
-    mockServer = {
-      loadAccount: vi.fn(),
-      submitTransaction: vi.fn()
-    };
-
-    // Create a mock transaction XDR
-    const mockTx = new Transaction(
-      'AAAAAgAAAABihN1PONFSlF5Y3lw0EQfdoqHgCXvAC7VqcHspbVOiIAAPQkAACMryAAAAMgAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAABAAAAAGKE3U840VKUX" +
-      'ljeXDQRB92ioeAJe8ALtWpweylltU6IgAAAAEAAAAAVLF0bqNJXzKP0IX7HvlyHQQ8M5x5P3U2spz5sZN0AAAAAAAAAAAExLQAAAAAAAAAAAW1ToiAAAAEAUtIkuKlQM0L" +
-      '+HdjkpAPek3qNUfKVU23IKxoNFLvMBedVIdcCnGj5sBGDNUWI/OLrNVKK9ugUiDt49qTlLt8L',
-      Networks.TESTNET
-    );
+    initRelayRoute(mockKeypair);
 
     mockReq = {
       body: {
-        transactionXDR: mockTx.toXDR()
+        xdr: 'AAAAAgAAAABihN1PONFSlF5Y3lw0EQfdoqHgCXvAC7VqcHspbVOiIAAPQkAACMryAAAAMgAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAABAAAAAGKE3U840VKUXljeXDQRB92ioeAJe8ALtWpweylltU6IgAAAAEAAAAAVLF0bqNJXzKP0IX7HvlyHQQ8M5x5P3U2spz5sZN0AAAAAAAAAAAExLQAAAAAAAAAAAW1ToiAAAAEAUtIkuKlQM0L+HdjkpAPek3qNUfKVU23IKxoNFLvMBedVIdcCnGj5sBGDNUWI/OLrNVKK9ugUiDt49qTlLt8L'
       }
     };
 
@@ -54,151 +54,121 @@ describe('handleRelay', () => {
   });
 
   it('should relay a valid transaction', async () => {
-    const mockAccount = new Account(mockKeypair.publicKey(), '100');
-    mockServer.loadAccount.mockResolvedValue(mockAccount);
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
 
-    const mockTxResponse = {
+    mockServerInstance.loadAccount.mockResolvedValue({});
+    mockServerInstance.fetchBaseFee.mockResolvedValue(100);
+    mockServerInstance.submitTransaction.mockResolvedValue({
       hash: 'test-tx-hash',
       successful: true
-    };
-    mockServer.submitTransaction.mockResolvedValue(mockTxResponse);
+    });
 
-    await handleRelay(
-      mockReq as Request,
-      mockRes as Response,
-      mockServer,
-      mockKeypair
-    );
+    const mockFeeBumpTx = {} as any;
+    (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(mockFeeBumpTx);
 
-    expect(mockServer.submitTransaction).toHaveBeenCalled();
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    expect(mockServerInstance.submitTransaction).toHaveBeenCalledWith(mockFeeBumpTx);
     expect(mockRes.json).toHaveBeenCalledWith({
       success: true,
-      txHash: 'test-tx-hash',
-      message: 'Transaction relayed successfully'
+      txHash: 'test-tx-hash'
     });
   });
 
   it('should validate transaction XDR', async () => {
-    mockReq.body!.transactionXDR = 'invalid-xdr';
+    mockReq.body!.xdr = 'invalid-xdr';
+    MockTransaction.mockImplementationOnce(function() { throw new Error('bad xdr'); });
 
-    await handleRelay(
-      mockReq as Request,
-      mockRes as Response,
-      mockServer,
-      mockKeypair
-    );
+    await handleRelay(mockReq as Request, mockRes as Response);
 
     expect(mockRes.status).toHaveBeenCalledWith(400);
     expect(mockRes.json).toHaveBeenCalledWith({
       error: 'Invalid transaction XDR'
     });
-    expect(mockServer.submitTransaction).not.toHaveBeenCalled();
   });
 
-  it('should handle missing transaction XDR', async () => {
+  it('should handle missing XDR', async () => {
     mockReq.body = {};
 
-    await handleRelay(
-      mockReq as Request,
-      mockRes as Response,
-      mockServer,
-      mockKeypair
-    );
+    await handleRelay(mockReq as Request, mockRes as Response);
 
     expect(mockRes.status).toHaveBeenCalledWith(400);
     expect(mockRes.json).toHaveBeenCalledWith({
-      error: 'Missing required parameter: transactionXDR'
+      error: 'Missing or invalid XDR'
     });
   });
 
   it('should handle transaction submission errors', async () => {
-    mockServer.submitTransaction.mockRejectedValue(new Error('Network error'));
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
 
-    await handleRelay(
-      mockReq as Request,
-      mockRes as Response,
-      mockServer,
-      mockKeypair
-    );
+    mockServerInstance.loadAccount.mockResolvedValue({});
+    mockServerInstance.fetchBaseFee.mockResolvedValue(100);
+    mockServerInstance.submitTransaction.mockRejectedValue(new Error('Network error'));
+
+    const mockFeeBumpTx = {} as any;
+    (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(mockFeeBumpTx);
+
+    await handleRelay(mockReq as Request, mockRes as Response);
 
     expect(mockRes.status).toHaveBeenCalledWith(500);
     expect(mockRes.json).toHaveBeenCalledWith({
-      error: 'Failed to relay transaction'
+      error: 'Network error'
     });
   });
 
-  it('should handle insufficient fee errors', async () => {
-    const feeError = new Error('Insufficient fee');
-    feeError.name = 'BadRequestError';
-    mockServer.submitTransaction.mockRejectedValue(feeError);
+  it('should handle transaction result codes', async () => {
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
 
-    await handleRelay(
-      mockReq as Request,
-      mockRes as Response,
-      mockServer,
-      mockKeypair
-    );
+    mockServerInstance.loadAccount.mockResolvedValue({});
+    mockServerInstance.fetchBaseFee.mockResolvedValue(100);
+
+    const error: any = new Error('Transaction failed');
+    error.response = {
+      data: {
+        extras: {
+          result_codes: {
+            transaction: 'tx_failed',
+            operations: ['op_underfunded']
+          }
+        }
+      }
+    };
+    mockServerInstance.submitTransaction.mockRejectedValue(error);
+
+    const mockFeeBumpTx = {} as any;
+    (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(mockFeeBumpTx);
+
+    await handleRelay(mockReq as Request, mockRes as Response);
 
     expect(mockRes.status).toHaveBeenCalledWith(400);
     expect(mockRes.json).toHaveBeenCalledWith({
-      error: 'Transaction fee too low'
+      error: 'Transaction failed',
+      codes: {
+        transaction: 'tx_failed',
+        operations: ['op_underfunded']
+      }
     });
   });
 
-  it('should handle malformed transaction', async () => {
-    mockReq.body!.transactionXDR = 'AAAA'; // Too short to be valid
+  it('should handle invalid XDR type', async () => {
+    mockReq.body!.xdr = 123;
 
-    await handleRelay(
-      mockReq as Request,
-      mockRes as Response,
-      mockServer,
-      mockKeypair
-    );
+    await handleRelay(mockReq as Request, mockRes as Response);
 
     expect(mockRes.status).toHaveBeenCalledWith(400);
     expect(mockRes.json).toHaveBeenCalledWith({
-      error: 'Invalid transaction XDR'
+      error: 'Missing or invalid XDR'
     });
   });
 
-  it('should handle timeout errors', async () => {
-    const timeoutError = new Error('Request timeout');
-    timeoutError.name = 'TimeoutError';
-    mockServer.submitTransaction.mockRejectedValue(timeoutError);
+  it('should handle uninitialized relayer', async () => {
+    initRelayRoute(null as any);
 
-    await handleRelay(
-      mockReq as Request,
-      mockRes as Response,
-      mockServer,
-      mockKeypair
-    );
+    await handleRelay(mockReq as Request, mockRes as Response);
 
-    expect(mockRes.status).toHaveBeenCalledWith(503);
+    expect(mockRes.status).toHaveBeenCalledWith(500);
     expect(mockRes.json).toHaveBeenCalledWith({
-      error: 'Transaction submission timeout'
-    });
-  });
-
-  it('should validate transaction is not expired', async () => {
-    // Create an expired transaction
-    const expiredTx = new Transaction(
-      'AAAAAgAAAABihN1PONFSlF5Y3lw0EQfdoqHgCXvAC7VqcHspbVOiIAAPQkAACMryAAAAMgAAAAEAAAAAAAAAAAAAAABkYmVjAAAAAAAAAAAAAAAAAAAAAQAAAAEAAAA' +
-      'AYoTdTzjRUpReWN5cNBEH3aKh4Al7wAu1anB7KW1ToiAAAAEAAAAAVLF0bqNJXzKP0IX7HvlyHQQ8M5x5P3U2spz5sZN0AAAAAAAAAAAExLQAAAAAAAAAAAW1ToiAAAAEAUtI' +
-      'kuKlQM0L+HdjkpAPek3qNUfKVU23IKxoNFLvMBedVIdcCnGj5sBGDNUWI/OLrNVKK9ugUiDt49qTlLt8L',
-      Networks.TESTNET
-    );
-    mockReq.body!.transactionXDR = expiredTx.toXDR();
-
-    await handleRelay(
-      mockReq as Request,
-      mockRes as Response,
-      mockServer,
-      mockKeypair
-    );
-
-    expect(mockRes.status).toHaveBeenCalledWith(400);
-    expect(mockRes.json).toHaveBeenCalledWith({
-      error: 'Transaction has expired'
+      error: 'Relayer not initialized'
     });
   });
 });

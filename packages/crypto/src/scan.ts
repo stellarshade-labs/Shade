@@ -12,15 +12,16 @@ import { encodePublicKey } from './stellar-keys.js';
  * @param viewPrivKey - Receiver's 32-byte view private key
  * @param ephemeralPubKey - 32-byte ephemeral public key from announcement
  * @param expectedTag - Expected view tag from announcement (0-255)
- * @returns True if view tag matches
+ * @returns Object with match result and shared secret if matched
  * @throws {Error} If key lengths are invalid or tag is out of range
  *
  * @example
  * ```typescript
  * // Fast filtering before full verification
- * if (checkViewTag(viewPrivKey, announcement.ephemeralPubKey, announcement.viewTag)) {
- *   // Only do expensive verification for matches
- *   const fullCheck = isMyStealthAddress(...);
+ * const result = checkViewTag(viewPrivKey, announcement.ephemeralPubKey, announcement.viewTag);
+ * if (result.matches) {
+ *   // Use the shared secret for further verification
+ *   const s = hashToScalar(result.sharedSecret);
  * }
  * ```
  */
@@ -28,7 +29,7 @@ export function checkViewTag(
   viewPrivKey: Uint8Array,
   ephemeralPubKey: Uint8Array,
   expectedTag: number
-): boolean {
+): { matches: boolean; sharedSecret?: Uint8Array } {
   if (viewPrivKey.length !== 32) {
     throw new Error('Invalid view private key length');
   }
@@ -44,7 +45,11 @@ export function checkViewTag(
 
   // Extract and compare view tag (first byte of SHA256(S))
   const computedTag = viewTag(S);
-  return computedTag === expectedTag;
+
+  if (computedTag === expectedTag) {
+    return { matches: true, sharedSecret: S };
+  }
+  return { matches: false };
 }
 
 /**
@@ -95,21 +100,19 @@ export function scanAnnouncements(
   const results: StealthAddress[] = [];
 
   // Two-pass scanning for optimization
-  // Pass 1: Quick view tag filtering
-  const tagMatches: Announcement[] = [];
+  // Pass 1: Quick view tag filtering with shared secret caching
+  const tagMatches: Array<{ announcement: Announcement; sharedSecret: Uint8Array }> = [];
   for (const announcement of announcements) {
-    if (checkViewTag(viewPrivKey, announcement.ephemeralPubKey, announcement.viewTag)) {
-      tagMatches.push(announcement);
+    const tagResult = checkViewTag(viewPrivKey, announcement.ephemeralPubKey, announcement.viewTag);
+    if (tagResult.matches && tagResult.sharedSecret) {
+      tagMatches.push({ announcement, sharedSecret: tagResult.sharedSecret });
     }
   }
 
-  // Pass 2: Full verification only on tag matches
-  for (const announcement of tagMatches) {
-    // Compute shared secret S = k_view * R (redundant but necessary for full verification)
-    const S = scalarMult(viewPrivKey, announcement.ephemeralPubKey);
-
-    // Hash to scalar s = SHA256(S) mod L
-    const s = hashToScalar(S);
+  // Pass 2: Full verification only on tag matches (reusing shared secrets)
+  for (const { announcement, sharedSecret } of tagMatches) {
+    // Hash to scalar s = SHA256(S) mod L (using cached shared secret)
+    const s = hashToScalar(sharedSecret);
 
     // Compute expected stealth public key P = K_spend + s*G
     const sG = scalarMultBase(s);

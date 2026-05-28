@@ -87,7 +87,6 @@ class StructuredLogger {
         method: req.method,
         path: req.path,
         headers: req.headers,
-        body: req.body,
         ip: req.ip
       }, requestId);
 

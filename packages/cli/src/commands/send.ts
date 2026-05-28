@@ -14,7 +14,7 @@ import * as StellarSdk from '@stellar/stellar-sdk';
 import { getContractAddress } from '../utils/config.js';
 import { withRetry, formatError, validateMetaAddress } from '../utils/network.js';
 import chalk from 'chalk';
-import { randomBytes } from 'crypto';
+import { randomBytes } from '@noble/hashes/utils';
 
 async function announceToContract(
   contractId: string,
@@ -108,7 +108,7 @@ export const sendCommand = new Command('send')
 
       console.log(chalk.cyan('Deriving stealth address...'));
 
-      const ephemeralPrivKey = randomBytes(32);
+      const ephemeralPrivKey = new Uint8Array(randomBytes(32));
       const stealth = deriveStealthAddressWithSecret(
         spendPubKey,
         viewPubKey,

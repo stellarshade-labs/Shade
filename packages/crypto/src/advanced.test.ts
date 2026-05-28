@@ -122,13 +122,11 @@ describe('encryptAmount', () => {
 });
 
 describe('decryptAmount', () => {
-  it('should handle invalid encrypted data length gracefully', () => {
+  it('should reject invalid encrypted data length', () => {
     const sharedSecret = randomScalar();
     const invalidEncrypted = new Uint8Array(4); // Wrong length
 
-    // Function doesn't validate length, will read out of bounds
-    // This is intentional - caller must ensure correct input
-    expect(() => decryptAmount(invalidEncrypted, sharedSecret)).not.toThrow();
+    expect(() => decryptAmount(invalidEncrypted, sharedSecret)).toThrow('Invalid encrypted amount');
   });
 
   it('should produce consistent results with same inputs', () => {

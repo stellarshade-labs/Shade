@@ -60,9 +60,9 @@ export async function saveKeystore(
       }
     };
 
-    await fs.writeFile(filepath, JSON.stringify(encryptedKeystore, null, 2));
+    await fs.writeFile(filepath, JSON.stringify(encryptedKeystore, null, 2), { mode: 0o600 });
   } else {
-    await fs.writeFile(filepath, JSON.stringify(keystore, null, 2));
+    await fs.writeFile(filepath, JSON.stringify(keystore, null, 2), { mode: 0o600 });
   }
 }
 

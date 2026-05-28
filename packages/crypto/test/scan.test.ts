@@ -60,7 +60,8 @@ describe('scanning announcements', () => {
       derivation.ephemeralPubKey,
       derivation.viewTag
     );
-    expect(correctTag).toBe(true);
+    expect(correctTag.matches).toBe(true);
+    expect(correctTag.sharedSecret).toBeDefined();
 
     // Check wrong view tag
     const wrongTag = checkViewTag(
@@ -68,7 +69,7 @@ describe('scanning announcements', () => {
       derivation.ephemeralPubKey,
       (derivation.viewTag + 1) % 256
     );
-    expect(wrongTag).toBe(false);
+    expect(wrongTag.matches).toBe(false);
   });
 
   it('should handle empty announcement list', () => {
