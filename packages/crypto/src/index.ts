@@ -6,3 +6,5 @@ export * from './stealth.js';
 export * from './scan.js';
 export * from './recover.js';
 export * from './stellar-keys.js';
+export * from './prove.js';
+export * from './advanced.js';

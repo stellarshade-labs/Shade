@@ -21,8 +21,8 @@ pub struct AnnouncementEntry {
     pub sender: Address,
     /// 32-byte ephemeral public key (R = r*G)
     pub ephemeral_pk: BytesN<32>,
-    /// Single byte view tag for fast scanning
-    pub view_tag: u8,
+    /// View tag for fast scanning (0-255, stored as u32)
+    pub view_tag: u32,
     /// 32-byte stealth public key
     pub stealth_pk: BytesN<32>,
     /// Ledger sequence number when announced
@@ -66,8 +66,8 @@ impl RegistryContract {
 
         // Create meta-address entry
         let entry = MetaAddressEntry {
-            spend_pk,
-            view_pk,
+            spend_pk: spend_pk.clone(),
+            view_pk: view_pk.clone(),
             registered_at: sequence,
         };
 
@@ -104,13 +104,13 @@ impl RegistryContract {
     /// * `env` - Soroban environment
     /// * `sender` - Address making the announcement
     /// * `ephemeral_pk` - 32-byte ephemeral public key
-    /// * `view_tag` - Single byte view tag
+    /// * `view_tag` - View tag (0-255)
     /// * `stealth_pk` - 32-byte stealth public key
     pub fn announce(
         env: Env,
         sender: Address,
         ephemeral_pk: BytesN<32>,
-        view_tag: u8,
+        view_tag: u32,
         stealth_pk: BytesN<32>,
     ) {
         // Require authorization from the sender
@@ -205,6 +205,46 @@ impl RegistryContract {
             .get(&DataKey::AnnouncementCount)
             .unwrap_or(0)
     }
+
+    /// Get announcements filtered by view tag.
+    ///
+    /// This enables efficient scanning by filtering announcements
+    /// that match a specific view tag value (0-255).
+    ///
+    /// # Arguments
+    /// * `env` - Soroban environment
+    /// * `view_tag` - View tag to filter by (0-255)
+    ///
+    /// # Returns
+    /// Vector of announcement entries matching the view tag
+    pub fn get_announcements_by_tag(env: Env, view_tag: u32) -> Vec<AnnouncementEntry> {
+        // Get all announcements
+        let announcements: Vec<AnnouncementEntry> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Announcements)
+            .unwrap_or_else(|| vec![&env]);
+
+        // Filter by view tag
+        let mut result = vec![&env];
+        for announcement in announcements.iter() {
+            if announcement.view_tag == view_tag {
+                result.push_back(announcement);
+            }
+        }
+
+        result
+    }
+
+    /// Get the total announcement count.
+    ///
+    /// This is an alias for get_announcement_count for consistency.
+    ///
+    /// # Returns
+    /// Total count of announcements stored
+    pub fn announcement_count(env: Env) -> u64 {
+        Self::get_announcement_count(env)
+    }
 }
 
 #[cfg(test)]
@@ -215,10 +255,10 @@ mod tests {
     #[test]
     fn test_register_and_lookup() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, RegistryContract);
+        let contract_id = env.register(RegistryContract, ());
         let client = RegistryContractClient::new(&env, &contract_id);
 
-        let owner = Address::random(&env);
+        let owner = Address::generate(&env);
         let spend_pk = BytesN::from_array(&env, &[1u8; 32]);
         let view_pk = BytesN::from_array(&env, &[2u8; 32]);
 
@@ -237,13 +277,13 @@ mod tests {
     #[test]
     fn test_announce_and_get() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, RegistryContract);
+        let contract_id = env.register(RegistryContract, ());
         let client = RegistryContractClient::new(&env, &contract_id);
 
-        let sender = Address::random(&env);
+        let sender = Address::generate(&env);
         let ephemeral_pk = BytesN::from_array(&env, &[3u8; 32]);
         let stealth_pk = BytesN::from_array(&env, &[4u8; 32]);
-        let view_tag = 42u8;
+        let view_tag = 42u32;
 
         // Mock authentication
         env.mock_all_auths();
@@ -269,7 +309,7 @@ mod tests {
     #[test]
     fn test_pagination() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, RegistryContract);
+        let contract_id = env.register(RegistryContract, ());
         let client = RegistryContractClient::new(&env, &contract_id);
 
         // Mock authentication
@@ -277,7 +317,7 @@ mod tests {
 
         // Create multiple announcements
         for i in 0..5 {
-            let sender = Address::random(&env);
+            let sender = Address::generate(&env);
             let ephemeral_pk = BytesN::from_array(&env, &[i as u8; 32]);
             let stealth_pk = BytesN::from_array(&env, &[(i + 10) as u8; 32]);
             client.announce(&sender, &ephemeral_pk, &i, &stealth_pk);
@@ -306,10 +346,51 @@ mod tests {
     #[should_panic(expected = "Meta-address not found")]
     fn test_lookup_nonexistent() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, RegistryContract);
+        let contract_id = env.register(RegistryContract, ());
         let client = RegistryContractClient::new(&env, &contract_id);
 
-        let owner = Address::random(&env);
+        let owner = Address::generate(&env);
         client.lookup(&owner);
+    }
+
+    #[test]
+    fn test_get_announcements_by_tag() {
+        let env = Env::default();
+        let contract_id = env.register(RegistryContract, ());
+        let client = RegistryContractClient::new(&env, &contract_id);
+
+        // Mock authentication
+        env.mock_all_auths();
+
+        // Create announcements with different view tags
+        for i in 0..10 {
+            let sender = Address::generate(&env);
+            let ephemeral_pk = BytesN::from_array(&env, &[i as u8; 32]);
+            let stealth_pk = BytesN::from_array(&env, &[(i + 20) as u8; 32]);
+            let view_tag = (i % 3) as u32; // Tags will be 0, 1, 2
+            client.announce(&sender, &ephemeral_pk, &view_tag, &stealth_pk);
+        }
+
+        // Get announcements with tag 0 (should be indices 0, 3, 6, 9)
+        let tag0_announcements = client.get_announcements_by_tag(&0);
+        assert_eq!(tag0_announcements.len(), 4);
+
+        // Get announcements with tag 1 (should be indices 1, 4, 7)
+        let tag1_announcements = client.get_announcements_by_tag(&1);
+        assert_eq!(tag1_announcements.len(), 3);
+
+        // Get announcements with tag 2 (should be indices 2, 5, 8)
+        let tag2_announcements = client.get_announcements_by_tag(&2);
+        assert_eq!(tag2_announcements.len(), 3);
+
+        // Get announcements with non-existent tag
+        let tag99_announcements = client.get_announcements_by_tag(&99);
+        assert_eq!(tag99_announcements.len(), 0);
+
+        // Verify announcement_count alias
+        let count1 = client.get_announcement_count();
+        let count2 = client.announcement_count();
+        assert_eq!(count1, count2);
+        assert_eq!(count1, 10);
     }
 }

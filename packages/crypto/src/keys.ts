@@ -1,4 +1,3 @@
-import { ed25519 } from '@noble/curves/ed25519';
 import { randomBytes } from '@noble/hashes/utils';
 import { bytesToNumberLE, numberToBytesLE } from '@noble/curves/abstract/utils';
 import type { StealthKeys, StealthMetaAddress } from './types.js';

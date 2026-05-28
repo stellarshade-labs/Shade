@@ -38,20 +38,36 @@ describe('ed25519 primitives', () => {
   });
 
   it('should add scalars modulo L correctly', () => {
-    // Test (L-1) + 2 = 1 (mod L)
+    // Test a simple case: 5 + 7 = 12 (mod L)
+    const five = new Uint8Array(32);
+    five[0] = 5;
+
+    const seven = new Uint8Array(32);
+    seven[0] = 7;
+
+    const result = scalarAdd(five, seven);
+    const expected = new Uint8Array(32);
+    expected[0] = 12;
+
+    expect(bytesToHex(result)).toBe(bytesToHex(expected));
+
+    // Test wrap-around: (L-1) + 2 should equal 1 mod L
+    // L = 2^252 + 27742317777372353535851937790883648493
+    // In little-endian hex: ecd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010
+    const lBytes = hexToBytes('ecd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010');
+
+    // Compute L-1 by subtracting 1 from L
     const lMinus1 = new Uint8Array(32);
-    // L-1 in little-endian
-    const lMinus1Hex = 'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f';
-    const lMinus1Bytes = hexToBytes(lMinus1Hex);
+    lMinus1.set(hexToBytes('ebd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010'));
 
     const two = new Uint8Array(32);
     two[0] = 2;
 
-    const result = scalarAdd(lMinus1Bytes, two);
-    const expected = new Uint8Array(32);
-    expected[0] = 1;
+    const wrapResult = scalarAdd(lMinus1, two);
+    const wrapExpected = new Uint8Array(32);
+    wrapExpected[0] = 1;
 
-    expect(bytesToHex(result)).toBe(bytesToHex(expected));
+    expect(bytesToHex(wrapResult)).toBe(bytesToHex(wrapExpected));
   });
 
   it('should handle identity element correctly', () => {

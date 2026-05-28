@@ -31,7 +31,14 @@ export function pointAdd(p1: Uint8Array, p2: Uint8Array): Uint8Array {
 export function scalarMultBase(scalar: Uint8Array): Uint8Array {
   if (scalar.length !== 32) throw new Error('Invalid scalar length');
 
-  const s = bytesToNumberLE(scalar);
+  // Reduce scalar modulo L
+  const s = bytesToNumberLE(scalar) % L;
+
+  // Handle zero scalar case
+  if (s === 0n) {
+    return ed25519.ExtendedPoint.ZERO.toRawBytes();
+  }
+
   const result = ed25519.ExtendedPoint.BASE.multiply(s);
 
   return result.toRawBytes();
@@ -47,7 +54,14 @@ export function scalarMult(scalar: Uint8Array, point: Uint8Array): Uint8Array {
   if (scalar.length !== 32) throw new Error('Invalid scalar length');
   if (point.length !== 32) throw new Error('Invalid point length');
 
-  const s = bytesToNumberLE(scalar);
+  // Reduce scalar modulo L
+  const s = bytesToNumberLE(scalar) % L;
+
+  // Handle zero scalar case
+  if (s === 0n) {
+    return ed25519.ExtendedPoint.ZERO.toRawBytes();
+  }
+
   const p = ed25519.ExtendedPoint.fromHex(point);
   const result = p.multiply(s);
 

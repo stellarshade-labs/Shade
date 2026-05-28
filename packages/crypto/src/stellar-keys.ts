@@ -12,7 +12,7 @@ const VERSION_BYTE_PUBLIC_KEY = 6 << 3; // G addresses
 function crc16XModem(data: Uint8Array): number {
   let crc = 0x0000;
   for (let i = 0; i < data.length; i++) {
-    crc ^= data[i] << 8;
+    crc ^= data[i]! << 8;
     for (let j = 0; j < 8; j++) {
       if (crc & 0x8000) {
         crc = (crc << 1) ^ 0x1021;
@@ -33,7 +33,7 @@ function base32Encode(data: Uint8Array): string {
   let output = '';
 
   for (let i = 0; i < data.length; i++) {
-    value = (value << 8) | data[i];
+    value = (value << 8) | data[i]!;
     bits += 8;
 
     while (bits >= 5) {
@@ -58,7 +58,7 @@ function base32Decode(str: string): Uint8Array {
   let value = 0;
 
   for (let i = 0; i < str.length; i++) {
-    const idx = ALPHABET.indexOf(str[i]);
+    const idx = ALPHABET.indexOf(str[i]!);
     if (idx === -1) {
       throw new Error(`Invalid base32 character: ${str[i]}`);
     }
@@ -116,13 +116,13 @@ export function decodePublicKey(address: string): Uint8Array {
     throw new Error('Invalid Stellar address: incorrect length');
   }
 
-  const versionByte = decoded[0];
+  const versionByte = decoded[0]!;
   if (versionByte !== VERSION_BYTE_PUBLIC_KEY) {
     throw new Error('Invalid Stellar address: wrong version byte');
   }
 
   const versionedPayload = decoded.slice(0, 33);
-  const providedChecksum = (decoded[34] << 8) | decoded[33];
+  const providedChecksum = (decoded[34]! << 8) | decoded[33]!;
   const calculatedChecksum = crc16XModem(versionedPayload);
 
   if (providedChecksum !== calculatedChecksum) {

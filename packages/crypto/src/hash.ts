@@ -23,5 +23,5 @@ export function viewTag(sharedSecret: Uint8Array): number {
     throw new Error('Invalid shared secret length');
   }
   const hash = sha256(sharedSecret);
-  return hash[0];
+  return hash[0]!;
 }

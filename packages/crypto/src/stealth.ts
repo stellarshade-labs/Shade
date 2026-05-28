@@ -75,6 +75,23 @@ export function deriveStealthAddress(metaAddr: StealthMetaAddress): StealthDeriv
 }
 
 /**
+ * Compute a stealth address from spend and view public keys.
+ *
+ * Convenience function that creates a meta-address and derives
+ * a stealth address from it.
+ *
+ * @param spendPubKey Receiver's spend public key
+ * @param viewPubKey Receiver's view public key
+ * @returns Derived stealth address and announcement data
+ */
+export function computeStealthAddress(
+  spendPubKey: Uint8Array,
+  viewPubKey: Uint8Array
+): StealthDerivation {
+  return deriveStealthAddress({ spendPubKey, viewPubKey });
+}
+
+/**
  * Generate a random scalar reduced modulo L.
  * @returns 32-byte scalar (little-endian, reduced mod L)
  */
