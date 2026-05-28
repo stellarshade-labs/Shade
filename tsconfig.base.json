@@ -25,7 +25,8 @@
     "paths": {
       "@stealth/crypto": ["./packages/crypto/src"],
       "@stealth/cli": ["./packages/cli/src"],
-      "@stealth/relayer": ["./packages/relayer/src"]
+      "@stealth/relayer": ["./packages/relayer/src"],
+      "@stealth/sdk": ["./packages/sdk/src"]
     }
   },
   "exclude": ["node_modules", "dist", "*.config.js", "*.config.ts"]

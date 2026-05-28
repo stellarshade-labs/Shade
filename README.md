@@ -80,6 +80,35 @@ The demo will:
 8. Bob withdraws USDC via relayer (fee-bump for privacy)
 9. Verifies no on-chain link between Bob and stealth addresses
 
+## SDK Usage
+
+```typescript
+import { StealthClient } from '@stealth/sdk';
+
+const client = new StealthClient({ network: 'local', contractId: 'CXXX...' });
+
+// Generate keys (no network needed)
+const bobKeys = StealthClient.keygen();
+// bobKeys.metaAddress → "st:stellar:..." (share publicly)
+
+// Alice sends 100 XLM to Bob's stealth address
+const receipt = await client.send(bobKeys.metaAddress, 100, aliceSecret);
+// receipt.stealthAddress, receipt.txHash
+
+// Bob scans for received payments
+const payments = await client.scan(bobKeys);
+// [{ stealthAddress, amount: 100, token: "CXLM..." }]
+
+// Bob withdraws to his real address
+const result = await client.withdraw(payments[0].stealthAddress, bobPublicKey, {
+  keys: bobKeys,
+  feePayer: feePayerSecret,           // someone pays the ~0.01 XLM tx fee
+  relay: 'http://localhost:3000',      // optional: relayer pays for privacy
+});
+```
+
+That's it. No DKSAP math, no Soroban transactions, no message serialization.
+
 ## CLI Commands
 
 ```bash

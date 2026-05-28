@@ -1,0 +1,41 @@
+{
+  "name": "@stealth/sdk",
+  "version": "0.0.1",
+  "description": "High-level SDK for stealth payments on Stellar",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "keywords": [
+    "stellar",
+    "stealth",
+    "privacy",
+    "dksap",
+    "sdk"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@stealth/crypto": "*",
+    "@stellar/stellar-sdk": "^15.1.0",
+    "@noble/hashes": "^1.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.2"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT"
+}
