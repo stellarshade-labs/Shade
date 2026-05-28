@@ -1,4 +1,5 @@
 import express from 'express';
+import cors from 'cors';
 import { Keypair, Horizon } from '@stellar/stellar-sdk';
 import { initRelayRoute, handleRelay } from './routes/relay.js';
 import { initSponsorRoute, handleSponsor } from './routes/sponsor.js';
@@ -9,6 +10,16 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const app = express();
+
+// CORS configuration
+const corsOptions = {
+  origin: process.env.CORS_ORIGIN || '*',
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type', 'X-Requested-With'],
+  maxAge: 86400 // 24 hours
+};
+app.use(cors(corsOptions));
+
 app.use(express.json());
 
 const rateLimiter = new RateLimiter(10, 10, 60000);
@@ -33,7 +44,6 @@ async function initRelayer() {
         publicKey: keypair.publicKey(),
         message: 'Set RELAYER_SECRET env var to persist this keypair'
       });
-      console.log(`[Relayer] Secret: ${keypair.secret()}`);
     }
 
     const horizonUrl = NETWORK === 'local'

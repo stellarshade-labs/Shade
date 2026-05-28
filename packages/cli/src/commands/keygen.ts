@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { generateKeys } from '@stealth/crypto';
+import { generateMetaAddress, encodeMetaAddress } from '@stealth/crypto';
 import { saveKeystore } from '../utils/keystore.js';
 import chalk from 'chalk';
 import path from 'path';
@@ -12,20 +12,19 @@ export const keygenCommand = new Command('keygen')
     try {
       console.log(chalk.cyan('Generating stealth keys...'));
 
-      const keys = generateKeys();
-
-      const metaAddress = `${Buffer.from(keys.spendPublicKey).toString('hex')}:${Buffer.from(keys.viewPublicKey).toString('hex')}`;
+      const keys = generateMetaAddress();
+      const encoded = encodeMetaAddress(keys.metaAddress);
 
       await saveKeystore(options.keystore, {
-        spendPublicKey: Buffer.from(keys.spendPublicKey).toString('hex'),
-        spendPrivateKey: Buffer.from(keys.spendPrivateKey).toString('hex'),
-        viewPublicKey: Buffer.from(keys.viewPublicKey).toString('hex'),
-        viewPrivateKey: Buffer.from(keys.viewPrivateKey).toString('hex')
+        spendPublicKey: Buffer.from(keys.metaAddress.spendPubKey).toString('hex'),
+        spendPrivateKey: Buffer.from(keys.spendPrivKey).toString('hex'),
+        viewPublicKey: Buffer.from(keys.metaAddress.viewPubKey).toString('hex'),
+        viewPrivateKey: Buffer.from(keys.viewPrivKey).toString('hex'),
       });
 
       console.log(chalk.green('\n✓ Stealth keys generated successfully'));
       console.log(chalk.white('\nMeta-address (share this to receive funds):'));
-      console.log(chalk.yellow(metaAddress));
+      console.log(chalk.yellow(encoded));
       console.log(chalk.gray(`\nKeystore saved to: ${options.keystore}`));
       console.log(chalk.gray('Keep this file safe - it contains your private keys!'));
 

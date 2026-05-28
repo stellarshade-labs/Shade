@@ -6,6 +6,7 @@ import { deriveStealthAddress } from '../src/stealth.js';
 import { scanAnnouncements } from '../src/scan.js';
 import { recoverStealthPrivateKey } from '../src/recover.js';
 import { scalarMultBase } from '../src/ed25519.js';
+import { signWithStealthKey } from '../src/prove.js';
 import type { Announcement } from '../src/types.js';
 
 describe('complete roundtrip', () => {
@@ -45,9 +46,13 @@ describe('complete roundtrip', () => {
     expect(bytesToHex(recoveredPubKey)).toBe(bytesToHex(derivation.stealthPubKey));
     expect(bytesToHex(recoveredPubKey)).toBe(bytesToHex(found[0].publicKey));
 
-    // Step 7: Verify signature capability
+    // Step 7: Verify signature capability using raw-scalar signing
+    // Standard ed25519.sign() hashes the seed, but stealth keys are raw scalars.
+    // signWithStealthKey() signs directly with the raw scalar.
     const message = new Uint8Array([1, 2, 3, 4, 5]);
-    const signature = ed25519.sign(message, stealthPrivKey);
+    const signature = signWithStealthKey(message, stealthPrivKey);
+
+    // Verify against the stealth public key (raw scalar * G)
     const isValid = ed25519.verify(signature, message, recoveredPubKey);
     expect(isValid).toBe(true);
   });

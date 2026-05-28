@@ -20,10 +20,16 @@ class RateLimiter {
   }
 
   private getClientId(req: Request): string {
-    const forwarded = req.headers['x-forwarded-for'] as string;
-    if (forwarded) {
-      return forwarded.split(',')[0].trim();
+    // Security: Only trust x-forwarded-for if we're behind a trusted proxy
+    // In production, configure Express with app.set('trust proxy', true) and set TRUST_PROXY env var
+    if (process.env.TRUST_PROXY === 'true') {
+      const forwarded = req.headers['x-forwarded-for'] as string;
+      if (forwarded) {
+        return forwarded.split(',')[0]!.trim();
+      }
     }
+
+    // Fall back to direct IP connection
     return req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
   }
 

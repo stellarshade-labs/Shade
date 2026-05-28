@@ -4,7 +4,6 @@ export type {
   StealthMetaAddress,
   StealthAddress,
   Announcement,
-  ProofOfOwnership,
 } from './types.js';
 
 // Errors
@@ -12,9 +11,6 @@ export {
   InvalidPublicKey,
   InvalidScalar,
   InvalidMetaAddress,
-  InvalidStellarAddress,
-  InvalidStellarSecret,
-  InvalidPassword,
   PointAtInfinity,
 } from './errors.js';
 
@@ -47,8 +43,9 @@ export {
   decodePublicKey,
 } from './stellar-keys.js';
 
-// Ownership proof
+// Ownership proof and raw-scalar signing
 export {
+  signWithStealthKey,
   proveOwnership,
   verifyOwnership,
 } from './prove.js';

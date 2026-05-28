@@ -1,82 +1,90 @@
 import { ed25519 } from '@noble/curves/ed25519';
+import { sha512 } from '@noble/hashes/sha512';
+import { bytesToNumberLE, numberToBytesLE } from '@noble/curves/abstract/utils';
+import { L, scalarMultBase } from './ed25519.js';
+
+/**
+ * Sign a message using a raw ed25519 scalar (stealth private key).
+ *
+ * Standard ed25519.sign() hashes the seed to derive the signing scalar,
+ * but stealth private keys are already raw scalars from modular addition
+ * (k_spend + s mod L). This function constructs a valid ed25519 signature
+ * directly from the raw scalar, producing signatures that verify with
+ * standard ed25519.verify() against the corresponding public key (scalar * G).
+ *
+ * @param message - The message to sign
+ * @param privateScalar - 32-byte raw scalar (stealth private key)
+ * @returns 64-byte ed25519 signature (R || S)
+ */
+export function signWithStealthKey(message: Uint8Array, privateScalar: Uint8Array): Uint8Array {
+  if (privateScalar.length !== 32) {
+    throw new Error('Invalid stealth private key length');
+  }
+  if (message.length === 0) {
+    throw new Error('Message cannot be empty');
+  }
+
+  const a = bytesToNumberLE(privateScalar) % L;
+  const pubKeyBytes = scalarMultBase(privateScalar);
+
+  // Deterministic nonce: r = SHA-512(privateScalar || message) mod L
+  const nonceInput = new Uint8Array(32 + message.length);
+  nonceInput.set(privateScalar, 0);
+  nonceInput.set(message, 32);
+  const r = bytesToNumberLE(sha512(nonceInput)) % L;
+
+  const R = ed25519.ExtendedPoint.BASE.multiply(r);
+  const Rbytes = R.toRawBytes();
+
+  // Challenge: k = SHA-512(R || pubKey || message) mod L
+  const challengeInput = new Uint8Array(32 + 32 + message.length);
+  challengeInput.set(Rbytes, 0);
+  challengeInput.set(pubKeyBytes, 32);
+  challengeInput.set(message, 64);
+  const k = bytesToNumberLE(sha512(challengeInput)) % L;
+
+  // Response: S = (r + k * a) mod L
+  const S = (r + k * a) % L;
+
+  const sig = new Uint8Array(64);
+  sig.set(Rbytes, 0);
+  sig.set(numberToBytesLE(S, 32), 32);
+  return sig;
+}
 
 /**
  * Prove ownership of a stealth address by signing a challenge.
  *
- * This creates an ed25519 signature using the stealth private key,
- * which can be verified against the stealth public key.
- * Used by relayers to verify withdrawal requests are from legitimate owners.
+ * Uses raw-scalar ed25519 signing so the signature verifies against
+ * the stealth public key (privateScalar * G), not the hashed-seed public key.
  *
- * @param stealthPrivKey - The 32-byte stealth private key (scalar)
+ * @param stealthPrivKey - The 32-byte stealth private key (raw scalar)
  * @param challenge - The challenge to sign (typically a nonce or timestamp)
  * @returns The 64-byte ed25519 signature
  * @throws {Error} If private key is not 32 bytes or challenge is empty
- *
- * @example
- * ```typescript
- * // Create ownership proof for withdrawal request
- * const challenge = new TextEncoder().encode(`withdraw:${Date.now()}`);
- * const proof = proveOwnership(stealthPrivKey, challenge);
- *
- * // Submit to relayer
- * await relayer.requestWithdrawal({
- *   stealthAddress,
- *   proof,
- *   challenge
- * });
- * ```
  */
 export function proveOwnership(
   stealthPrivKey: Uint8Array,
   challenge: Uint8Array
 ): Uint8Array {
-  if (stealthPrivKey.length !== 32) {
-    throw new Error('Invalid stealth private key length');
-  }
-  if (challenge.length === 0) {
-    throw new Error('Challenge cannot be empty');
-  }
-
-  // The stealth private key is a scalar, we need to use it as a seed for ed25519
-  // This matches how Stellar SDK handles private keys
-  const signature = ed25519.sign(challenge, stealthPrivKey);
-
-  return signature;
+  return signWithStealthKey(challenge, stealthPrivKey);
 }
 
 /**
  * Verify ownership proof of a stealth address.
  *
- * Verifies an ed25519 signature against the stealth public key.
- * Used by relayers to authenticate withdrawal requests.
+ * Verifies a standard ed25519 signature against the stealth public key.
+ * Works with signatures produced by signWithStealthKey/proveOwnership.
  *
- * @param stealthPubKey - The 32-byte stealth public key
+ * @param stealthPubKey - The 32-byte stealth public key (scalar * G)
  * @param challenge - The challenge that was signed
  * @param signature - The 64-byte signature to verify
  * @returns True if the signature is valid, false otherwise
- * @throws {Error} If key/signature lengths are invalid or challenge is empty
- *
- * @example
- * ```typescript
- * // Verify withdrawal request (relayer side)
- * const isValid = verifyOwnership(
- *   stealthPubKey,
- *   challenge,
- *   signature
- * );
- *
- * if (isValid) {
- *   // Process withdrawal
- *   await sponsorTransaction(stealthAddress, destination, amount);
- * } else {
- *   throw new Error('Invalid ownership proof');
- * }
- * ```
  */
 export function verifyOwnership(
   stealthPubKey: Uint8Array,
   challenge: Uint8Array,
-  signature: Uint8Array
+  signature: Uint8Array,
 ): boolean {
   if (stealthPubKey.length !== 32) {
     throw new Error('Invalid stealth public key length');
@@ -89,10 +97,8 @@ export function verifyOwnership(
   }
 
   try {
-    // Verify the signature against the stealth public key
     return ed25519.verify(signature, challenge, stealthPubKey);
   } catch {
-    // Invalid signature or key
     return false;
   }
 }

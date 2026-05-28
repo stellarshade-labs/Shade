@@ -1,0 +1,198 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { Request, Response, NextFunction } from 'express';
+import RateLimiter from './rateLimit';
+
+describe('RateLimiter', () => {
+  let rateLimiter: RateLimiter;
+  let mockReq: Partial<Request>;
+  let mockRes: Partial<Response>;
+  let nextFn: NextFunction;
+
+  beforeEach(() => {
+    rateLimiter = new RateLimiter(5, 5, 1000); // 5 tokens, refill 5 per second
+
+    mockReq = {
+      ip: '127.0.0.1',
+      headers: {},
+      socket: {
+        remoteAddress: '127.0.0.1'
+      } as any
+    };
+
+    mockRes = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockReturnThis(),
+      set: vi.fn().mockReturnThis()
+    };
+
+    nextFn = vi.fn();
+  });
+
+  it('should allow requests within rate limit', () => {
+    const middleware = rateLimiter.middleware();
+
+    for (let i = 0; i < 5; i++) {
+      middleware(mockReq as Request, mockRes as Response, nextFn);
+      expect(nextFn).toHaveBeenCalledTimes(i + 1);
+    }
+
+    expect(mockRes.status).not.toHaveBeenCalled();
+  });
+
+  it('should block requests exceeding rate limit', () => {
+    const middleware = rateLimiter.middleware();
+
+    // Use up all tokens
+    for (let i = 0; i < 5; i++) {
+      middleware(mockReq as Request, mockRes as Response, nextFn);
+    }
+
+    // This request should be blocked
+    middleware(mockReq as Request, mockRes as Response, nextFn);
+
+    expect(mockRes.status).toHaveBeenCalledWith(429);
+    expect(mockRes.json).toHaveBeenCalledWith({
+      error: 'Rate limit exceeded',
+      retryAfter: 1
+    });
+    expect(mockRes.set).toHaveBeenCalledWith('Retry-After', '1');
+    expect(nextFn).toHaveBeenCalledTimes(5); // Only the first 5 should pass
+  });
+
+  it('should track different clients separately', () => {
+    const middleware = rateLimiter.middleware();
+    const req1 = { ...mockReq, ip: '192.168.1.1' };
+    const req2 = { ...mockReq, ip: '192.168.1.2' };
+
+    // Use up tokens for client 1
+    for (let i = 0; i < 5; i++) {
+      middleware(req1 as Request, mockRes as Response, nextFn);
+    }
+
+    // Client 2 should still have tokens
+    middleware(req2 as Request, mockRes as Response, nextFn);
+    expect(nextFn).toHaveBeenCalledTimes(6);
+
+    // Client 1 should be blocked
+    middleware(req1 as Request, mockRes as Response, nextFn);
+    expect(mockRes.status).toHaveBeenCalledWith(429);
+  });
+
+  it('should refill tokens after interval', async () => {
+    const fastLimiter = new RateLimiter(2, 2, 100); // Refill every 100ms
+    const middleware = fastLimiter.middleware();
+
+    // Use up tokens
+    middleware(mockReq as Request, mockRes as Response, nextFn);
+    middleware(mockReq as Request, mockRes as Response, nextFn);
+
+    // Should be blocked
+    middleware(mockReq as Request, mockRes as Response, nextFn);
+    expect(mockRes.status).toHaveBeenCalledWith(429);
+
+    // Wait for refill
+    await new Promise(resolve => setTimeout(resolve, 150));
+
+    // Reset mocks
+    vi.clearAllMocks();
+
+    // Should allow requests again
+    middleware(mockReq as Request, mockRes as Response, nextFn);
+    expect(nextFn).toHaveBeenCalled();
+    expect(mockRes.status).not.toHaveBeenCalled();
+  });
+
+  it('should handle x-forwarded-for when trust proxy is enabled', () => {
+    const originalEnv = process.env.TRUST_PROXY;
+    process.env.TRUST_PROXY = 'true';
+
+    const middleware = rateLimiter.middleware();
+    const reqWithForwarded = {
+      ...mockReq,
+      headers: { 'x-forwarded-for': '10.0.0.1, 192.168.1.1' }
+    };
+
+    middleware(reqWithForwarded as Request, mockRes as Response, nextFn);
+    expect(nextFn).toHaveBeenCalled();
+
+    // Restore env
+    process.env.TRUST_PROXY = originalEnv;
+  });
+
+  it('should ignore x-forwarded-for when trust proxy is disabled', () => {
+    const originalEnv = process.env.TRUST_PROXY;
+    delete process.env.TRUST_PROXY;
+
+    const middleware = rateLimiter.middleware();
+    const reqWithForwarded = {
+      ...mockReq,
+      ip: '127.0.0.1',
+      headers: { 'x-forwarded-for': '10.0.0.1' }
+    };
+
+    // Should use direct IP, not forwarded
+    for (let i = 0; i < 5; i++) {
+      middleware(reqWithForwarded as Request, mockRes as Response, nextFn);
+    }
+
+    // Should block based on direct IP
+    middleware(reqWithForwarded as Request, mockRes as Response, nextFn);
+    expect(mockRes.status).toHaveBeenCalledWith(429);
+
+    // Restore env
+    process.env.TRUST_PROXY = originalEnv;
+  });
+
+  it('should handle unknown client gracefully', () => {
+    const middleware = rateLimiter.middleware();
+    const reqNoIp = { headers: {} } as Request;
+
+    middleware(reqNoIp, mockRes as Response, nextFn);
+    expect(nextFn).toHaveBeenCalled();
+  });
+
+  it('should reset specific client', () => {
+    const middleware = rateLimiter.middleware();
+
+    // Use up tokens
+    for (let i = 0; i < 5; i++) {
+      middleware(mockReq as Request, mockRes as Response, nextFn);
+    }
+
+    // Should be blocked
+    vi.clearAllMocks();
+    middleware(mockReq as Request, mockRes as Response, nextFn);
+    expect(mockRes.status).toHaveBeenCalledWith(429);
+
+    // Reset this client
+    rateLimiter.reset('127.0.0.1');
+
+    // Should allow requests again
+    vi.clearAllMocks();
+    middleware(mockReq as Request, mockRes as Response, nextFn);
+    expect(nextFn).toHaveBeenCalled();
+    expect(mockRes.status).not.toHaveBeenCalled();
+  });
+
+  it('should reset all clients', () => {
+    const middleware = rateLimiter.middleware();
+    const req1 = { ...mockReq, ip: '192.168.1.1' };
+    const req2 = { ...mockReq, ip: '192.168.1.2' };
+
+    // Use up tokens for both clients
+    for (let i = 0; i < 5; i++) {
+      middleware(req1 as Request, mockRes as Response, nextFn);
+      middleware(req2 as Request, mockRes as Response, nextFn);
+    }
+
+    // Reset all
+    rateLimiter.reset();
+
+    // Both should allow requests again
+    vi.clearAllMocks();
+    middleware(req1 as Request, mockRes as Response, nextFn);
+    middleware(req2 as Request, mockRes as Response, nextFn);
+    expect(nextFn).toHaveBeenCalledTimes(2);
+    expect(mockRes.status).not.toHaveBeenCalled();
+  });
+});
