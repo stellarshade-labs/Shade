@@ -183,11 +183,30 @@ docker compose up -d             # Start local Stellar network
 bash demo.sh                     # Full end-to-end demo
 ```
 
+## Privacy Model
+
+Stealth addresses hide the **identity** of the recipient, not the **flow** of funds. The deposit→withdrawal chain is visible on-chain, but nobody can link the stealth address to the recipient's meta-address without the view key.
+
+**What's private:**
+- Recipient identity — stealth_pk is unlinkable to meta-address
+- Recipient's funded accounts — relayer pays the tx fee, Bob's wallet never appears
+
+**What's NOT private:**
+- The deposit amount and the fact it went to a stealth address
+- The withdrawal destination (but it's a fresh address with no history)
+- Timing correlation — withdraw right after deposit and it's obvious
+
+**User responsibility:** The cryptography provides the tools, but users can deanonymize themselves through behavior (timing, amount patterns, address reuse). Partial withdrawals help — withdraw different amounts at different times to reduce correlation with the original deposit.
+
+**View key sharing:** If you share your view key with a scanning service, they can see all your incoming payments (past and future). There is no view key revocation — to stop a viewer, generate new keys and publish a new meta-address. Old payments remain visible to the old viewer.
+
 ## Known Limitations
 
 - **Announcement storage:** Single `Vec` in contract hits ~500 entries before Soroban 64KB limit. Fine for demo, needs pagination/archival for production.
 - **Local network only:** All development and testing uses Docker local network. Never tested on testnet/mainnet.
 - **No BIP-32/44:** HD derivation uses domain-separated SHA-256, not standard BIP-32 paths (those use secp256k1).
+- **No view key rotation:** Shared view keys cannot be revoked. Generate new keys to stop a viewer from seeing future payments.
+- **Destination account must exist:** The withdrawal destination needs an active Stellar account (1 XLM MBR). Fund it via exchange withdrawal for best privacy.
 
 ## Security
 
