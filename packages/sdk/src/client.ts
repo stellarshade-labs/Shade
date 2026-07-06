@@ -1,32 +1,21 @@
 import {
   generateMetaAddress,
   encodeMetaAddress,
-  decodeMetaAddress,
-  deriveStealthAddressWithSecret,
-  scanAnnouncements,
-  recoverStealthPrivateKey,
-  signWithStealthKey,
   generateMnemonic,
   mnemonicToStealthKeys,
 } from '@stealth/crypto';
-import {
-  Keypair,
-  TransactionBuilder,
-  Contract,
-  nativeToScVal,
-  StrKey,
-} from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { randomBytes } from '@noble/hashes/utils';
+import { getNetworkConfig } from './soroban.js';
+import { HorizonClient } from './horizon.js';
+import { PoolAdapter } from './methods/pool.js';
+import { AccountAdapter } from './methods/account.js';
+import { SppAdapter } from './methods/spp.js';
 import {
-  getNetworkConfig,
-  resolveTokenAddress,
-  fetchAnnouncements,
-  queryBalance,
-  queryNonce,
-  buildWithdrawMessage,
-  waitForTransaction,
-} from './soroban.js';
+  MethodRequiredError,
+  MethodNotEnabledError,
+  MethodNotAvailableError,
+} from './errors.js';
+import type { DeliveryAdapter } from './methods/types.js';
 import type {
   ClientConfig,
   StealthKeys,
@@ -36,6 +25,12 @@ import type {
   Balance,
   WithdrawReceipt,
   WithdrawOpts,
+  DeliveryMethod,
+  ScanOpts,
+  ScanResult,
+  ScanCursor,
+  ClaimOpts,
+  ClaimReceipt,
 } from './types.js';
 
 /** Default contract addresses per network. */
@@ -43,42 +38,77 @@ const DEFAULT_CONTRACTS: Record<string, string> = {
   local: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGABAX',
 };
 
+/** Default Horizon endpoints per network. */
+const DEFAULT_HORIZON: Record<string, string> = {
+  local: 'http://localhost:8000',
+  testnet: 'https://horizon-testnet.stellar.org',
+};
+
 /**
  * High-level client for stealth payments on Stellar.
  *
- * Wraps DKSAP cryptography and Soroban contract interaction into a simple API.
- * Developers don't need to understand the underlying protocol to use this.
+ * Wraps DKSAP cryptography behind pluggable delivery methods. Each method
+ * (`'pool'`, `'account'`, and the reserved `'spp'`) is an adapter; the client
+ * builds a registry from `config.methods` and routes send/scan/claim through it.
  *
  * @example
  * ```typescript
- * const client = new StealthClient({ network: 'local', contractId: 'CXXX...' });
+ * const client = new StealthClient({
+ *   network: 'local',
+ *   methods: ['pool', 'account'],
+ * });
  *
- * // Generate keys
  * const keys = StealthClient.keygen();
  *
- * // Send 100 XLM to a stealth address
- * const receipt = await client.send(keys.metaAddress, 100, 'SXXX...');
+ * // A method is REQUIRED on every send — no implicit default.
+ * await client.send(keys.metaAddress, 100, 'SXXX...', { method: 'auto' });
  *
- * // Scan for received payments
- * const payments = await client.scan(keys);
- *
- * // Withdraw
- * await client.withdraw(payments[0].stealthAddress, 'GDEST...', {
- *   keys,
- *   feePayer: 'SXXX...',
- * });
+ * const { payments } = await client.scanWithCursor(keys);
+ * await client.claim(payments[0], 'GDEST...', { keys });
  * ```
  */
 export class StealthClient {
   private readonly contractId: string;
   private readonly networkPassphrase: string;
   private readonly server: StellarSdk.rpc.Server;
+  private readonly enabledMethods: DeliveryMethod[];
+  private readonly adapters: Map<DeliveryMethod, DeliveryAdapter>;
+  private readonly relayer?: string;
 
   constructor(config: ClientConfig) {
     this.contractId = config.contractId || DEFAULT_CONTRACTS[config.network] || '';
     const netConfig = getNetworkConfig(config.network);
     this.networkPassphrase = netConfig.networkPassphrase;
     this.server = netConfig.server;
+    this.relayer = config.relayer;
+    this.enabledMethods = config.methods && config.methods.length > 0
+      ? config.methods
+      : ['pool'];
+
+    const horizonUrl =
+      config.horizonUrl || DEFAULT_HORIZON[config.network] || DEFAULT_HORIZON.local;
+    const horizon = new HorizonClient(horizonUrl!);
+
+    this.adapters = new Map();
+    for (const method of this.enabledMethods) {
+      switch (method) {
+        case 'pool':
+          this.adapters.set(
+            'pool',
+            new PoolAdapter(this.contractId, this.networkPassphrase, this.server),
+          );
+          break;
+        case 'account':
+          this.adapters.set(
+            'account',
+            new AccountAdapter(this.networkPassphrase, horizon, this.relayer),
+          );
+          break;
+        case 'spp':
+          this.adapters.set('spp', new SppAdapter());
+          break;
+      }
+    }
   }
 
   /**
@@ -119,15 +149,42 @@ export class StealthClient {
   }
 
   /**
-   * Send tokens to a stealth address.
+   * Resolve `'auto'` to a concrete method: native asset AND amount > 1 AND
+   * 'account' enabled -> 'account'; otherwise 'pool'.
+   */
+  private resolveMethod(
+    requested: DeliveryMethod | 'auto',
+    amount: number,
+    asset?: string,
+  ): DeliveryMethod {
+    if (requested === 'auto') {
+      const isNative = !asset || asset === 'native' || asset === 'XLM';
+      if (isNative && amount > 1 && this.adapters.has('account')) {
+        return 'account';
+      }
+      return 'pool';
+    }
+    return requested;
+  }
+
+  private getAdapter(method: DeliveryMethod): DeliveryAdapter {
+    const adapter = this.adapters.get(method);
+    if (!adapter) throw new MethodNotEnabledError(method);
+    return adapter;
+  }
+
+  /**
+   * Send tokens to a stealth address via the chosen delivery method.
    *
-   * Derives a one-time stealth address from the recipient's meta-address,
-   * deposits tokens into the pool contract, and records the announcement.
+   * A method is REQUIRED on every call (`opts.method`). Pass `'auto'` to let the
+   * client resolve one; there is deliberately no implicit default.
    *
    * @param metaAddress - Recipient's meta-address (st:stellar:... format)
    * @param amount - Amount in whole units (e.g. 100 = 100 XLM)
    * @param senderSecret - Sender's Stellar secret key
-   * @param opts - Optional: asset to send
+   * @param opts - Delivery method (required) and optional asset
+   * @throws {MethodRequiredError} If no method is provided.
+   * @throws {MethodNotEnabledError} If the resolved method is not enabled.
    */
   async send(
     metaAddress: string,
@@ -135,126 +192,63 @@ export class StealthClient {
     senderSecret: string,
     opts?: SendOpts,
   ): Promise<SendReceipt> {
-    if (amount <= 0) throw new Error('Amount must be positive');
-
-    const { spendPubKey, viewPubKey } = decodeMetaAddress(metaAddress);
-    const senderKeypair = Keypair.fromSecret(senderSecret);
-    const tokenAddress = resolveTokenAddress(opts?.asset, this.networkPassphrase);
-    const stroops = BigInt(Math.round(amount * 1e7));
-
-    // Derive stealth address
-    const ephemeralPrivKey = new Uint8Array(randomBytes(32));
-    const stealth = deriveStealthAddressWithSecret(
-      spendPubKey,
-      viewPubKey,
-      ephemeralPrivKey,
-    );
-
-    // Build and submit deposit transaction
-    const contract = new Contract(this.contractId);
-    const account = await this.server.getAccount(senderKeypair.publicKey());
-
-    const depositTx = new TransactionBuilder(account, {
-      fee: '100',
-      networkPassphrase: this.networkPassphrase,
-    })
-      .addOperation(
-        contract.call(
-          'deposit',
-          new StellarSdk.Address(senderKeypair.publicKey()).toScVal(),
-          new StellarSdk.Address(tokenAddress).toScVal(),
-          nativeToScVal(stroops, { type: 'i128' }),
-          nativeToScVal(Buffer.from(stealth.stealthPubKey)),
-          nativeToScVal(Buffer.from(stealth.ephemeralPubKey)),
-          nativeToScVal(stealth.viewTag, { type: 'u32' }),
-        ),
-      )
-      .setTimeout(30)
-      .build();
-
-    const prepared = await this.server.prepareTransaction(depositTx);
-    prepared.sign(senderKeypair);
-    const result = await this.server.sendTransaction(prepared);
-
-    if (result.status === 'ERROR') {
-      throw new Error('Transaction submission failed');
+    if (!opts || !opts.method) {
+      throw new MethodRequiredError();
     }
-    if (result.status === 'PENDING') {
-      await waitForTransaction(this.server, result.hash);
-    }
-
-    return {
-      stealthAddress: stealth.stealthAddress,
-      txHash: result.hash,
-    };
+    const method = this.resolveMethod(opts.method, amount, opts.asset);
+    const adapter = this.getAdapter(method);
+    return adapter.send({ metaAddress, amount, senderSecret, asset: opts.asset });
   }
 
   /**
-   * Scan for stealth payments you received.
-   *
-   * Uses the view key to detect which announcements are yours,
-   * then queries the contract for current balances.
+   * Scan for stealth payments across every enabled delivery method.
    *
    * @param keys - Your stealth keys (needs viewPrivKey + spendPubKey)
    */
   async scan(keys: StealthKeys): Promise<Payment[]> {
-    const viewPrivKey = Buffer.from(keys.viewPrivKey, 'hex');
-    const spendPubKey = Buffer.from(keys.spendPubKey, 'hex');
-
-    const announcements = await fetchAnnouncements(
-      this.contractId,
-      this.server,
-      this.networkPassphrase,
-    );
-
-    if (announcements.length === 0) return [];
-
-    const matches = scanAnnouncements(
-      viewPrivKey,
-      spendPubKey,
-      announcements.map(a => ({
-        ephemeralPubKey: a.ephemeralPubKey,
-        viewTag: a.viewTag,
-        stealthAddress: a.stealthAddress,
-      })),
-    );
-
-    const payments: Payment[] = [];
-
-    for (const match of matches) {
-      if (!match) continue;
-      const ann = announcements.find(a => a.stealthAddress === match.address);
-      if (!ann) continue;
-
-      const balance = await queryBalance(
-        this.contractId,
-        ann.stealthPubKey,
-        ann.token,
-        this.server,
-        this.networkPassphrase,
-      );
-
-      if (balance <= 0n) continue;
-
-      payments.push({
-        stealthAddress: ann.stealthAddress,
-        ephemeralPubKey: Buffer.from(ann.ephemeralPubKey).toString('hex'),
-        token: ann.token,
-        amount: Number(balance) / 1e7,
-      });
-    }
-
+    const { payments } = await this.scanWithCursor(keys);
     return payments;
   }
 
   /**
-   * Get balances for all your stealth addresses in the pool.
+   * Cursor-aware scan across enabled (or explicitly requested) methods. Returns
+   * the merged payments plus an updated per-method cursor to persist and pass to
+   * the next scan for incremental discovery.
+   *
+   * @param keys - Your stealth keys (needs viewPrivKey + spendPubKey)
+   * @param opts - Optional method filter and resume cursor
+   */
+  async scanWithCursor(
+    keys: StealthKeys,
+    opts?: ScanOpts,
+  ): Promise<ScanResult> {
+    const methods = (opts?.methods ?? this.enabledMethods).filter((m) =>
+      this.adapters.has(m),
+    );
+    const cursor: ScanCursor = { ...(opts?.cursor ?? {}) };
+    const payments: Payment[] = [];
+
+    for (const method of methods) {
+      const adapter = this.getAdapter(method);
+      const prev = cursor[method];
+      const result = await adapter.scan(keys, prev);
+      for (const p of result.payments) {
+        payments.push({ ...p, method });
+      }
+      cursor[method] = result.cursor;
+    }
+
+    return { payments, cursor };
+  }
+
+  /**
+   * Get balances for all your stealth payments across enabled methods.
    *
    * @param keys - Your stealth keys (needs viewPrivKey + spendPubKey)
    */
   async balance(keys: StealthKeys): Promise<Balance[]> {
     const payments = await this.scan(keys);
-    return payments.map(p => ({
+    return payments.map((p) => ({
       stealthAddress: p.stealthAddress,
       token: p.token,
       amount: p.amount,
@@ -262,11 +256,29 @@ export class StealthClient {
   }
 
   /**
+   * Claim a detected payment to a destination, branching on the payment's
+   * delivery method: `'pool'` uses the withdraw path, `'account'` sweeps or
+   * partially pays out the stealth account.
+   *
+   * @param payment - A payment returned from {@link scan}/{@link scanWithCursor}.
+   * @param destination - Destination Stellar G-address.
+   * @param opts - Claim options (keys required; relay/merge/feePayer optional).
+   */
+  async claim(
+    payment: Payment,
+    destination: string,
+    opts: ClaimOpts,
+  ): Promise<ClaimReceipt> {
+    const adapter = this.getAdapter(payment.method);
+    const relay = opts.relay ?? this.relayer;
+    return adapter.claim(payment, destination, { ...opts, relay });
+  }
+
+  /**
    * Withdraw tokens from the stealth pool.
    *
-   * Recovers the stealth private key, signs a withdraw message,
-   * and submits the transaction. Use `opts.relay` for privacy-preserving
-   * withdrawal via a relayer.
+   * @deprecated Use {@link claim} with a pool payment instead. Retained for
+   * backwards compatibility; behaves exactly like the original pool withdraw.
    *
    * @param stealthAddress - The stealth address to withdraw from
    * @param destination - Destination Stellar address (G...)
@@ -277,146 +289,19 @@ export class StealthClient {
     destination: string,
     opts: WithdrawOpts,
   ): Promise<WithdrawReceipt> {
-    if (!StrKey.isValidEd25519PublicKey(stealthAddress)) {
-      throw new Error('Invalid stealth address');
+    const adapter = this.adapters.get('pool');
+    if (!(adapter instanceof PoolAdapter)) {
+      throw new MethodNotAvailableError(
+        "The 'pool' method must be enabled to use withdraw()",
+      );
     }
-    if (!StrKey.isValidEd25519PublicKey(destination)) {
-      throw new Error('Invalid destination address');
-    }
-
-    const viewPrivKey = Buffer.from(opts.keys.viewPrivKey, 'hex');
-    const spendPrivKey = Buffer.from(opts.keys.spendPrivKey, 'hex');
-    const spendPubKey = Buffer.from(opts.keys.spendPubKey, 'hex');
-    const tokenAddress = resolveTokenAddress(opts.asset, this.networkPassphrase);
-
-    // Find matching announcement
-    const announcements = await fetchAnnouncements(
-      this.contractId,
-      this.server,
-      this.networkPassphrase,
-    );
-
-    const allMatches = scanAnnouncements(
-      viewPrivKey,
-      spendPubKey,
-      announcements.map(a => ({
-        ephemeralPubKey: a.ephemeralPubKey,
-        viewTag: a.viewTag,
-        stealthAddress: a.stealthAddress,
-      })),
-    );
-
-    const matchedAnn = announcements.find(a => {
-      if (a.stealthAddress !== stealthAddress) return false;
-      return allMatches.some(m => m?.address === stealthAddress);
+    const result = await adapter.withdraw(stealthAddress, destination, {
+      keys: opts.keys,
+      feePayer: opts.feePayer,
+      relay: opts.relay ?? this.relayer,
+      asset: opts.asset,
+      amount: opts.amount,
     });
-
-    if (!matchedAnn) {
-      throw new Error('Could not find announcement for this stealth address');
-    }
-
-    // Recover stealth private key
-    const stealthPrivKey = recoverStealthPrivateKey(
-      spendPrivKey,
-      viewPrivKey,
-      matchedAnn.ephemeralPubKey,
-    );
-
-    // Get balance
-    const balance = await queryBalance(
-      this.contractId,
-      matchedAnn.stealthPubKey,
-      tokenAddress,
-      this.server,
-      this.networkPassphrase,
-    );
-
-    if (balance <= 0n) throw new Error('Stealth address has no balance in the pool');
-
-    // Determine amount
-    let withdrawAmount: bigint;
-    if (opts.amount !== undefined) {
-      withdrawAmount = BigInt(Math.round(opts.amount * 1e7));
-      if (withdrawAmount > balance) {
-        throw new Error(`Requested ${opts.amount} but balance is ${Number(balance) / 1e7}`);
-      }
-    } else {
-      withdrawAmount = balance;
-    }
-
-    // Get nonce and build signed message
-    const currentNonce = await queryNonce(
-      this.contractId,
-      matchedAnn.stealthPubKey,
-      this.server,
-      this.networkPassphrase,
-    );
-    const nonce = currentNonce + 1n;
-
-    const messageHash = buildWithdrawMessage(
-      matchedAnn.stealthPubKey,
-      tokenAddress,
-      withdrawAmount,
-      destination,
-      nonce,
-    );
-
-    const signature = signWithStealthKey(messageHash, stealthPrivKey);
-
-    // Build transaction
-    const feePayerKeypair = Keypair.fromSecret(opts.feePayer);
-    const contract = new Contract(this.contractId);
-    const feePayerAccount = await this.server.getAccount(feePayerKeypair.publicKey());
-
-    const withdrawTx = new TransactionBuilder(feePayerAccount, {
-      fee: '100',
-      networkPassphrase: this.networkPassphrase,
-    })
-      .addOperation(
-        contract.call(
-          'withdraw',
-          nativeToScVal(Buffer.from(matchedAnn.stealthPubKey)),
-          new StellarSdk.Address(tokenAddress).toScVal(),
-          nativeToScVal(withdrawAmount, { type: 'i128' }),
-          new StellarSdk.Address(destination).toScVal(),
-          nativeToScVal(nonce, { type: 'u64' }),
-          nativeToScVal(Buffer.from(signature)),
-        ),
-      )
-      .setTimeout(30)
-      .build();
-
-    const prepared = await this.server.prepareTransaction(withdrawTx);
-    prepared.sign(feePayerKeypair);
-
-    // Submit (direct or via relay)
-    let txHash: string;
-
-    if (opts.relay) {
-      const url = opts.relay.endsWith('/relay') ? opts.relay : `${opts.relay}/relay`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ xdr: prepared.toEnvelope().toXDR('base64') }),
-      });
-      if (!res.ok) {
-        const err = await res.json() as { error?: string };
-        throw new Error(`Relay error: ${err.error || 'unknown'}`);
-      }
-      const data = await res.json() as { txHash: string };
-      txHash = data.txHash;
-    } else {
-      const result = await this.server.sendTransaction(prepared);
-      if (result.status === 'ERROR') throw new Error('Transaction submission failed');
-      if (result.status === 'PENDING') {
-        await waitForTransaction(this.server, result.hash);
-      }
-      txHash = result.hash;
-    }
-
-    return {
-      txHash,
-      amount: Number(withdrawAmount) / 1e7,
-    };
+    return { txHash: result.txHash, amount: result.amount };
   }
 }

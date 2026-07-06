@@ -5,12 +5,38 @@ import {
   generateMnemonic,
   validateMnemonic,
   mnemonicToStealthKeys,
+  buildKeyDerivationMessage,
+  deriveKeysFromSignature,
 } from '@stealth/crypto';
+import { Keypair } from '@stellar/stellar-sdk';
+import { sha256 } from '@noble/hashes/sha256';
 import { saveKeystore } from '../utils/keystore.js';
 import chalk from 'chalk';
 import path from 'path';
 import os from 'os';
 import readline from 'readline';
+
+/**
+ * Reproduce the SEP-53 signing envelope locally and derive stealth keys.
+ * message = buildKeyDerivationMessage({ network, appId }); the signer signs
+ * SHA-256 of ("Stellar Signed Message:\n" + message), matching how a wallet
+ * would sign the same derivation message.
+ */
+function deriveFromStellarSecret(
+  secret: string,
+  network: string,
+  appId: string,
+): ReturnType<typeof deriveKeysFromSignature> {
+  const keypair = Keypair.fromSecret(secret);
+  const message = buildKeyDerivationMessage({ network, appId });
+  const envelope = Buffer.concat([
+    Buffer.from('Stellar Signed Message:\n', 'utf-8'),
+    Buffer.from(message, 'utf-8'),
+  ]);
+  const digest = sha256(new Uint8Array(envelope));
+  const signature = new Uint8Array(keypair.sign(Buffer.from(digest)));
+  return deriveKeysFromSignature(signature);
+}
 
 function promptLine(question: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
@@ -27,6 +53,9 @@ export const keygenCommand = new Command('keygen')
   .option('--keystore <path>', 'Keystore file path', path.join(os.homedir(), '.stealth-keys.json'))
   .option('--mnemonic', 'Generate keys from a new BIP-39 mnemonic (enables recovery)')
   .option('--recover', 'Recover keys from an existing 12-word mnemonic')
+  .option('--from-stellar-secret [secret]', 'Derive keys deterministically from a Stellar secret (SEP-53)')
+  .option('--app-id <id>', 'Application id to scope derived keys', 'default')
+  .option('--network <network>', 'Network to scope derived keys', 'local')
   .action(async (options) => {
     try {
       let spendPrivKey: Uint8Array;
@@ -34,7 +63,25 @@ export const keygenCommand = new Command('keygen')
       let spendPubKey: Uint8Array;
       let viewPubKey: Uint8Array;
 
-      if (options.recover) {
+      if (options.fromStellarSecret !== undefined) {
+        console.log(chalk.cyan('Deriving stealth keys from Stellar secret (SEP-53)...'));
+        let secret =
+          typeof options.fromStellarSecret === 'string' ? options.fromStellarSecret : '';
+        if (!secret) {
+          secret = await promptLine(chalk.white('Enter your Stellar secret (S...): '));
+        }
+        try {
+          const keys = deriveFromStellarSecret(secret, options.network, options.appId);
+          spendPrivKey = keys.spendPrivKey;
+          viewPrivKey = keys.viewPrivKey;
+          spendPubKey = keys.metaAddress.spendPubKey;
+          viewPubKey = keys.metaAddress.viewPubKey;
+        } catch (e: any) {
+          console.error(chalk.red('Error: Invalid Stellar secret'), e.message);
+          process.exit(1);
+        }
+
+      } else if (options.recover) {
         console.log(chalk.cyan('Recovering stealth keys from mnemonic...'));
         const words = await promptLine(chalk.white('Enter your 12-word mnemonic: '));
 

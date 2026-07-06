@@ -1,11 +1,52 @@
 import { Command } from 'commander';
 import { scanAnnouncements } from '@stealth/crypto';
+import { StealthClient, type StealthKeys } from '@stealth/sdk';
 import { StrKey, Networks, Contract, nativeToScVal } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { loadKeystore } from '../utils/keystore.js';
-import { getContractAddress } from '../utils/config.js';
+import {
+  getContractAddress,
+  loadHorizonCursor,
+  saveHorizonCursor,
+  clearHorizonCursor,
+} from '../utils/config.js';
 import Table from 'cli-table3';
 import chalk from 'chalk';
+
+interface AccountScanRow {
+  stealthAddress: string;
+  amount: number;
+  txHash?: string;
+}
+
+/**
+ * Scan direct account-method sends via Horizon, resuming from (and persisting)
+ * the saved cursor. Returns the matching rows for display.
+ */
+async function scanAccountMethod(
+  network: 'local' | 'testnet',
+  keys: StealthKeys,
+  fullRescan: boolean,
+): Promise<AccountScanRow[]> {
+  if (fullRescan) clearHorizonCursor(network);
+  const cursor = loadHorizonCursor(network);
+
+  const client = new StealthClient({ network, methods: ['account'] });
+  const result = await client.scanWithCursor(keys, {
+    methods: ['account'],
+    cursor: { account: cursor },
+  });
+
+  if (result.cursor.account) {
+    saveHorizonCursor(network, result.cursor.account);
+  }
+
+  return result.payments.map((p) => ({
+    stealthAddress: p.stealthAddress,
+    amount: p.amount,
+    txHash: p.txHash,
+  }));
+}
 
 interface Announcement {
   ephemeralPubKey: Uint8Array;
@@ -103,9 +144,10 @@ async function getContractBalance(
 }
 
 export const scanCommand = new Command('scan')
-  .description('Scan for stealth payments you received')
+  .description('Scan for stealth payments you received (pool + account methods)')
   .option('--network <network>', 'Network to use', 'local')
   .option('--since-ledger <ledger>', 'Only scan announcements since this ledger', parseInt)
+  .option('--full-rescan', 'Reset the account-method Horizon cursor and rescan from genesis')
   .option('--verbose', 'Show detailed scan progress')
   .action(async (options) => {
     try {
@@ -133,67 +175,81 @@ export const scanCommand = new Command('scan')
         allowHttp: network === 'local',
       });
 
-      console.log(chalk.cyan('Scanning for stealth payments...'));
+      const table = new Table({
+        head: ['Method', 'Stealth Address', 'Token', 'Balance'],
+        colWidths: [10, 58, 20, 18],
+      });
+      let found = 0;
 
+      const viewPrivKey = Buffer.from(keystore.viewPrivateKey, 'hex');
+      const spendPubKey = Buffer.from(keystore.spendPublicKey, 'hex');
+
+      // --- Pool method (Soroban announcements) ---
+      console.log(chalk.cyan('Scanning pool announcements...'));
       const contractAddress = getContractAddress(network);
       const announcements = await fetchAnnouncements(
         contractAddress,
         server,
         networkPassphrase,
-        options.sinceLedger
+        options.sinceLedger,
       );
 
-      if (announcements.length === 0) {
-        console.log(chalk.yellow('No announcements found'));
-        return;
+      if (announcements.length > 0) {
+        const matches = scanAnnouncements(
+          viewPrivKey,
+          spendPubKey,
+          announcements.map((a) => ({
+            ephemeralPubKey: a.ephemeralPubKey,
+            viewTag: a.viewTag,
+            stealthAddress: a.stealthAddress,
+          })),
+        );
+
+        for (const match of matches) {
+          if (!match) continue;
+          const ann = announcements.find((a) => a.stealthAddress === match.address);
+          if (!ann) continue;
+
+          const balance = await getContractBalance(
+            contractAddress,
+            ann.stealthPubKey,
+            ann.token,
+            server,
+            networkPassphrase,
+          );
+          const displayBalance = (Number(balance) / 1e7).toFixed(7);
+          table.push(['pool', match.address, ann.token, displayBalance]);
+          found++;
+        }
       }
 
-      console.log(chalk.gray(`Found ${announcements.length} announcements`));
+      // --- Account method (Horizon direct sends) ---
+      console.log(chalk.cyan('Scanning direct account sends via Horizon...'));
+      const keys: StealthKeys = {
+        metaAddress: '',
+        spendPubKey: keystore.spendPublicKey,
+        spendPrivKey: keystore.spendPrivateKey ?? '',
+        viewPubKey: keystore.viewPublicKey,
+        viewPrivKey: keystore.viewPrivateKey,
+      };
 
-      const viewPrivKey = Buffer.from(keystore.viewPrivateKey, 'hex');
-      const spendPubKey = Buffer.from(keystore.spendPublicKey, 'hex');
+      try {
+        const accountRows = await scanAccountMethod(network, keys, !!options.fullRescan);
+        for (const row of accountRows) {
+          table.push(['account', row.stealthAddress, 'native', row.amount.toFixed(7)]);
+          found++;
+        }
+      } catch (e: any) {
+        console.error(chalk.yellow(`Warning: account-method scan failed: ${e.message}`));
+      }
 
-      const matches = scanAnnouncements(
-        viewPrivKey,
-        spendPubKey,
-        announcements.map(a => ({
-          ephemeralPubKey: a.ephemeralPubKey,
-          viewTag: a.viewTag,
-          stealthAddress: a.stealthAddress,
-        }))
-      );
-
-      if (matches.length === 0) {
+      if (found === 0) {
         console.log(chalk.yellow('No stealth payments found for your keys'));
         return;
       }
 
-      const table = new Table({
-        head: ['Stealth Address', 'Token', 'Balance', 'Ledger'],
-        colWidths: [58, 58, 18, 10],
-      });
-
-      for (const match of matches) {
-        if (!match) continue;
-
-        const ann = announcements.find(a => a.stealthAddress === match.address);
-        if (!ann) continue;
-
-        // Query contract balance
-        const balance = await getContractBalance(
-          contractAddress,
-          ann.stealthPubKey,
-          ann.token,
-          server,
-          networkPassphrase,
-        );
-
-        const displayBalance = (Number(balance) / 1e7).toFixed(7);
-        table.push([match.address, ann.token, displayBalance, ann.ledger]);
-      }
-
       console.log(table.toString());
-      console.log(chalk.gray(`Found ${matches.length} stealth payment(s)`));
+      console.log(chalk.gray(`Found ${found} stealth payment(s)`));
 
     } catch (error: any) {
       console.error(chalk.red('Error scanning:'), error.message);

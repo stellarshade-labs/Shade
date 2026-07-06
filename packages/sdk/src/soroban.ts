@@ -103,16 +103,21 @@ export async function waitForTransaction(
   throw new Error('Transaction confirmation timed out');
 }
 
-/** Fetch announcements from the stealth pool contract. */
+/** Fetch announcements from the stealth pool contract (paged by start/limit). */
 export async function fetchAnnouncements(
   contractId: string,
   server: StellarSdk.rpc.Server,
   networkPassphrase: string,
+  start = 0,
+  limit = 1000,
 ): Promise<RawAnnouncement[]> {
   const result = await simulateReadOnly(
     contractId,
     'get_announcements',
-    [nativeToScVal(0, { type: 'u64' }), nativeToScVal(1000, { type: 'u64' })],
+    [
+      nativeToScVal(start, { type: 'u64' }),
+      nativeToScVal(limit, { type: 'u64' }),
+    ],
     server,
     networkPassphrase,
   );
@@ -131,6 +136,23 @@ export async function fetchAnnouncements(
       amount: BigInt((a.amount as string | number) || 0),
     };
   });
+}
+
+/** Cheap freshness check: total announcement count stored in the pool. */
+export async function fetchAnnouncementCount(
+  contractId: string,
+  server: StellarSdk.rpc.Server,
+  networkPassphrase: string,
+): Promise<number> {
+  const result = await simulateReadOnly(
+    contractId,
+    'get_announcement_count',
+    [],
+    server,
+    networkPassphrase,
+  );
+  if (result === null || result === undefined) return 0;
+  return Number(result as string | number);
 }
 
 export interface RawAnnouncement {

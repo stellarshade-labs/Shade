@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { scanAnnouncements } from '@stealth/crypto';
+import { StealthClient, type StealthKeys } from '@stealth/sdk';
 import { StrKey, Networks, Contract, nativeToScVal } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { loadKeystore } from '../utils/keystore.js';
@@ -124,68 +125,78 @@ export const balanceCommand = new Command('balance')
       console.log(chalk.cyan('Scanning for stealth payments...'));
 
       const contractAddress = getContractAddress(network);
+
+      // Group balances by token (in stroops)
+      const tokenBalances = new Map<string, bigint>();
+
+      const table = new Table({
+        head: ['Method', 'Stealth Address', 'Token', 'Balance'],
+        colWidths: [10, 58, 20, 18],
+      });
+
+      const viewPrivKey = Buffer.from(keystore.viewPrivateKey, 'hex');
+      const spendPubKey = Buffer.from(keystore.spendPublicKey, 'hex');
+
+      // --- Pool method ---
       const announcements = await fetchAllAnnouncements(
         contractAddress,
         server,
         networkPassphrase,
       );
 
-      if (announcements.length === 0) {
-        console.log(chalk.yellow('No announcements found'));
-        console.log(chalk.green('Total balance: 0'));
-        return;
-      }
-
-      const viewPrivKey = Buffer.from(keystore.viewPrivateKey, 'hex');
-      const spendPubKey = Buffer.from(keystore.spendPublicKey, 'hex');
-
-      const matches = scanAnnouncements(
-        viewPrivKey,
-        spendPubKey,
-        announcements.map(a => ({
-          ephemeralPubKey: a.ephemeralPubKey,
-          viewTag: a.viewTag,
-          stealthAddress: a.stealthAddress,
-        }))
-      );
-
-      if (matches.length === 0) {
-        console.log(chalk.yellow('No stealth payments found for your keys'));
-        console.log(chalk.green('Total balance: 0'));
-        return;
-      }
-
-      console.log(chalk.gray(`Found ${matches.length} stealth payment(s), querying balances...`));
-
-      // Group balances by token
-      const tokenBalances = new Map<string, bigint>();
-
-      const table = new Table({
-        head: ['Stealth Address', 'Token', 'Balance'],
-        colWidths: [58, 58, 18],
-      });
-
-      for (const match of matches) {
-        if (!match) continue;
-
-        const ann = announcements.find(a => a.stealthAddress === match.address);
-        if (!ann) continue;
-
-        const balance = await getContractBalance(
-          contractAddress,
-          ann.stealthPubKey,
-          ann.token,
-          server,
-          networkPassphrase,
+      if (announcements.length > 0) {
+        const matches = scanAnnouncements(
+          viewPrivKey,
+          spendPubKey,
+          announcements.map(a => ({
+            ephemeralPubKey: a.ephemeralPubKey,
+            viewTag: a.viewTag,
+            stealthAddress: a.stealthAddress,
+          }))
         );
 
-        if (balance > 0n) {
-          const prev = tokenBalances.get(ann.token) || 0n;
-          tokenBalances.set(ann.token, prev + balance);
+        for (const match of matches) {
+          if (!match) continue;
+          const ann = announcements.find(a => a.stealthAddress === match.address);
+          if (!ann) continue;
 
-          const displayBalance = (Number(balance) / 1e7).toFixed(7);
-          table.push([match.address, ann.token, displayBalance]);
+          const balance = await getContractBalance(
+            contractAddress,
+            ann.stealthPubKey,
+            ann.token,
+            server,
+            networkPassphrase,
+          );
+
+          if (balance > 0n) {
+            const prev = tokenBalances.get(ann.token) || 0n;
+            tokenBalances.set(ann.token, prev + balance);
+            const displayBalance = (Number(balance) / 1e7).toFixed(7);
+            table.push(['pool', match.address, ann.token, displayBalance]);
+          }
         }
+      }
+
+      // --- Account method (direct XLM sends via Horizon) ---
+      try {
+        const keys: StealthKeys = {
+          metaAddress: '',
+          spendPubKey: keystore.spendPublicKey,
+          spendPrivKey: keystore.spendPrivateKey ?? '',
+          viewPubKey: keystore.viewPublicKey,
+          viewPrivKey: keystore.viewPrivateKey,
+        };
+        const client = new StealthClient({ network, methods: ['account'] });
+        const accountPayments = await client.scan(keys);
+        for (const p of accountPayments) {
+          if (p.amount <= 0) continue;
+          const stroops = BigInt(Math.round(p.amount * 1e7));
+          const prev = tokenBalances.get('native') || 0n;
+          tokenBalances.set('native', prev + stroops);
+          table.push(['account', p.stealthAddress, 'native', p.amount.toFixed(7)]);
+        }
+      } catch (e: any) {
+        console.error(chalk.yellow(`Warning: account-method balance scan failed: ${e.message}`));
       }
 
       if (tokenBalances.size === 0) {

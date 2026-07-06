@@ -9,10 +9,43 @@ import {
   nativeToScVal,
 } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
+import { StealthClient } from '@stealth/sdk';
 import { getContractAddress } from '../utils/config.js';
 import { formatError, validateMetaAddress } from '../utils/network.js';
 import chalk from 'chalk';
 import { randomBytes } from '@noble/hashes/utils';
+
+/** Direct account-creation XLM send, delegated to the SDK's account adapter. */
+async function sendViaAccount(
+  network: 'local' | 'testnet',
+  metaAddress: string,
+  amount: number,
+  from: string,
+  relay: string | undefined,
+  verbose: boolean,
+): Promise<void> {
+  if (amount <= 1) {
+    console.error(chalk.red('Error: account sends require an amount strictly greater than 1 XLM'));
+    process.exit(1);
+  }
+
+  const client = new StealthClient({
+    network,
+    methods: ['account'],
+    relayer: relay,
+  });
+
+  console.log(chalk.cyan('Sending XLM directly to a one-time stealth account...'));
+  const receipt = await client.send(metaAddress, amount, from, { method: 'account' });
+
+  console.log(chalk.green(`\u2713 Sent ${amount} XLM to stealth account`));
+  console.log(chalk.gray(`  Tx hash:  ${receipt.txHash}`));
+  console.log(chalk.gray(`  Stealth:  ${receipt.stealthAddress}`));
+  console.log(chalk.gray('  The transaction memo carries the ephemeral key (MemoHash of R).'));
+  if (verbose) {
+    console.log(chalk.gray('  Recipients discover this via memo scanning; no view tag is used.'));
+  }
+}
 
 function resolveTokenAddress(
   assetArg: string | undefined,
@@ -53,16 +86,31 @@ async function waitForTransaction(
 }
 
 export const sendCommand = new Command('send')
-  .description('Deposit tokens into the stealth pool')
+  .description('Send tokens to a stealth address (pool deposit or direct account send)')
   .argument('<meta-address>', 'Recipient meta-address (st:stellar:... or spend:view hex)')
   .argument('<amount>', 'Amount to send (in whole units, e.g. 100 for 100 XLM)')
+  .option('--method <method>', 'Delivery method: pool | account | auto (you must choose)')
   .option('--network <network>', 'Network to use', 'local')
   .option('--from <secret>', 'Sender secret key')
   .option('--asset <asset>', 'Asset to send (default: native XLM, or CODE:ISSUER)')
+  .option('--relay <url>', 'Relayer URL (account method fee-bump)')
   .option('--verbose', 'Show detailed output')
   .action(async (metaAddress: string, amount: string, options) => {
     try {
       const network = options.network as 'local' | 'testnet';
+
+      const method = options.method as string | undefined;
+      if (!method) {
+        console.error(chalk.red('Error: --method is required. Choose one: pool | account | auto'));
+        console.error(chalk.gray('  pool    — private deposit into the stealth pool contract'));
+        console.error(chalk.gray('  account — direct XLM send that creates a one-time stealth account'));
+        console.error(chalk.gray('  auto    — pick account for native XLM > 1, else pool'));
+        process.exit(1);
+      }
+      if (!['pool', 'account', 'auto'].includes(method)) {
+        console.error(chalk.red('Error: --method must be one of: pool | account | auto'));
+        process.exit(1);
+      }
 
       const metaKeys = validateMetaAddress(metaAddress);
       if (!metaKeys) {
@@ -83,6 +131,27 @@ export const sendCommand = new Command('send')
         process.exit(1);
       }
       const senderKeypair = Keypair.fromSecret(options.from);
+
+      const isNative =
+        !options.asset || options.asset === 'native' || options.asset === 'XLM';
+      const resolvedMethod =
+        method === 'auto'
+          ? isNative && parsedAmount > 1
+            ? 'account'
+            : 'pool'
+          : method;
+
+      if (resolvedMethod === 'account') {
+        await sendViaAccount(
+          network,
+          metaAddress,
+          parsedAmount,
+          options.from,
+          options.relay,
+          options.verbose,
+        );
+        return;
+      }
 
       const networkPassphrase = network === 'local'
         ? Networks.STANDALONE

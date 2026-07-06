@@ -79,3 +79,10 @@ export {
   validateMnemonic,
   mnemonicToStealthKeys,
 } from './hd.js';
+
+// Wallet-signature key derivation
+export {
+  KEY_DERIVATION_CONTEXT_V1,
+  buildKeyDerivationMessage,
+  deriveKeysFromSignature,
+} from './derive-signature.js';

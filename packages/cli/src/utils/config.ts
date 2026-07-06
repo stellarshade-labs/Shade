@@ -35,3 +35,32 @@ export function saveContractAddress(network: 'local' | 'testnet', address: strin
   const configFile = path.join(CONFIG_DIR, `${network}-contract`);
   fs.writeFileSync(configFile, address);
 }
+
+function horizonCursorFile(network: 'local' | 'testnet'): string {
+  return path.join(CONFIG_DIR, `horizon-cursor-${network}`);
+}
+
+/** Load the persisted Horizon paging cursor for the account method, if any. */
+export function loadHorizonCursor(network: 'local' | 'testnet'): string | undefined {
+  try {
+    const cursor = fs.readFileSync(horizonCursorFile(network), 'utf-8').trim();
+    return cursor || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Persist the Horizon paging cursor for the account method. */
+export function saveHorizonCursor(network: 'local' | 'testnet', cursor: string): void {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  fs.writeFileSync(horizonCursorFile(network), cursor);
+}
+
+/** Clear the persisted Horizon cursor (used by --full-rescan). */
+export function clearHorizonCursor(network: 'local' | 'testnet'): void {
+  try {
+    fs.rmSync(horizonCursorFile(network));
+  } catch {
+    // Nothing to clear.
+  }
+}
