@@ -61,7 +61,8 @@ echo
 # Step 2: Build the TypeScript packages
 echo -e "${CYAN}${BOLD}Step 2: Building SDK packages...${NC}"
 echo "  Compiling TypeScript..."
-npm run build --silent
+npm run build -w packages/crypto --silent
+npm run build --workspaces --if-present --silent
 echo -e "${GREEN}SDK packages built successfully${NC}"
 echo
 
