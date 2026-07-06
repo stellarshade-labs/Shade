@@ -31,14 +31,20 @@ export interface WalletKeysOpts {
 }
 
 function decodeToBytes(raw: string): Uint8Array {
-  const hexLike = /^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0;
-  if (hexLike) {
-    const bytes = new Uint8Array(Buffer.from(raw, 'hex'));
-    if (bytes.length === 64) return bytes;
+  // Treat the input as hex ONLY when it is exactly 128 hex chars (a 64-byte
+  // ed25519 signature). This avoids the ambiguity where a base64 payload that
+  // happens to be all-hex-and-even-length would be silently mis-decoded as hex.
+  const isSignatureHex = raw.length === 128 && /^[0-9a-fA-F]+$/.test(raw);
+  const bytes = isSignatureHex
+    ? new Uint8Array(Buffer.from(raw, 'hex'))
+    : new Uint8Array(Buffer.from(raw, 'base64'));
+
+  if (bytes.length !== 64) {
+    throw new Error(
+      `Wallet signature must decode to exactly 64 bytes, got ${bytes.length}`,
+    );
   }
-  // Fall back to base64.
-  const b64 = new Uint8Array(Buffer.from(raw, 'base64'));
-  return b64;
+  return bytes;
 }
 
 function normalizeSignature(

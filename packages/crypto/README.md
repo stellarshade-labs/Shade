@@ -247,6 +247,92 @@ const stealthPrivKey = recoverStealthPrivateKey(
 // Use with Stellar SDK to sign transactions
 ```
 
+### Wallet-Derived Keys (SEP-53)
+
+Instead of storing a separate mnemonic, an app can derive a user's stealth keys
+deterministically from a signature produced by their existing Stellar wallet.
+The user signs one fixed message; the resulting 64-byte ed25519 signature seeds
+the spend and view keypairs. Because RFC 8032 ed25519 signatures are
+deterministic, the same wallet signing the same message always re-derives the
+same stealth keys — no extra secret to back up.
+
+#### `buildKeyDerivationMessage(opts?: { network?: string; appId?: string }): string`
+
+Build the exact, human-readable message a wallet signs to derive its stealth
+keys. Pure string builder, no `@stellar/stellar-sdk` dependency.
+
+**Parameters:**
+- `opts.network`: Network label to bind keys to (default `'any'`)
+- `opts.appId`: Application identifier to scope keys (default `'default'`)
+
+**Returns:** A newline-separated message string.
+
+**Exact message format** (`\n`-joined, no trailing newline):
+
+```
+stellar-stealth-keys-v1
+network:<network>
+app:<appId>
+WARNING: Signing this message derives your stealth keys. Only sign it in apps you trust.
+```
+
+The first line is the `KEY_DERIVATION_CONTEXT_V1` domain-separation constant
+(`stellar-stealth-keys-v1`) and is guaranteed stable for the v1 scheme.
+
+#### `deriveKeysFromSignature(signature: Uint8Array): StealthKeys`
+
+Derive stealth spend and view keys from a wallet's 64-byte ed25519 signature
+over the derivation message. Uses domain-separated SHA-256 (`stealth-spend` /
+`stealth-view` tags) to produce two independent scalars, mirroring the BIP-39
+derivation in `hd.ts`.
+
+**Parameters:**
+- `signature`: A 64-byte ed25519 signature over the derivation message
+
+**Returns:** `StealthKeys` — same shape as `generateMetaAddress()`
+
+**Throws:** `InvalidScalar` if the signature is not exactly 64 bytes or is all zeros
+
+#### SEP-53 signing envelope (SDK/CLI)
+
+Wallets don't sign the raw derivation message; they sign the SHA-256 of the
+[SEP-53](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0053.md)
+signed-message envelope. The SDK and CLI reproduce this envelope so that a real
+wallet and the local CLI derive identical keys:
+
+```typescript
+import { buildKeyDerivationMessage, deriveKeysFromSignature } from 'stellar-stealth';
+import { sha256 } from '@noble/hashes/sha256';
+
+const message = buildKeyDerivationMessage({ network: 'testnet', appId: 'my-app' });
+
+// SEP-53 envelope: "Stellar Signed Message:\n" + message, then SHA-256
+const envelope = new TextEncoder().encode('Stellar Signed Message:\n' + message);
+const digest = sha256(envelope);
+
+// Wallet signs the 32-byte digest with its ed25519 spend key
+const signature = wallet.sign(digest); // 64 bytes
+
+const keys = deriveKeysFromSignature(signature);
+// keys.metaAddress is the receiver's public meta-address
+```
+
+#### Security model
+
+- **Deterministic signatures are REQUIRED.** Derivation only works with an
+  RFC 8032 / RFC 6979 deterministic signer. A wallet that randomizes signatures
+  derives different keys on every call and breaks recovery. Do not use this with
+  non-deterministic signers.
+- **Wallet compromise EQUALS stealth key compromise.** Anyone who can produce
+  this signature can re-derive (and therefore control) the stealth keys. This is
+  the accepted trade-off for keyless, recoverable-from-wallet stealth keys.
+- **Never sign the derivation message for any other purpose.** Signing it in an
+  untrusted context hands over the ability to derive the keys. The `WARNING`
+  line in the message makes this explicit to the signer.
+- **`appId` scopes keys per app.** Different apps signing with the same wallet
+  produce independent stealth keys, so a leak in one app does not expose
+  another. The `network` label scopes keys per network in the same way.
+
 ### Stellar Key Conversion
 
 #### `encodePublicKey(pubKey: Uint8Array): string`

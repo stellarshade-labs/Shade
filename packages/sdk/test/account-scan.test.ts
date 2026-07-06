@@ -26,8 +26,21 @@ function keysToHex(): { keys: StealthKeys; raw: ReturnType<typeof generateMetaAd
 function makeStubFetch(opts: {
   transactions: unknown[];
   operationsByTx: Record<string, unknown[]>;
+  claimableBalancesByClaimant?: Record<string, unknown[]>;
 }): FetchLike {
   return async (url: string) => {
+    if (url.includes('/claimable_balances?claimant=')) {
+      const claimant = url.split('claimant=')[1]!.split('&')[0]!;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          _embedded: {
+            records: opts.claimableBalancesByClaimant?.[claimant] ?? [],
+          },
+        }),
+      };
+    }
     if (url.includes('/transactions/') && url.includes('/operations')) {
       const hash = url.split('/transactions/')[1]!.split('/operations')[0]!;
       return {
@@ -188,5 +201,77 @@ describe('account scan', () => {
 
     expect(payments).toHaveLength(1);
     expect(payments[0]!.amount).toBe(7.5);
+  });
+
+  it('matches a token create_claimable_balance and resolves its balance id', async () => {
+    const { keys, raw } = keysToHex();
+    const mine = deriveStealthAddressWithSecret(
+      raw.metaAddress.spendPubKey,
+      raw.metaAddress.viewPubKey,
+      new Uint8Array(randomBytes(32)),
+    );
+
+    const ASSET = 'USDC:GISSUERXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX';
+    const CB_ID =
+      '00000000abcdef0123456789abcdef0123456789abcdef0123456789abcdef01';
+
+    const transactions = [
+      {
+        id: 't1',
+        hash: 'HASH_CB',
+        paging_token: '1',
+        memo_type: 'hash',
+        memo: Buffer.from(mine.ephemeralPubKey).toString('base64'),
+        successful: true,
+      },
+    ];
+    const operationsByTx = {
+      HASH_CB: [
+        {
+          id: 'o0',
+          type: 'create_account',
+          transaction_hash: 'HASH_CB',
+          account: mine.stealthAddress,
+          starting_balance: '1.5001000',
+        },
+        {
+          id: 'o1',
+          type: 'create_claimable_balance',
+          transaction_hash: 'HASH_CB',
+          asset: ASSET,
+          amount: '100.0000000',
+          claimants: [{ destination: mine.stealthAddress }],
+        },
+      ],
+    };
+    const claimableBalancesByClaimant = {
+      [mine.stealthAddress]: [
+        {
+          id: CB_ID,
+          asset: ASSET,
+          amount: '100.0000000',
+          claimants: [{ destination: mine.stealthAddress }],
+        },
+      ],
+    };
+
+    const horizon = new HorizonClient(
+      'http://localhost:8000',
+      makeStubFetch({ transactions, operationsByTx, claimableBalancesByClaimant }),
+    );
+    const adapter = new AccountAdapter(Networks.STANDALONE, horizon);
+    const { payments } = await adapter.scan(keys);
+
+    // The funding create_account (native 1.5001) is suppressed; only the one
+    // logical token payment (the claimable balance) surfaces as spendable.
+    expect(payments).toHaveLength(1);
+    const token = payments.find((p) => p.claimableBalanceId);
+    expect(token).toBeDefined();
+    expect(token!.stealthAddress).toBe(mine.stealthAddress);
+    expect(token!.asset).toBe(ASSET);
+    expect(token!.token).toBe(ASSET);
+    expect(token!.amount).toBe(100);
+    expect(token!.claimableBalanceId).toBe(CB_ID);
+    expect(token!.method).toBe('account');
   });
 });

@@ -18,6 +18,12 @@ export interface HorizonTx {
   successful?: boolean;
 }
 
+/** A single claimant on a create_claimable_balance operation. */
+export interface HorizonClaimant {
+  destination: string;
+  predicate?: unknown;
+}
+
 /** A subset of a Horizon operation record relevant to the account method. */
 export interface HorizonOp {
   id: string;
@@ -31,8 +37,21 @@ export interface HorizonOp {
   to?: string;
   /** payment: amount (string, whole units) */
   amount?: string;
-  /** payment: asset type ('native' for XLM) */
+  /** payment / create_claimable_balance: asset type ('native' for XLM) */
   asset_type?: string;
+  /** create_claimable_balance: asset in "CODE:ISSUER" form (or 'native') */
+  asset?: string;
+  /** create_claimable_balance: the claimants list */
+  claimants?: HorizonClaimant[];
+}
+
+/** A Horizon claimable-balance record (used by the token account method). */
+export interface HorizonClaimableBalance {
+  id: string;
+  asset: string;
+  amount: string;
+  sponsor?: string;
+  claimants: HorizonClaimant[];
 }
 
 /** Horizon account record subset (used to probe existence + sequence). */
@@ -120,6 +139,24 @@ export class HorizonClient {
     if (res.status === 404) return null;
     if (!res.ok) throw new Error(`Horizon GET account failed: ${res.status}`);
     return (await res.json()) as HorizonAccount;
+  }
+
+  /**
+   * List claimable balances for which the given address is a claimant.
+   *
+   * Used by the token account method: a direct token send lands as a
+   * CreateClaimableBalance to the derived stealth address, which the recipient
+   * later claims. Returns an empty array when the account has none.
+   *
+   * @param claimant - Stellar G-address to filter claimable balances by.
+   */
+  async getClaimableBalances(
+    claimant: string,
+  ): Promise<HorizonClaimableBalance[]> {
+    const page = await this.getJson<HorizonPage<HorizonClaimableBalance>>(
+      `/claimable_balances?claimant=${claimant}&limit=200`,
+    );
+    return page._embedded?.records ?? [];
   }
 
   /**

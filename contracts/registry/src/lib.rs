@@ -569,6 +569,83 @@ mod tests {
     }
 
     #[test]
+    fn test_get_announcements_paging_edges() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(StealthPoolContract, ());
+        let client = StealthPoolContractClient::new(&env, &contract_id);
+
+        let (token_id, _admin, sac) = setup_token(&env);
+        let sender = Address::generate(&env);
+        sac.mint(&sender, &100000);
+
+        // Seed 7 announcements with distinct ephemeral keys so windows can be
+        // compared for stability and non-overlap.
+        let count: u8 = 7;
+        for i in 0u8..count {
+            let stealth_pk = BytesN::from_array(&env, &[i + 1; 32]);
+            let eph = BytesN::from_array(&env, &[i + 100; 32]);
+            client.deposit(&sender, &token_id, &100, &stealth_pk, &eph, &(i as u32));
+        }
+        assert_eq!(client.get_announcement_count(), count as u64);
+
+        // start exactly at count -> empty
+        assert_eq!(client.get_announcements(&(count as u64), &10).len(), 0);
+        // start beyond count -> empty
+        assert_eq!(client.get_announcements(&50, &10).len(), 0);
+        // zero limit -> empty even for a valid start
+        assert_eq!(client.get_announcements(&0, &0).len(), 0);
+
+        // Consecutive windows of size 3: [0,3), [3,6), [6,9)
+        let w0 = client.get_announcements(&0, &3);
+        let w1 = client.get_announcements(&3, &3);
+        let w2 = client.get_announcements(&6, &3);
+        assert_eq!(w0.len(), 3);
+        assert_eq!(w1.len(), 3);
+        assert_eq!(w2.len(), 1); // only index 6 remains
+
+        // Windows are non-overlapping: their ephemeral keys are all distinct and
+        // together cover exactly the full set once.
+        let mut seen: Vec<BytesN<32>> = vec![&env];
+        for w in [&w0, &w1, &w2] {
+            for entry in w.iter() {
+                assert!(!seen.contains(&entry.ephemeral_pk), "windows overlapped");
+                seen.push_back(entry.ephemeral_pk.clone());
+            }
+        }
+        assert_eq!(seen.len(), count as u32);
+
+        // Windows are stable: re-fetching the same window yields the same slice.
+        let w1_again = client.get_announcements(&3, &3);
+        assert_eq!(w1, w1_again);
+
+        // A window straddling the end returns only the in-range remainder.
+        let tail = client.get_announcements(&5, &10);
+        assert_eq!(tail.len(), 2); // indices 5 and 6
+
+        // A full-span window equals the concatenation start..count.
+        let full = client.get_announcements(&0, &(count as u64));
+        assert_eq!(full.len(), count as u32);
+        assert_eq!(full.get(0).unwrap().ephemeral_pk, w0.get(0).unwrap().ephemeral_pk);
+        assert_eq!(full.get(6).unwrap().ephemeral_pk, w2.get(0).unwrap().ephemeral_pk);
+    }
+
+    #[test]
+    fn test_get_announcements_empty_pool() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(StealthPoolContract, ());
+        let client = StealthPoolContractClient::new(&env, &contract_id);
+
+        // No deposits yet: any window (including start 0) is empty.
+        assert_eq!(client.get_announcement_count(), 0);
+        assert_eq!(client.get_announcements(&0, &10).len(), 0);
+        assert_eq!(client.get_announcements(&5, &10).len(), 0);
+    }
+
+    #[test]
     fn test_get_announcements_by_tag() {
         let env = Env::default();
         env.mock_all_auths();

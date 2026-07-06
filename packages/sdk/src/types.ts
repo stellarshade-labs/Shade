@@ -37,6 +37,16 @@ export interface Payment {
   ephemeralPubKey: string;
   /** Token contract address (or the string 'native' for direct XLM sends) */
   token: string;
+  /**
+   * Asset in Horizon "CODE:ISSUER" form (or 'native') for account-method token
+   * payments. Present only when the payment arrived as a claimable balance.
+   */
+  asset?: string;
+  /**
+   * Claimable balance id (account-method token payments only). Its presence is
+   * what marks a payment as a token claim rather than a plain XLM send.
+   */
+  claimableBalanceId?: string;
   /** Amount in whole units (e.g. 100.0 = 100 XLM) */
   amount: number;
   /** Which delivery method surfaced this payment */
@@ -133,6 +143,12 @@ export interface ClaimOpts {
   asset?: string;
   /** Amount to claim (pool method). Default: full balance */
   amount?: number;
+  /**
+   * For the account-method token claim: use the relayer's sponsor-claim pair
+   * (prepare -> stealth-sign -> submit) instead of a self-funded stealth tx.
+   * Needed when the stealth account stub is missing / cannot pay reserves.
+   */
+  sponsored?: boolean;
 }
 
 /** Receipt returned after a successful claim. */

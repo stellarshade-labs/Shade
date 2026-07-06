@@ -50,3 +50,16 @@ export class MinimumAmountError extends Error {
     this.name = 'MinimumAmountError';
   }
 }
+
+/**
+ * Thrown by {@link StealthSession.unlock} when the supplied password fails to
+ * decrypt the stored envelope. Surfaces as an AES-GCM authentication failure
+ * (the tag does not verify), which is indistinguishable from tampering — either
+ * way the key material must not be trusted.
+ */
+export class WrongPasswordError extends Error {
+  constructor() {
+    super('Wrong password: could not decrypt the stored stealth keys.');
+    this.name = 'WrongPasswordError';
+  }
+}

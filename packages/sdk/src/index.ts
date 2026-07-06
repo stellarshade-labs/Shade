@@ -11,6 +11,7 @@ export {
   MethodNotEnabledError,
   MethodNotAvailableError,
   MinimumAmountError,
+  WrongPasswordError,
 } from './errors.js';
 
 export { HorizonClient } from './horizon.js';
@@ -18,8 +19,23 @@ export type {
   HorizonTx,
   HorizonOp,
   HorizonAccount,
+  HorizonClaimant,
+  HorizonClaimableBalance,
   FetchLike,
 } from './horizon.js';
+
+export { RelayerClient } from './relayer.js';
+export type {
+  RelayerHealth,
+  RelayOpts,
+  SponsorOpts,
+  SponsorClaimPrepareArgs,
+  SponsorClaimPrepared,
+  CreditView,
+} from './relayer.js';
+
+export { StealthSession } from './session.js';
+export type { KVStorage, StealthSessionOpts, ScanState } from './session.js';
 
 export type { DeliveryAdapter, AdapterSendParams } from './methods/types.js';
 export { PoolAdapter } from './methods/pool.js';

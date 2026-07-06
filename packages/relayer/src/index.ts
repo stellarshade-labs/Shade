@@ -2,6 +2,14 @@ import express from 'express';
 import cors from 'cors';
 import { Keypair, Horizon } from '@stellar/stellar-sdk';
 import { initRelayRoute, handleRelay } from './routes/relay.js';
+import { handleSponsor } from './routes/sponsor.js';
+import {
+  handleSponsorClaimPrepare,
+  handleSponsorClaimSubmit,
+} from './routes/sponsorClaim.js';
+import { handleCreditClaim, handleCreditBalance } from './routes/credit.js';
+import { CreditLedger } from './ledger.js';
+import { initContext } from './context.js';
 import RateLimiter from './utils/rateLimit.js';
 import { logger } from './utils/logger.js';
 import dotenv from 'dotenv';
@@ -79,22 +87,57 @@ async function initRelayer() {
       }
     }
 
-    initRelayRoute(keypair);
+    const requireCredit = process.env.RELAYER_REQUIRE_CREDIT === '1';
+    const ledger = new CreditLedger();
 
-    app.get('/health', (_, res) => {
-      res.json({ status: 'ok', network: NETWORK });
+    initContext({
+      keypair,
+      network: NETWORK,
+      horizonUrl,
+      server: horizonServer,
+      ledger,
+      requireCredit,
+    });
+    initRelayRoute(keypair, { ledger, requireCredit });
+
+    app.get('/health', async (_, res) => {
+      let balance = '0';
+      try {
+        const account = await horizonServer.loadAccount(keypair.publicKey());
+        balance = account.balances.find((b) => b.asset_type === 'native')?.balance ?? '0';
+      } catch {
+        // Account may be unfunded; report zero.
+      }
+      res.json({
+        status: 'ok',
+        network: NETWORK,
+        relayerAddress: keypair.publicKey(),
+        balance,
+        requireCredit,
+      });
     });
 
     app.post('/relay', handleRelay);
+    app.post('/sponsor', handleSponsor);
+    app.post('/sponsor-claim/prepare', handleSponsorClaimPrepare);
+    app.post('/sponsor-claim/submit', handleSponsorClaimSubmit);
+    app.post('/credit/claim', handleCreditClaim);
+    app.get('/credit/:account', handleCreditBalance);
 
     const httpServer = app.listen(PORT, '0.0.0.0', () => {
       logger.info('Relayer started', { port: PORT, network: NETWORK });
       console.log(`[Relayer] Server listening on port ${PORT}`);
       console.log(`[Relayer] Network: ${NETWORK}`);
+      console.log(`[Relayer] Require credit: ${requireCredit}`);
       console.log(`[Relayer] Rate limit: 10 requests/minute per IP`);
       console.log(`[Relayer] Endpoints:`);
-      console.log(`  POST /relay   - Fee-bump transaction submission`);
-      console.log(`  GET  /health  - Health check`);
+      console.log(`  POST /relay                  - Fee-bump transaction submission`);
+      console.log(`  POST /sponsor                - Create a stealth account`);
+      console.log(`  POST /sponsor-claim/prepare  - Build a sponsored claim tx`);
+      console.log(`  POST /sponsor-claim/submit   - Co-sign + submit a sponsored claim`);
+      console.log(`  POST /credit/claim           - Credit an app account from a deposit`);
+      console.log(`  GET  /credit/:account        - Read an app account's credit`);
+      console.log(`  GET  /health                 - Health check`);
     });
 
     process.on('SIGTERM', gracefulShutdown);

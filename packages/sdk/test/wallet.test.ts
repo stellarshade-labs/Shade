@@ -47,6 +47,18 @@ describe('keysFromWalletSignature', () => {
     ).rejects.toThrow();
   });
 
+  it('does not silently mis-decode a 64-char-hex string as a 32-byte signature', async () => {
+    // 64 hex chars = 32 bytes if read as hex. The old guard accepted any
+    // even-length all-hex string and fell through to base64; the tightened
+    // guard only treats 128-char hex as hex, so this input decodes as base64
+    // (48 bytes) and must fail loudly rather than derive unrecoverable keys.
+    const sixtyFourHex = '0123456789abcdef'.repeat(4);
+    expect(sixtyFourHex).toHaveLength(64);
+    await expect(
+      keysFromWalletSignature(async () => sixtyFourHex),
+    ).rejects.toThrow(/64 bytes/);
+  });
+
   it('throws for a non-deterministic signer when verifyDeterminism is set', async () => {
     let call = 0;
     await expect(
