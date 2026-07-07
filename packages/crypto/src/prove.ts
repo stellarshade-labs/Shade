@@ -33,6 +33,9 @@ export function signWithStealthKey(message: Uint8Array, privateScalar: Uint8Arra
   nonceInput.set(message, 32);
   const r = bytesToNumberLE(sha512(nonceInput)) % L;
 
+  // Zero the sensitive intermediate (contains the private scalar).
+  nonceInput.fill(0);
+
   const R = ed25519.ExtendedPoint.BASE.multiply(r);
   const Rbytes = R.toRawBytes();
 

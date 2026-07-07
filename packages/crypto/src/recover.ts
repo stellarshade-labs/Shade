@@ -13,24 +13,34 @@ import { hashToScalar } from './hash.js';
  * - Sign transactions from the stealth address
  * - Derive the corresponding public key for verification
  *
+ * WARNING: The returned value is a RAW ed25519 SCALAR (k_spend + s mod L),
+ * NOT an ed25519 seed. You MUST sign with {@link signWithStealthKey} from
+ * this package. Do NOT construct a Stellar/ed25519 Keypair from it via
+ * `Keypair.fromRawEd25519Seed()` or any seed-based API: those APIs HASH the
+ * input to derive a different signing scalar, producing a key that does not
+ * match the stealth public key — the contract will reject the signature and
+ * the funds become unwithdrawable.
+ *
  * @param spendPrivKey - Receiver's 32-byte spend private key
  * @param viewPrivKey - Receiver's 32-byte view private key
  * @param ephemeralPubKey - 32-byte ephemeral public key from announcement
- * @returns 32-byte stealth private key for signing transactions
+ * @returns 32-byte stealth private key (raw scalar) for signing transactions
  * @throws {Error} If key lengths are invalid
  *
  * @example
  * ```typescript
- * // Recover private key to withdraw funds
+ * import { recoverStealthPrivateKey, signWithStealthKey } from '@stealth/crypto';
+ *
+ * // Recover the raw stealth scalar to withdraw funds
  * const stealthPrivKey = recoverStealthPrivateKey(
  *   keys.spendPrivKey,
  *   keys.viewPrivKey,
  *   announcement.ephemeralPubKey
  * );
  *
- * // Use with Stellar SDK to sign transaction
- * const keypair = Keypair.fromRawEd25519Seed(stealthPrivKey);
- * transaction.sign(keypair);
+ * // Sign the withdrawal message with the raw scalar (do NOT build a
+ * // Keypair from fromRawEd25519Seed — that hashes to a different key).
+ * const signature = signWithStealthKey(withdrawMessage, stealthPrivKey);
  *
  * // IMPORTANT: Clear private key from memory after use
  * stealthPrivKey.fill(0);

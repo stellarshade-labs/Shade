@@ -18,17 +18,22 @@ import readline from 'readline';
 
 /**
  * Reproduce the SEP-53 signing envelope locally and derive stealth keys.
- * message = buildKeyDerivationMessage({ network, appId }); the signer signs
- * SHA-256 of ("Stellar Signed Message:\n" + message), matching how a wallet
- * would sign the same derivation message.
+ * message = buildKeyDerivationMessage({ network: keyScope, appId }); the signer
+ * signs SHA-256 of ("Stellar Signed Message:\n" + message), matching how a
+ * wallet would sign the same derivation message.
+ *
+ * `keyScope` is the crypto `network` scope field and is DECOUPLED from the
+ * transport `--network` flag: it defaults to 'stealth' here and in the SDK's
+ * keysFromWalletSignature, so the same wallet derives the SAME meta-address
+ * across both tools. Changing the transport network must NOT change the keys.
  */
-function deriveFromStellarSecret(
+export function deriveFromStellarSecret(
   secret: string,
-  network: string,
+  keyScope: string,
   appId: string,
 ): ReturnType<typeof deriveKeysFromSignature> {
   const keypair = Keypair.fromSecret(secret);
-  const message = buildKeyDerivationMessage({ network, appId });
+  const message = buildKeyDerivationMessage({ network: keyScope, appId });
   const envelope = Buffer.concat([
     Buffer.from('Stellar Signed Message:\n', 'utf-8'),
     Buffer.from(message, 'utf-8'),
@@ -55,7 +60,7 @@ export const keygenCommand = new Command('keygen')
   .option('--recover', 'Recover keys from an existing 12-word mnemonic')
   .option('--from-stellar-secret [secret]', 'Derive keys deterministically from a Stellar secret (SEP-53)')
   .option('--app-id <id>', 'Application id to scope derived keys', 'default')
-  .option('--network <network>', 'Network to scope derived keys', 'local')
+  .option('--key-scope <scope>', 'Key-derivation scope (decoupled from transport network; must match across tools)', 'stealth')
   .action(async (options) => {
     try {
       let spendPrivKey: Uint8Array;
@@ -71,7 +76,7 @@ export const keygenCommand = new Command('keygen')
           secret = await promptLine(chalk.white('Enter your Stellar secret (S...): '));
         }
         try {
-          const keys = deriveFromStellarSecret(secret, options.network, options.appId);
+          const keys = deriveFromStellarSecret(secret, options.keyScope, options.appId);
           spendPrivKey = keys.spendPrivKey;
           viewPrivKey = keys.viewPrivKey;
           spendPubKey = keys.metaAddress.spendPubKey;

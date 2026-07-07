@@ -103,9 +103,20 @@ export function scanAnnouncements(
   // Pass 1: Quick view tag filtering with shared secret caching
   const tagMatches: Array<{ announcement: Announcement; sharedSecret: Uint8Array }> = [];
   for (const announcement of announcements) {
-    const tagResult = checkViewTag(viewPrivKey, announcement.ephemeralPubKey, announcement.viewTag);
-    if (tagResult.matches && tagResult.sharedSecret) {
-      tagMatches.push({ announcement, sharedSecret: tagResult.sharedSecret });
+    // A malicious or malformed announcement may carry an invalid ephemeral
+    // key (e.g. a small-order/torsion point). Skip it rather than aborting
+    // the entire scan.
+    try {
+      const tagResult = checkViewTag(
+        viewPrivKey,
+        announcement.ephemeralPubKey,
+        announcement.viewTag
+      );
+      if (tagResult.matches && tagResult.sharedSecret) {
+        tagMatches.push({ announcement, sharedSecret: tagResult.sharedSecret });
+      }
+    } catch {
+      continue;
     }
   }
 

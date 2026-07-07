@@ -2,6 +2,8 @@ export { StealthClient } from './client.js';
 
 export {
   keysFromWalletSignature,
+  DEFAULT_KEY_SCOPE,
+  DEFAULT_APP_ID,
   type WalletSigner,
   type WalletKeysOpts,
 } from './wallet.js';

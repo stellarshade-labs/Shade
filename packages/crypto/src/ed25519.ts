@@ -8,24 +8,43 @@ import { PointAtInfinity, InvalidPublicKey, InvalidScalar } from './errors.js';
 export const L = 2n ** 252n + 27742317777372353535851937790883648493n;
 
 /**
- * Validate that a point is on the ed25519 curve.
+ * Validate that a point is a valid ed25519 public key.
+ *
+ * Accepts only points that lie on the curve AND belong to the prime-order
+ * subgroup (torsion-free). This rejects the identity and the small-order
+ * (torsion) points, preventing small-subgroup attacks through the ECDH and
+ * point-addition paths that flow through `R`, `K_view`, and `K_spend`.
+ *
  * @param point 32-byte compressed point
  * @returns true if valid
- * @throws InvalidPublicKey if not on curve
+ * @throws InvalidPublicKey if not on curve or not in the prime-order subgroup
  */
 export function validatePoint(point: Uint8Array): boolean {
   if (point.length !== 32) {
     throw new InvalidPublicKey('Invalid point length');
   }
 
+  let p: InstanceType<typeof ed25519.ExtendedPoint>;
   try {
     // This will throw if point is not on curve
-    ed25519.ExtendedPoint.fromHex(point);
-    return true;
+    p = ed25519.ExtendedPoint.fromHex(point);
   } catch (e) {
     if (e instanceof InvalidPublicKey) throw e;
     throw new InvalidPublicKey('Point not on curve');
   }
+
+  // Reject the identity (point at infinity) explicitly: it is technically
+  // torsion-free per noble but is a degenerate, order-1 key.
+  if (p.equals(ed25519.ExtendedPoint.ZERO)) {
+    throw new InvalidPublicKey('Point is the identity element');
+  }
+
+  // Reject small-order (torsion) points not in the prime-order subgroup.
+  if (!p.isTorsionFree()) {
+    throw new InvalidPublicKey('Point is not in the prime-order subgroup');
+  }
+
+  return true;
 }
 
 /**
@@ -126,7 +145,7 @@ export function scalarMult(scalar: Uint8Array, point: Uint8Array, allowZero = fa
  * @param s1 First scalar (32-byte, little-endian)
  * @param s2 Second scalar (32-byte, little-endian)
  * @returns Result scalar (32-byte, little-endian)
- * @throws InvalidScalar if inputs have wrong length
+ * @throws InvalidScalar if inputs have wrong length or the sum reduces to zero
  */
 export function scalarAdd(s1: Uint8Array, s2: Uint8Array): Uint8Array {
   if (s1.length !== 32) throw new InvalidScalar('Invalid s1 length');
@@ -135,6 +154,12 @@ export function scalarAdd(s1: Uint8Array, s2: Uint8Array): Uint8Array {
   const a = bytesToNumberLE(s1) % L;
   const b = bytesToNumberLE(s2) % L;
   const result = (a + b) % L;
+
+  // A zero result yields a degenerate scalar whose public key is the identity;
+  // mirror scalarMultBase's zero guard and reject it.
+  if (result === 0n) {
+    throw new InvalidScalar('Zero scalar not allowed');
+  }
 
   return numberToBytesLE(result, 32);
 }

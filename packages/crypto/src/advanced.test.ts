@@ -14,20 +14,30 @@ function randomScalar(): Uint8Array {
 }
 
 describe('encryptAmount', () => {
-  it('should encrypt and decrypt amounts correctly', () => {
+  it('should encrypt and decrypt integer stroop amounts correctly', () => {
     const sharedSecret = new Uint8Array(32).fill(1);
-    const amount = 123.456;
+    const amount = 123456n;
 
     const encrypted = encryptAmount(amount, sharedSecret);
     expect(encrypted).toBeInstanceOf(Uint8Array);
-    expect(encrypted.length).toBe(8);
+    expect(encrypted.length).toBe(40); // 8-byte body + 32-byte HMAC tag
 
     const decrypted = decryptAmount(encrypted, sharedSecret);
-    expect(decrypted).toBeCloseTo(amount, 10);
+    expect(decrypted).toBe(amount);
+  });
+
+  it('should accept number inputs for integer amounts', () => {
+    const sharedSecret = randomScalar();
+    const amount = 100;
+
+    const encrypted = encryptAmount(amount, sharedSecret);
+    const decrypted = decryptAmount(encrypted, sharedSecret);
+
+    expect(decrypted).toBe(100n);
   });
 
   it('should produce different ciphertexts for different shared secrets', () => {
-    const amount = 100;
+    const amount = 100n;
     const secret1 = new Uint8Array(32).fill(1);
     const secret2 = new Uint8Array(32).fill(2);
 
@@ -39,81 +49,61 @@ describe('encryptAmount', () => {
 
   it('should handle zero amount', () => {
     const sharedSecret = randomScalar();
-    const amount = 0;
 
-    const encrypted = encryptAmount(amount, sharedSecret);
+    const encrypted = encryptAmount(0n, sharedSecret);
     const decrypted = decryptAmount(encrypted, sharedSecret);
 
-    expect(decrypted).toBe(0);
+    expect(decrypted).toBe(0n);
   });
 
-  it('should handle large amounts', () => {
+  it('should round-trip a large stroop amount exactly', () => {
     const sharedSecret = randomScalar();
-    const amount = 1e15; // 1 quadrillion
+    // Above 2^53, beyond exact JS number precision — must round-trip exactly.
+    const amount = 9_223_372_036_854_775_807n; // i64 max
 
     const encrypted = encryptAmount(amount, sharedSecret);
     const decrypted = decryptAmount(encrypted, sharedSecret);
 
-    expect(decrypted).toBeCloseTo(amount, 0);
+    expect(decrypted).toBe(amount);
   });
 
-  it('should handle negative amounts', () => {
+  it('should reject non-integer amounts', () => {
     const sharedSecret = randomScalar();
-    const amount = -123.456;
-
-    const encrypted = encryptAmount(amount, sharedSecret);
-    const decrypted = decryptAmount(encrypted, sharedSecret);
-
-    expect(decrypted).toBeCloseTo(amount, 10);
+    expect(() => encryptAmount(123.456, sharedSecret)).toThrow('integer');
   });
 
-  it('should handle NaN', () => {
+  it('should reject negative amounts', () => {
     const sharedSecret = randomScalar();
-    const amount = NaN;
-
-    const encrypted = encryptAmount(amount, sharedSecret);
-    const decrypted = decryptAmount(encrypted, sharedSecret);
-
-    expect(decrypted).toBeNaN();
+    expect(() => encryptAmount(-1n, sharedSecret)).toThrow('non-negative');
   });
 
-  it('should handle Infinity', () => {
+  it('should reject NaN', () => {
     const sharedSecret = randomScalar();
-    const amount = Infinity;
-
-    const encrypted = encryptAmount(amount, sharedSecret);
-    const decrypted = decryptAmount(encrypted, sharedSecret);
-
-    expect(decrypted).toBe(Infinity);
+    expect(() => encryptAmount(NaN, sharedSecret)).toThrow('finite');
   });
 
-  it('should handle -Infinity', () => {
+  it('should reject Infinity', () => {
     const sharedSecret = randomScalar();
-    const amount = -Infinity;
+    expect(() => encryptAmount(Infinity, sharedSecret)).toThrow('finite');
+  });
 
-    const encrypted = encryptAmount(amount, sharedSecret);
-    const decrypted = decryptAmount(encrypted, sharedSecret);
-
-    expect(decrypted).toBe(-Infinity);
+  it('should reject amounts exceeding the maximum', () => {
+    const sharedSecret = randomScalar();
+    expect(() => encryptAmount(1n << 64n, sharedSecret)).toThrow('maximum');
   });
 
   it('should fail with invalid shared secret length', () => {
     const invalidSecret = new Uint8Array(16); // Wrong length
-    const amount = 100;
-
-    expect(() => encryptAmount(amount, invalidSecret)).toThrow('Invalid shared secret');
+    expect(() => encryptAmount(100n, invalidSecret)).toThrow('Invalid shared secret');
   });
 
-  it('should fail to decrypt with wrong shared secret', () => {
+  it('should fail to decrypt with wrong shared secret (auth failure)', () => {
     const secret1 = randomScalar();
     const secret2 = randomScalar();
-    const amount = 123.456;
+    const amount = 123456n;
 
     const encrypted = encryptAmount(amount, secret1);
-    const decrypted = decryptAmount(encrypted, secret2);
-
-    // Should decrypt to a different (wrong) value
-    expect(decrypted).not.toBeCloseTo(amount, 10);
+    expect(() => decryptAmount(encrypted, secret2)).toThrow('authentication failed');
   });
 });
 
@@ -125,9 +115,27 @@ describe('decryptAmount', () => {
     expect(() => decryptAmount(invalidEncrypted, sharedSecret)).toThrow('Invalid encrypted amount');
   });
 
+  it('should throw when a ciphertext byte is flipped', () => {
+    const sharedSecret = randomScalar();
+    const encrypted = encryptAmount(500n, sharedSecret);
+
+    // Flip a byte in the encrypted amount body.
+    encrypted[0] ^= 0xff;
+    expect(() => decryptAmount(encrypted, sharedSecret)).toThrow('authentication failed');
+  });
+
+  it('should throw when a tag byte is flipped', () => {
+    const sharedSecret = randomScalar();
+    const encrypted = encryptAmount(500n, sharedSecret);
+
+    // Flip a byte in the HMAC tag region.
+    encrypted[encrypted.length - 1] ^= 0xff;
+    expect(() => decryptAmount(encrypted, sharedSecret)).toThrow('authentication failed');
+  });
+
   it('should produce consistent results with same inputs', () => {
-    const sharedSecret = new Uint8Array(32).fill(42);
-    const encrypted = new Uint8Array(8).fill(100);
+    const sharedSecret = randomScalar();
+    const encrypted = encryptAmount(777n, sharedSecret);
 
     const result1 = decryptAmount(encrypted, sharedSecret);
     const result2 = decryptAmount(encrypted, sharedSecret);

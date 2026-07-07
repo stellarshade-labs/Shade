@@ -16,16 +16,37 @@ export type WalletSigner = (
   Uint8Array | string | { signedMessage: string | Uint8Array }
 >;
 
+/**
+ * The default key-derivation scope. This is DECOUPLED from any transport network
+ * (e.g. testnet vs. local) so that a wallet re-derives the same stealth keys
+ * regardless of which network a transaction is later submitted to. The CLI's
+ * `--key-scope` flag defaults to this exact value so both tools line up.
+ */
+export const DEFAULT_KEY_SCOPE = 'stealth';
+
+/** The default application id used to scope derived keys. */
+export const DEFAULT_APP_ID = 'default';
+
 /** Options for {@link keysFromWalletSignature}. */
 export interface WalletKeysOpts {
-  /** Network label to scope keys (folded into the signed message). */
-  network?: string;
-  /** Application id to scope keys (folded into the signed message). */
+  /**
+   * Key-derivation scope folded into the signed message (crypto's `network`
+   * field). This MUST be decoupled from the transport network: use the same
+   * value everywhere you derive from this wallet, or you will get different
+   * (unrecoverable) keys. Defaults to {@link DEFAULT_KEY_SCOPE} (`'stealth'`),
+   * matching the CLI's `--key-scope` default so both tools derive identical keys.
+   */
+  keyScope?: string;
+  /**
+   * Application id to scope keys (folded into the signed message). Defaults to
+   * {@link DEFAULT_APP_ID} (`'default'`), matching the CLI's `--app-id` default.
+   */
   appId?: string;
   /**
-   * If true, sign the message TWICE and throw when the two signatures differ.
-   * This guards against randomized/hardware signers that would otherwise derive
-   * different (unrecoverable) keys on every call.
+   * Sign the message TWICE and throw when the two signatures differ. This guards
+   * against randomized/hardware signers that would otherwise derive different
+   * (unrecoverable) keys on every call. Defaults to `true`; pass `false` only
+   * for a signer you KNOW is deterministic (RFC 8032) to skip the extra signature.
    */
   verifyDeterminism?: boolean;
 }
@@ -89,16 +110,19 @@ function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
  * accepted trade-off for keyless recovery.
  *
  * @param signer - Callback that signs the derivation message (see {@link WalletSigner}).
- * @param opts - Optional network/appId scoping and determinism verification.
+ * @param opts - Optional keyScope/appId scoping and determinism verification.
+ *   `keyScope` and `appId` MUST match across every tool that derives from this
+ *   wallet (they default to `'stealth'` / `'default'`, the same as the CLI).
  * @returns Hex-string {@link StealthKeys} in the same shape as `keygen()`.
- * @throws If the signature is not exactly 64 bytes, or (with
- *   `verifyDeterminism`) if two signatures over the same message differ.
+ * @throws If the signature is not exactly 64 bytes, or (unless
+ *   `verifyDeterminism: false`) if two signatures over the same message differ.
  *
  * @example
  * ```typescript
+ * // verifyDeterminism defaults to true; pass false only for a known-good signer.
  * const keys = await keysFromWalletSignature(
  *   (msg) => freighter.signMessage(msg),
- *   { appId: 'my-app', verifyDeterminism: true },
+ *   { appId: 'my-app' },
  * );
  * ```
  */
@@ -107,13 +131,13 @@ export async function keysFromWalletSignature(
   opts?: WalletKeysOpts,
 ): Promise<StealthKeys> {
   const message = buildKeyDerivationMessage({
-    network: opts?.network,
-    appId: opts?.appId,
+    network: opts?.keyScope ?? DEFAULT_KEY_SCOPE,
+    appId: opts?.appId ?? DEFAULT_APP_ID,
   });
 
   const signature = normalizeSignature(await signer(message));
 
-  if (opts?.verifyDeterminism) {
+  if (opts?.verifyDeterminism !== false) {
     const second = normalizeSignature(await signer(message));
     if (!equalBytes(signature, second)) {
       throw new Error(

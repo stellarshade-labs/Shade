@@ -153,14 +153,17 @@ export function decodeMetaAddress(encoded: string): StealthMetaAddress {
     throw new InvalidMetaAddress('Invalid meta-address length');
   }
 
+  // Strictly validate the full hex payload before parsing. parseInt would
+  // silently accept a malformed nibble (e.g. "1g" -> 1), so reject anything
+  // that is not exactly 136 lowercase/uppercase hex characters.
+  if (!/^[0-9a-fA-F]{136}$/.test(hex)) {
+    throw new InvalidMetaAddress('Invalid hex encoding');
+  }
+
   // Parse hex to bytes
   const combined = new Uint8Array(68);
   for (let i = 0; i < 68; i++) {
-    const byte = parseInt(hex.substr(i * 2, 2), 16);
-    if (isNaN(byte)) {
-      throw new InvalidMetaAddress('Invalid hex encoding');
-    }
-    combined[i] = byte;
+    combined[i] = parseInt(hex.substr(i * 2, 2), 16);
   }
 
   // Split payload and checksum

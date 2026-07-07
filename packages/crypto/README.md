@@ -29,6 +29,7 @@ import {
   deriveStealthAddress,
   scanAnnouncements,
   recoverStealthPrivateKey,
+  signWithStealthKey,
 } from 'stellar-stealth';
 
 // 1. Generate a stealth meta-address (receiver)
@@ -62,7 +63,11 @@ const stealthPrivKey = recoverStealthPrivateKey(
   receiver.viewPrivKey,
   stealth.ephemeralPubKey
 );
-// Use this private key to sign transactions from the stealth address
+// WARNING: stealthPrivKey is a RAW SCALAR (k_spend + s mod L), NOT an ed25519
+// seed. Sign with signWithStealthKey — never build a Keypair from it via
+// Keypair.fromRawEd25519Seed (that hashes to a different key and the funds
+// become unwithdrawable).
+const signature = signWithStealthKey(withdrawMessage, stealthPrivKey);
 ```
 
 ## DKSAP Protocol
@@ -247,7 +252,13 @@ Recover the stealth private key for withdrawing funds.
 - `viewPrivKey`: Receiver's 32-byte view private key
 - `ephemeralPubKey`: 32-byte ephemeral public key from announcement
 
-**Returns:** 32-byte stealth private key for signing transactions
+**Returns:** 32-byte stealth private key (raw scalar) for signing transactions
+
+> **WARNING:** The returned value is a RAW ed25519 SCALAR (`k_spend + s mod L`),
+> NOT an ed25519 seed. Sign with `signWithStealthKey`. Do **not** build a Keypair
+> via `Keypair.fromRawEd25519Seed()` — that API hashes the input into a different
+> signing key that will not match the stealth public key, so the contract rejects
+> the signature and the funds become unwithdrawable.
 
 **Example:**
 ```typescript
@@ -256,7 +267,8 @@ const stealthPrivKey = recoverStealthPrivateKey(
   viewPrivKey,
   ephemeralPubKey
 );
-// Use with Stellar SDK to sign transactions
+// Sign the withdrawal message directly with the raw scalar.
+const signature = signWithStealthKey(withdrawMessage, stealthPrivKey);
 ```
 
 ### Wallet-Derived Keys (SEP-53)

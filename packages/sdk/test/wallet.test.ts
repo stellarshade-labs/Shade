@@ -59,19 +59,58 @@ describe('keysFromWalletSignature', () => {
     ).rejects.toThrow(/64 bytes/);
   });
 
-  it('throws for a non-deterministic signer when verifyDeterminism is set', async () => {
+  it('throws for a non-deterministic signer BY DEFAULT (verifyDeterminism defaults to true)', async () => {
+    let call = 0;
+    await expect(
+      // No opts: determinism check must run by default and catch the mismatch.
+      keysFromWalletSignature(async () => {
+        call += 1;
+        const sig = hexToBytes(VECTOR_SIG_HEX).slice();
+        sig[0] = call; // different each call
+        return sig;
+      }),
+    ).rejects.toThrow(/non-deterministic/i);
+  });
+
+  it('still throws for a non-deterministic signer when verifyDeterminism is explicitly true', async () => {
     let call = 0;
     await expect(
       keysFromWalletSignature(
         async () => {
           call += 1;
           const sig = hexToBytes(VECTOR_SIG_HEX).slice();
-          sig[0] = call; // different each call
+          sig[0] = call;
           return sig;
         },
         { verifyDeterminism: true },
       ),
     ).rejects.toThrow(/non-deterministic/i);
+  });
+
+  it('skips the determinism check (signs once) when verifyDeterminism is false', async () => {
+    let calls = 0;
+    const keys = await keysFromWalletSignature(
+      async () => {
+        calls += 1;
+        // Return a DIFFERENT signature each call; because the check is skipped,
+        // the first signature is used and no throw occurs.
+        const sig = hexToBytes(VECTOR_SIG_HEX).slice();
+        sig[0] = calls;
+        return sig;
+      },
+      { verifyDeterminism: false },
+    );
+    expect(calls).toBe(1);
+    expect(keys.metaAddress.startsWith('st:stellar:')).toBe(true);
+  });
+
+  it('signs the message TWICE by default for a deterministic signer', async () => {
+    let calls = 0;
+    await keysFromWalletSignature(async () => {
+      calls += 1;
+      return hexToBytes(VECTOR_SIG_HEX);
+    });
+    expect(calls).toBe(2);
   });
 
   it('returns a full StealthKeys shape with meta-address', async () => {
