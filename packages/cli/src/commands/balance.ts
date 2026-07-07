@@ -187,7 +187,7 @@ export const balanceCommand = new Command('balance')
           viewPrivKey: keystore.viewPrivateKey,
         };
         const client = new StealthClient({ network, methods: ['account'] });
-        const accountPayments = await client.scan(keys);
+        const accountPayments = await client.balance(keys);
         for (const p of accountPayments) {
           if (p.amount <= 0) continue;
           const stroops = BigInt(Math.round(p.amount * 1e7));

@@ -27,8 +27,17 @@ function makeStubFetch(opts: {
   transactions: unknown[];
   operationsByTx: Record<string, unknown[]>;
   claimableBalancesByClaimant?: Record<string, unknown[]>;
+  accountsByAddress?: Record<string, unknown>;
 }): FetchLike {
   return async (url: string) => {
+    if (url.includes('/accounts/')) {
+      const address = url.split('/accounts/')[1]!.split(/[?/]/)[0]!;
+      const account = opts.accountsByAddress?.[address];
+      if (!account) {
+        return { ok: false, status: 404, json: async () => ({}) };
+      }
+      return { ok: true, status: 200, json: async () => account };
+    }
     if (url.includes('/claimable_balances?claimant=')) {
       const claimant = url.split('claimant=')[1]!.split('&')[0]!;
       return {
@@ -273,5 +282,179 @@ describe('account scan', () => {
     expect(token!.amount).toBe(100);
     expect(token!.claimableBalanceId).toBe(CB_ID);
     expect(token!.method).toBe('account');
+  });
+
+  it('surfaces BOTH a genuine 500 XLM CreateAccount and the token, suppressing only the 1.5001 stub', async () => {
+    const { keys, raw } = keysToHex();
+    const mine = deriveStealthAddressWithSecret(
+      raw.metaAddress.spendPubKey,
+      raw.metaAddress.viewPubKey,
+      new Uint8Array(randomBytes(32)),
+    );
+
+    const ASSET = 'USDC:GISSUERXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX';
+    const CB_ID =
+      '00000000abcdef0123456789abcdef0123456789abcdef0123456789abcdef01';
+
+    const transactions = [
+      {
+        id: 't1',
+        hash: 'HASH_BUNDLE',
+        paging_token: '1',
+        memo_type: 'hash',
+        memo: Buffer.from(mine.ephemeralPubKey).toString('base64'),
+        successful: true,
+      },
+    ];
+    // A protocol-conformant tx bundling a GENUINE 500 XLM CreateAccount (NOT the
+    // 1.5001 funding stub) with a matching claimable balance. Both legs are real
+    // income and must surface.
+    const operationsByTx = {
+      HASH_BUNDLE: [
+        {
+          id: 'o0',
+          type: 'create_account',
+          transaction_hash: 'HASH_BUNDLE',
+          account: mine.stealthAddress,
+          starting_balance: '500.0000000',
+        },
+        {
+          id: 'o1',
+          type: 'create_claimable_balance',
+          transaction_hash: 'HASH_BUNDLE',
+          asset: ASSET,
+          amount: '100.0000000',
+          claimants: [{ destination: mine.stealthAddress }],
+        },
+      ],
+    };
+    const claimableBalancesByClaimant = {
+      [mine.stealthAddress]: [
+        {
+          id: CB_ID,
+          asset: ASSET,
+          amount: '100.0000000',
+          claimants: [{ destination: mine.stealthAddress }],
+        },
+      ],
+    };
+
+    const horizon = new HorizonClient(
+      'http://localhost:8000',
+      makeStubFetch({ transactions, operationsByTx, claimableBalancesByClaimant }),
+    );
+    const adapter = new AccountAdapter(Networks.STANDALONE, horizon);
+    const { payments } = await adapter.scan(keys);
+
+    // Two payments: the 500 XLM native leg AND the token claimable balance.
+    expect(payments).toHaveLength(2);
+    const native = payments.find((p) => p.token === 'native');
+    const token = payments.find((p) => p.claimableBalanceId);
+    expect(native).toBeDefined();
+    expect(native!.amount).toBe(500);
+    expect(token).toBeDefined();
+    expect(token!.amount).toBe(100);
+    expect(token!.asset).toBe(ASSET);
+  });
+
+  it('suppresses a merged/claimed native account when suppressClaimedNative is set', async () => {
+    const { keys, raw } = keysToHex();
+    const mine = deriveStealthAddressWithSecret(
+      raw.metaAddress.spendPubKey,
+      raw.metaAddress.viewPubKey,
+      new Uint8Array(randomBytes(32)),
+    );
+
+    const transactions = [
+      {
+        id: 't1',
+        hash: 'HASH_MERGED',
+        paging_token: '1',
+        memo_type: 'hash',
+        memo: Buffer.from(mine.ephemeralPubKey).toString('base64'),
+        successful: true,
+      },
+    ];
+    const operationsByTx = {
+      HASH_MERGED: [
+        {
+          id: 'o1',
+          type: 'create_account',
+          transaction_hash: 'HASH_MERGED',
+          account: mine.stealthAddress,
+          starting_balance: '42.0000000',
+        },
+      ],
+    };
+    // The account still exists but its native balance is 0 (swept/merged).
+    const accountsByAddress = {
+      [mine.stealthAddress]: {
+        id: mine.stealthAddress,
+        sequence: '1',
+        balances: [{ asset_type: 'native', balance: '0.0000000' }],
+      },
+    };
+
+    const horizon = new HorizonClient(
+      'http://localhost:8000',
+      makeStubFetch({ transactions, operationsByTx, accountsByAddress }),
+    );
+    const adapter = new AccountAdapter(Networks.STANDALONE, horizon);
+
+    // Without suppression the op amount surfaces (default hot path, no probe).
+    const plain = await adapter.scan(keys);
+    expect(plain.payments).toHaveLength(1);
+    expect(plain.payments[0]!.amount).toBe(42);
+
+    // With suppression the swept account is dropped.
+    const suppressed = await adapter.scan(keys, undefined, {
+      suppressClaimedNative: true,
+    });
+    expect(suppressed.payments).toHaveLength(0);
+  });
+
+  it('falls back to op amount when suppression probe finds no live account', async () => {
+    const { keys, raw } = keysToHex();
+    const mine = deriveStealthAddressWithSecret(
+      raw.metaAddress.spendPubKey,
+      raw.metaAddress.viewPubKey,
+      new Uint8Array(randomBytes(32)),
+    );
+
+    const transactions = [
+      {
+        id: 't1',
+        hash: 'HASH_MINE',
+        paging_token: '1',
+        memo_type: 'hash',
+        memo: Buffer.from(mine.ephemeralPubKey).toString('base64'),
+        successful: true,
+      },
+    ];
+    const operationsByTx = {
+      HASH_MINE: [
+        {
+          id: 'o1',
+          type: 'create_account',
+          transaction_hash: 'HASH_MINE',
+          account: mine.stealthAddress,
+          starting_balance: '42.0000000',
+        },
+      ],
+    };
+
+    // No accountsByAddress -> getAccount returns null (404). Suppression must
+    // NOT drop the payment on an unknown/absent account: fall back to op amount.
+    const horizon = new HorizonClient(
+      'http://localhost:8000',
+      makeStubFetch({ transactions, operationsByTx }),
+    );
+    const adapter = new AccountAdapter(Networks.STANDALONE, horizon);
+
+    const { payments } = await adapter.scan(keys, undefined, {
+      suppressClaimedNative: true,
+    });
+    expect(payments).toHaveLength(1);
+    expect(payments[0]!.amount).toBe(42);
   });
 });

@@ -1,7 +1,11 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { Request, Response } from 'express';
 import { handleRelay, initRelayRoute } from './relay';
 import { Keypair, Networks } from '@stellar/stellar-sdk';
+import { CreditLedger } from '../ledger.js';
 
 const { mockServerInstance, MockTransaction } = vi.hoisted(() => {
   const mockServerInstance = {
@@ -170,5 +174,92 @@ describe('handleRelay', () => {
     expect(mockRes.json).toHaveBeenCalledWith({
       error: 'Relayer not initialized'
     });
+  });
+});
+
+describe('handleRelay credit gating', () => {
+  let dir: string;
+  let ledger: CreditLedger;
+  let relayer: Keypair;
+  let fundingAccount: string;
+  let mockReq: Partial<Request>;
+  let mockRes: Partial<Response>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-credit-'));
+    ledger = new CreditLedger(path.join(dir, 'ledger.json'));
+    relayer = Keypair.random();
+    fundingAccount = Keypair.random().publicKey();
+    initRelayRoute(relayer, { ledger, requireCredit: true });
+    mockRes = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockReturnThis(),
+    };
+    mockReq = { body: { xdr: 'anything', fundingAccount } };
+    mockServerInstance.loadAccount.mockResolvedValue({});
+    mockServerInstance.fetchBaseFee.mockResolvedValue(100);
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    initRelayRoute(Keypair.random());
+  });
+
+  /** A fee-bump tx mock carrying the full built outer fee + a stable hash. */
+  function mockFeeBump(feeStroops: string) {
+    return {
+      fee: feeStroops,
+      sign: vi.fn(),
+      hash: vi.fn().mockReturnValue(Buffer.from('feebumphash')),
+    } as any;
+  }
+
+  it('gates with 402 when the funding account has no credit', async () => {
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
+    (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(
+      mockFeeBump('600'),
+    );
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    expect(mockRes.status).toHaveBeenCalledWith(402);
+    expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('debits the full built fee-bump fee (not a flat 200) on success', async () => {
+    ledger.credit(fundingAccount, '10', 'DEP1');
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
+    // Multi-op inner tx => outer fee 600 stroops = 0.00006 XLM.
+    (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(
+      mockFeeBump('600'),
+    );
+    mockServerInstance.submitTransaction.mockResolvedValue({
+      hash: 'RELAY_OK',
+      successful: true,
+    });
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    // 10 - 0.00006 = 9.99994 (proves the full 600-stroop fee was debited,
+    // not a flat 200-stroop / 0.00002 charge).
+    expect(ledger.getBalance(fundingAccount)).toBe('9.9999400');
+  });
+
+  it('refunds the reservation when submit fails', async () => {
+    ledger.credit(fundingAccount, '10', 'DEP1');
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
+    (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(
+      mockFeeBump('600'),
+    );
+    mockServerInstance.submitTransaction.mockRejectedValue(
+      new Error('Network error'),
+    );
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    expect(mockRes.status).toHaveBeenCalledWith(500);
+    // Credit restored after the failed submit.
+    expect(ledger.getBalance(fundingAccount)).toBe('10.0000000');
   });
 });

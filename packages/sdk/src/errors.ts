@@ -52,6 +52,36 @@ export class MinimumAmountError extends Error {
 }
 
 /**
+ * Thrown when a partial account claim requests more than the stealth account can
+ * pay out while keeping its base reserve and covering the fee. The message names
+ * the maximum claimable amount so the caller can retry within bounds.
+ */
+export class ClaimAmountError extends Error {
+  /** The maximum amount that could be claimed for this account. */
+  readonly max: number;
+  constructor(requested: number, max: number) {
+    super(
+      `Partial claim of ${requested} XLM exceeds the maximum claimable ${max} XLM ` +
+        '(account must retain its base reserve and cover the fee).',
+    );
+    this.name = 'ClaimAmountError';
+    this.max = max;
+  }
+}
+
+/**
+ * Thrown when a send/claim amount is not a positive finite number, caught before
+ * building the transaction so the caller gets an actionable SDK error rather than
+ * an on-chain failure after the fee is burned.
+ */
+export class InvalidAmountError extends Error {
+  constructor(amount: unknown) {
+    super(`Amount must be a positive finite number (got ${String(amount)}).`);
+    this.name = 'InvalidAmountError';
+  }
+}
+
+/**
  * Thrown by {@link StealthSession.unlock} when the supplied password fails to
  * decrypt the stored envelope. Surfaces as an AES-GCM authentication failure
  * (the tag does not verify), which is indistinguishable from tampering — either

@@ -131,6 +131,55 @@ describe('credit routes', () => {
     expect(res.body.code).toBe('not_a_deposit');
   });
 
+  it('does not credit a payment op sourced by a different account', async () => {
+    // tx source is FUNDING, but the native payment op is sourced (from) by a
+    // different account — it must NOT be attributed to FUNDING.
+    setup({
+      tx: { successful: true, source_account: FUNDING, hash: 'TX_DIFFSRC' },
+      ops: [
+        {
+          type: 'payment',
+          asset_type: 'native',
+          from: 'GOTHERSOURCEXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+          to: relayer.publicKey(),
+          amount: '5',
+        },
+      ],
+    });
+    const req = { body: { fundingAccount: FUNDING, txHash: 'TX_DIFFSRC' } } as Request;
+    const res = mockRes();
+    await handleCreditClaim(req, res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.code).toBe('not_a_deposit');
+    expect(ledger.getBalance(FUNDING)).toBeNull();
+  });
+
+  it('sums multiple native payments from the funding account', async () => {
+    setup({
+      tx: { successful: true, source_account: FUNDING, hash: 'TX_MULTI' },
+      ops: [
+        {
+          type: 'payment',
+          asset_type: 'native',
+          to: relayer.publicKey(),
+          amount: '2.5',
+        },
+        {
+          type: 'payment',
+          asset_type: 'native',
+          from: FUNDING,
+          to: relayer.publicKey(),
+          amount: '1.5',
+        },
+      ],
+    });
+    const req = { body: { fundingAccount: FUNDING, txHash: 'TX_MULTI' } } as Request;
+    const res = mockRes();
+    await handleCreditClaim(req, res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.balance).toBe('4.0000000');
+  });
+
   it('returns 400 not_a_deposit when source account mismatches', async () => {
     setup({
       tx: { successful: true, source_account: 'GOTHER', hash: 'TX3' },

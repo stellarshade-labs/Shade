@@ -5,6 +5,7 @@ import {
   Account,
 } from '@stellar/stellar-sdk';
 import { getContext } from '../context.js';
+import type { Reservation } from '../ledger.js';
 import { validateStellarAddress } from '../utils/validation.js';
 
 interface HorizonAccountResponse {
@@ -40,27 +41,13 @@ export async function handleSponsor(req: Request, res: Response) {
   if (!Number.isFinite(balanceNum) || balanceNum < 0) {
     return res
       .status(400)
-      .json({ error: 'Invalid starting balance', code: 'invalid_address' });
+      .json({ error: 'Invalid starting balance', code: 'invalid_balance' });
   }
   if (balanceNum > ctx.sponsorMaxXlm) {
     return res.status(400).json({
       error: `Starting balance exceeds SPONSOR_MAX_XLM (${ctx.sponsorMaxXlm})`,
-      code: 'invalid_address',
+      code: 'balance_exceeds_max',
     });
-  }
-
-  // Credit gating: charge the funding account the starting balance up front.
-  if (ctx.requireCredit) {
-    if (!validateStellarAddress(fundingAccount)) {
-      return res
-        .status(402)
-        .json({ error: 'Funding account required for credit', code: 'insufficient_credit' });
-    }
-    if (!ctx.ledger.hasSufficient(fundingAccount, String(balance))) {
-      return res
-        .status(402)
-        .json({ error: 'Insufficient credit', code: 'insufficient_credit' });
-    }
   }
 
   // Reject if the account already exists.
@@ -99,13 +86,39 @@ export async function handleSponsor(req: Request, res: Response) {
       .setTimeout(30)
       .build();
 
-    tx.sign(ctx.keypair);
-    const response = (await ctx.server.submitTransaction(tx)) as unknown as {
-      hash: string;
-    };
-
+    // Credit gating: reserve the starting balance PLUS the tx fee BEFORE submit
+    // (the relayer pays both out of its own funds). Refund on submit failure.
+    let reservation: Reservation | null = null;
     if (ctx.requireCredit) {
-      ctx.ledger.debit(fundingAccount, String(balance), `sponsor:${response.hash}`);
+      if (!validateStellarAddress(fundingAccount)) {
+        return res
+          .status(402)
+          .json({ error: 'Funding account required for credit', code: 'insufficient_credit' });
+      }
+      const feeXlm = Number(tx.fee) / 1e7;
+      const totalXlm = (balanceNum + feeXlm).toFixed(7);
+      try {
+        reservation = await ctx.ledger.reserve(
+          fundingAccount,
+          totalXlm,
+          `sponsor:${tx.hash().toString('hex')}`,
+        );
+      } catch {
+        return res
+          .status(402)
+          .json({ error: 'Insufficient credit', code: 'insufficient_credit' });
+      }
+    }
+
+    tx.sign(ctx.keypair);
+    let response: { hash: string };
+    try {
+      response = (await ctx.server.submitTransaction(tx)) as unknown as {
+        hash: string;
+      };
+    } catch (submitErr) {
+      if (reservation) await ctx.ledger.refund(reservation);
+      throw submitErr;
     }
 
     return res.json({ txHash: response.hash, stealthAddress: address });

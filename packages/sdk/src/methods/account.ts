@@ -22,7 +22,11 @@ import {
 import { randomBytes } from '@noble/hashes/utils';
 import { HorizonClient } from '../horizon.js';
 import { RelayerClient } from '../relayer.js';
-import { MinimumAmountError } from '../errors.js';
+import {
+  MinimumAmountError,
+  ClaimAmountError,
+  InvalidAmountError,
+} from '../errors.js';
 import type {
   StealthKeys,
   SendReceipt,
@@ -199,6 +203,9 @@ export class AccountAdapter implements DeliveryAdapter {
    */
   private async sendToken(params: AdapterSendParams): Promise<SendReceipt> {
     const { metaAddress, amount, senderSecret, asset } = params;
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new InvalidAmountError(amount);
+    }
     const stellarAsset = parseAsset(asset!);
 
     const { spendPubKey, viewPubKey } = decodeMetaAddress(metaAddress);
@@ -264,7 +271,9 @@ export class AccountAdapter implements DeliveryAdapter {
   async scan(
     keys: StealthKeys,
     cursor?: string,
+    opts?: { suppressClaimedNative?: boolean },
   ): Promise<{ payments: Payment[]; cursor?: string }> {
+    const suppressClaimedNative = opts?.suppressClaimedNative ?? false;
     const viewPrivKey = new Uint8Array(Buffer.from(keys.viewPrivKey, 'hex'));
     const spendPubKey = new Uint8Array(Buffer.from(keys.spendPubKey, 'hex'));
 
@@ -309,39 +318,73 @@ export class AccountAdapter implements DeliveryAdapter {
             (op.type === 'create_account' && op.account === derivedAddress) ||
             (op.type === 'payment' && op.to === derivedAddress),
         );
-        // A token send funds the stealth account with a CreateAccount reserve
-        // AND carries the token in a CreateClaimableBalance. That funding
-        // CreateAccount is not spendable income — suppress it so we report only
-        // the one logical token payment when a matching claimable balance exists.
-        if (nativeMatch && !cbMatch) {
-          const amountStr =
+        // Suppress the native leg ONLY when it is the token funding stub — a
+        // CreateAccount whose starting balance is exactly the token-account
+        // reserve constant (1.5001). Any other native amount (e.g. a genuine
+        // 500 XLM CreateAccount bundled with a token) is real income and is
+        // reported alongside the token payment.
+        const isTokenFundingStub =
+          !!nativeMatch &&
+          nativeMatch.type === 'create_account' &&
+          Number(nativeMatch.starting_balance) ===
+            Number(TOKEN_ACCOUNT_STARTING_BALANCE);
+
+        if (nativeMatch && !isTokenFundingStub) {
+          // The income for THIS tx is the op amount (create_account
+          // starting_balance / payment amount), not the account's aggregate
+          // live balance — two sends to the same derived address, or a partial
+          // spend, must each report their own op amount and txHash.
+          const opAmount =
             nativeMatch.type === 'create_account'
-              ? nativeMatch.starting_balance
-              : nativeMatch.amount;
-          payments.push({
-            stealthAddress: derivedAddress,
-            ephemeralPubKey: ephHex,
-            token: 'native',
-            amount: amountStr ? Number(amountStr) : 0,
-            method: 'account',
-            txHash: tx.hash,
-          });
+              ? Number(nativeMatch.starting_balance ?? 0)
+              : Number(nativeMatch.amount ?? 0);
+
+          // Suppression (null-safe): only probe liveness when the merge flag is
+          // set, to drop a fully-swept account rather than re-surfacing it
+          // forever. A null/absent account or absent native balance is treated
+          // as "unknown, not proven claimed" and falls back to the op amount —
+          // never conflating current spendable balance with income for this tx.
+          let claimed = false;
+          if (suppressClaimedNative) {
+            const live = await this.horizon.getAccount(derivedAddress);
+            if (live) {
+              const nativeBal = live.balances.find(
+                (b) => b.asset_type === 'native',
+              );
+              claimed = nativeBal !== undefined && Number(nativeBal.balance) === 0;
+            }
+          }
+
+          if (!claimed && opAmount > 0) {
+            payments.push({
+              stealthAddress: derivedAddress,
+              ephemeralPubKey: ephHex,
+              token: 'native',
+              amount: opAmount,
+              method: 'account',
+              txHash: tx.hash,
+            });
+          }
         }
 
         if (cbMatch) {
+          // Only report the claimable balance if it still exists live — an
+          // already-claimed CB is dropped rather than re-surfaced.
           const cb = (await this.horizon.getClaimableBalances(derivedAddress)).find(
             (b) => b.claimants.some((c) => c.destination === derivedAddress),
           );
-          payments.push({
-            stealthAddress: derivedAddress,
-            ephemeralPubKey: ephHex,
-            token: cbMatch.asset ?? cb?.asset ?? 'unknown',
-            asset: cbMatch.asset ?? cb?.asset,
-            claimableBalanceId: cb?.id,
-            amount: cb ? Number(cb.amount) : cbMatch.amount ? Number(cbMatch.amount) : 0,
-            method: 'account',
-            txHash: tx.hash,
-          });
+          if (cb) {
+            payments.push({
+              stealthAddress: derivedAddress,
+              ephemeralPubKey: ephHex,
+              token: cbMatch.asset ?? cb.asset ?? 'unknown',
+              asset: cbMatch.asset ?? cb.asset,
+              claimableBalanceId: cb.id,
+              amount: Number(cb.amount),
+              method: 'account',
+              txHash: tx.hash,
+            });
+          }
         }
       }
 
@@ -391,6 +434,10 @@ export class AccountAdapter implements DeliveryAdapter {
 
     const source = new Account(account.id, account.sequence);
     const merge = opts.merge !== false;
+    const relayed = !!(opts.relay ?? this.relayer);
+    const feeXlm = Number(BASE_FEE) / 1e7;
+    const nativeBal = account.balances.find((b) => b.asset_type === 'native');
+    const nativeBalance = nativeBal ? Number(nativeBal.balance) : 0;
 
     const builder = new TransactionBuilder(source, {
       fee: BASE_FEE,
@@ -400,11 +447,22 @@ export class AccountAdapter implements DeliveryAdapter {
     let amount: number;
     if (merge) {
       builder.addOperation(Operation.accountMerge({ destination }));
-      const native = account.balances.find((b) => b.asset_type === 'native');
-      amount = native ? Number(native.balance) : 0;
+      // A full merge delivers the whole native balance. When the stealth
+      // account self-pays the fee (not relayed), the destination receives the
+      // balance minus that fee — subtract it so the receipt does not overstate
+      // what actually arrives.
+      amount = relayed ? nativeBalance : nativeBalance - feeXlm;
     } else {
       if (opts.amount === undefined) {
         throw new Error('Partial account claim requires opts.amount');
+      }
+      // The account must retain 2x the base reserve (1.0 XLM) and cover the fee
+      // (self-paid when not relayed). Reject an over-large partial before
+      // building so it fails with a typed error, not an on-chain op_underfunded
+      // after the fee is burned.
+      const maxClaimable = nativeBalance - 1.0 - feeXlm;
+      if (opts.amount > maxClaimable) {
+        throw new ClaimAmountError(opts.amount, maxClaimable);
       }
       builder.addOperation(
         Operation.payment({
@@ -462,7 +520,7 @@ export class AccountAdapter implements DeliveryAdapter {
           'Sponsored token claim requires a relayer URL (opts.relay or client relayer).',
         );
       }
-      return this.claimTokenSponsored(payment, opts, relay, amount);
+      return this.claimTokenSponsored(payment, opts, relay, amount, destination);
     }
 
     const stealthPrivKey = this.recoverKey(payment, opts);
@@ -501,12 +559,20 @@ export class AccountAdapter implements DeliveryAdapter {
     return { txHash, amount, method: 'account' };
   }
 
-  /** Sponsored claim: relayer prepares the XDR, we co-sign, relayer submits. */
+  /**
+   * Sponsored claim: relayer prepares the XDR (BeginSponsoring -> [CreateAccount]
+   * -> ChangeTrust -> EndSponsoring -> ClaimClaimableBalance -> Payment to the
+   * destination), we co-sign with the stealth key, relayer submits and pays the
+   * fee. The claimed token is delivered to `destination` in the same tx — the
+   * stealth account never needs its own fee balance. The receipt's amount is the
+   * amount that reached the destination.
+   */
   private async claimTokenSponsored(
     payment: Payment,
     opts: ClaimOpts,
     relay: string,
     amount: number,
+    destination: string,
   ): Promise<ClaimReceipt> {
     const client = this.relayerClient ?? new RelayerClient(relay);
     const asset = payment.asset ?? payment.token;
@@ -516,10 +582,13 @@ export class AccountAdapter implements DeliveryAdapter {
       throw new Error('Sponsored token claim requires a claimableBalanceId');
     }
 
+    const payoutAmount = amount.toFixed(7);
     const { xdr } = await client.sponsorClaimPrepare({
       stealthAddress: payment.stealthAddress,
       asset,
       balanceId,
+      destination,
+      amount: payoutAmount,
     });
 
     const stealthPrivKey = this.recoverKey(payment, opts);
@@ -533,6 +602,8 @@ export class AccountAdapter implements DeliveryAdapter {
         stealthAddress: payment.stealthAddress,
         asset,
         balanceId,
+        destination,
+        amount: payoutAmount,
       },
     );
     return { txHash, amount, method: 'account' };

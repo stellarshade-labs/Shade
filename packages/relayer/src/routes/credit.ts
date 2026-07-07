@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { getContext } from '../context.js';
+import { toStroops, fromStroops } from '../ledger.js';
 import { validateStellarAddress } from '../utils/validation.js';
 
 interface HorizonTxRecord {
@@ -70,17 +71,25 @@ export async function handleCreditClaim(req: Request, res: Response) {
   }
 
   const relayerAddress = ctx.keypair.publicKey();
-  const deposit = ops.find(
-    (op) =>
-      op.type === 'payment' &&
-      op.asset_type === 'native' &&
-      op.to === relayerAddress,
-  );
-  if (!deposit || !deposit.amount) {
+  // Credit only native payments TO the relayer whose op-source (defaulting to
+  // the tx source) is the funding account — a bundled payment sourced by a
+  // different account must not be attributed to this funding account. Sum every
+  // qualifying payment op.
+  let totalStroops = 0n;
+  for (const op of ops) {
+    if (op.type !== 'payment') continue;
+    if (op.asset_type !== 'native') continue;
+    if (op.to !== relayerAddress) continue;
+    const opSource = op.from ?? tx.source_account;
+    if (opSource !== fundingAccount) continue;
+    if (!op.amount) continue;
+    totalStroops += toStroops(op.amount);
+  }
+  if (totalStroops <= 0n) {
     return res.status(400).json({ error: 'No native payment to relayer', code: 'not_a_deposit' });
   }
 
-  const acct = ctx.ledger.credit(fundingAccount, deposit.amount, txHash);
+  const acct = ctx.ledger.credit(fundingAccount, fromStroops(totalStroops), txHash);
   return res.json({
     fundingAccount,
     balance: acct.balance,

@@ -7,6 +7,7 @@ import {
   Transaction,
 } from '@stellar/stellar-sdk';
 import { getContext } from '../context.js';
+import type { Reservation } from '../ledger.js';
 import { validateStellarAddress } from '../utils/validation.js';
 
 const PREPARE_TTL_SECONDS = 60;
@@ -16,6 +17,45 @@ function parseAsset(asset: string): Asset {
   const [code, issuer] = asset.split(':');
   if (!code || !issuer) throw new Error(`Invalid asset "${asset}"`);
   return new Asset(code, issuer);
+}
+
+/** Whether a positive, finite 7-dp amount string. */
+function isValidAmount(amount: unknown): amount is string {
+  if (typeof amount !== 'string') return false;
+  if (!/^\d+(\.\d{1,7})?$/.test(amount)) return false;
+  return Number(amount) > 0;
+}
+
+/**
+ * Assert (via Horizon) that `destination` exists and already trusts `asset`
+ * (native always passes). Returns null on success or an actionable error string
+ * the caller surfaces to the client — the payout Payment would otherwise fail
+ * on-chain after the fee is burned.
+ */
+async function destinationTrustError(
+  server: { loadAccount(id: string): Promise<unknown> },
+  destination: string,
+  asset: Asset,
+): Promise<string | null> {
+  if (asset.isNative()) return null;
+  let dest: any;
+  try {
+    dest = await server.loadAccount(destination);
+  } catch (err: any) {
+    if (err?.response?.status === 404 || err?.status === 404) {
+      return `Destination ${destination} not found — fund it and add a ${asset.getCode()} trustline before claiming.`;
+    }
+    throw err;
+  }
+  const balances: Array<{ asset_code?: string; asset_issuer?: string }> =
+    dest?.balances ?? [];
+  const trusts = balances.some(
+    (b) => b.asset_code === asset.getCode() && b.asset_issuer === asset.getIssuer(),
+  );
+  if (!trusts) {
+    return `Destination ${destination} does not trust ${asset.getCode()}:${asset.getIssuer()}. Add the trustline before claiming.`;
+  }
+  return null;
 }
 
 /**
@@ -29,6 +69,8 @@ function buildSponsorClaimOps(args: {
   asset: Asset;
   balanceId: string;
   accountExists: boolean;
+  destination: string;
+  amount: string;
 }) {
   const ops = [];
   ops.push(
@@ -56,6 +98,18 @@ function buildSponsorClaimOps(args: {
       source: args.stealthAddress,
     }),
   );
+  // Pay the claimed token out to the destination in the same tx: the stealth
+  // account (created with startingBalance 0 under sponsorship) can never pay a
+  // fee to move the tokens itself, so the payout must ride here. The stealth
+  // account signs this op but the relayer sources+pays the tx fee.
+  ops.push(
+    Operation.payment({
+      destination: args.destination,
+      asset: args.asset,
+      amount: args.amount,
+      source: args.stealthAddress,
+    }),
+  );
   return ops;
 }
 
@@ -71,7 +125,8 @@ function buildSponsorClaimOps(args: {
  */
 export async function handleSponsorClaimPrepare(req: Request, res: Response) {
   const ctx = getContext();
-  const { stealthAddress, asset, balanceId } = req.body ?? {};
+  const { stealthAddress, asset, balanceId, destination, amount } =
+    req.body ?? {};
 
   if (!validateStellarAddress(stealthAddress)) {
     return res
@@ -83,12 +138,37 @@ export async function handleSponsorClaimPrepare(req: Request, res: Response) {
       .status(400)
       .json({ error: 'Missing balanceId', code: 'invalid_balance' });
   }
+  if (!validateStellarAddress(destination)) {
+    return res
+      .status(400)
+      .json({ error: 'Invalid destination', code: 'invalid_destination' });
+  }
+  if (!isValidAmount(amount)) {
+    return res
+      .status(400)
+      .json({ error: 'Invalid amount', code: 'invalid_amount' });
+  }
 
   let stellarAsset: Asset;
   try {
     stellarAsset = parseAsset(asset);
   } catch {
     return res.status(400).json({ error: 'Invalid asset', code: 'invalid_asset' });
+  }
+
+  // The destination must already trust the asset (the payout Payment would
+  // otherwise fail on-chain after the relayer burns the fee).
+  try {
+    const trustErr = await destinationTrustError(
+      ctx.server,
+      destination,
+      stellarAsset,
+    );
+    if (trustErr) {
+      return res.status(400).json({ error: trustErr, code: 'destination_no_trust' });
+    }
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message ?? 'trust check failed', code: 'server_error' });
   }
 
   let accountExists = false;
@@ -116,6 +196,8 @@ export async function handleSponsorClaimPrepare(req: Request, res: Response) {
       asset: stellarAsset,
       balanceId,
       accountExists,
+      destination,
+      amount,
     });
 
     const builder = new TransactionBuilder(source, {
@@ -178,6 +260,18 @@ function opsMatch(
       case 'claimClaimableBalance':
         if (a.balanceId !== b.balanceId) return false;
         break;
+      case 'payment': {
+        if (a.destination !== b.destination) return false;
+        if (a.amount !== b.amount) return false;
+        const aAsset = a.asset && typeof a.asset.toString === 'function'
+          ? a.asset.toString()
+          : String(a.asset);
+        const bAsset = b.asset && typeof b.asset.toString === 'function'
+          ? b.asset.toString()
+          : String(b.asset);
+        if (aAsset !== bAsset) return false;
+        break;
+      }
       case 'endSponsoringFutureReserves':
         break;
       default:
@@ -203,7 +297,7 @@ function opsMatch(
  */
 export async function handleSponsorClaimSubmit(req: Request, res: Response) {
   const ctx = getContext();
-  const { xdr, fundingAccount, stealthAddress, asset, balanceId } =
+  const { xdr, fundingAccount, stealthAddress, asset, balanceId, destination, amount } =
     req.body ?? {};
 
   if (!xdr || typeof xdr !== 'string') {
@@ -218,6 +312,16 @@ export async function handleSponsorClaimSubmit(req: Request, res: Response) {
     return res
       .status(400)
       .json({ error: 'Missing balanceId', code: 'invalid_balance' });
+  }
+  if (!validateStellarAddress(destination)) {
+    return res
+      .status(400)
+      .json({ error: 'Missing or invalid destination', code: 'invalid_destination' });
+  }
+  if (!isValidAmount(amount)) {
+    return res
+      .status(400)
+      .json({ error: 'Missing or invalid amount', code: 'invalid_amount' });
   }
 
   let stellarAsset: Asset;
@@ -263,6 +367,8 @@ export async function handleSponsorClaimSubmit(req: Request, res: Response) {
       asset: stellarAsset,
       balanceId,
       accountExists,
+      destination,
+      amount,
     });
     const expectedBuilder = new TransactionBuilder(
       new Account(ctx.keypair.publicKey(), '0'),
@@ -278,12 +384,40 @@ export async function handleSponsorClaimSubmit(req: Request, res: Response) {
     return res.status(400).json({ error: 'Operations were modified', code: 'tampered' });
   }
 
+  // Fee cap: prepare builds at 200 stroops/op, so the client cannot re-sign an
+  // inflated fee and drain the relayer. Reject anything above the per-op cap.
+  const expectedMaxFee = 200 * tx.operations.length;
+  if (Number(tx.fee) > expectedMaxFee) {
+    return res.status(400).json({ error: 'Fee exceeds per-op cap', code: 'tampered' });
+  }
+
+  // Enforce the advertised TTL server-side and forbid memos (prepare builds none).
+  const nowSec = Math.floor(Date.now() / 1000);
+  const clockSlack = 5;
+  const maxTime = Number(tx.timeBounds?.maxTime ?? 0);
+  if (!maxTime || maxTime > nowSec + PREPARE_TTL_SECONDS + clockSlack) {
+    return res.status(400).json({ error: 'Invalid timebounds', code: 'tampered' });
+  }
+  if (tx.memo && tx.memo.type !== 'none') {
+    return res.status(400).json({ error: 'Unexpected memo', code: 'tampered' });
+  }
+
+  // Reserve the fee BEFORE submit (credit gating). The reservation is refunded
+  // if submit throws, so a failed submit never leaves credit consumed and two
+  // concurrent requests cannot both pass when only one fee of credit exists.
+  const feeXlm = (Number(tx.fee) / 1e7).toFixed(7);
+  let reservation: Reservation | null = null;
   if (ctx.requireCredit) {
     if (!validateStellarAddress(fundingAccount)) {
       return res.status(402).json({ error: 'Funding account required', code: 'insufficient_credit' });
     }
-    const feeXlm = (Number(tx.fee) / 1e7).toFixed(7);
-    if (!ctx.ledger.hasSufficient(fundingAccount, feeXlm)) {
+    try {
+      reservation = await ctx.ledger.reserve(
+        fundingAccount,
+        feeXlm,
+        `sponsor-claim:${tx.hash().toString('hex')}`,
+      );
+    } catch {
       return res.status(402).json({ error: 'Insufficient credit', code: 'insufficient_credit' });
     }
   }
@@ -294,13 +428,9 @@ export async function handleSponsorClaimSubmit(req: Request, res: Response) {
       hash: string;
     };
 
-    if (ctx.requireCredit) {
-      const feeXlm = (Number(tx.fee) / 1e7).toFixed(7);
-      ctx.ledger.debit(fundingAccount, feeXlm, `sponsor-claim:${response.hash}`);
-    }
-
     return res.json({ txHash: response.hash });
   } catch (err: any) {
+    if (reservation) await ctx.ledger.refund(reservation);
     if (err?.response?.data?.extras?.result_codes) {
       return res.status(400).json({
         error: 'Transaction failed',

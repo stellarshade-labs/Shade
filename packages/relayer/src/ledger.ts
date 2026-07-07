@@ -24,6 +24,18 @@ export interface LedgerData {
   accounts: Record<string, LedgerAccount>;
 }
 
+/**
+ * A credit reservation taken BEFORE a route submits its transaction. The fee is
+ * already debited from the account when the reservation is returned; call
+ * {@link CreditLedger.refund} with it if the submit throws so the credit is
+ * restored, or leave it in place once the submit succeeds.
+ */
+export interface Reservation {
+  account: string;
+  amount: string;
+  ref: string;
+}
+
 const STROOPS_PER_UNIT = 10_000_000n;
 
 /** Parse a decimal XLM string into integer stroops (throws on garbage). */
@@ -61,6 +73,8 @@ export function fromStroops(stroops: bigint): string {
 export class CreditLedger {
   private readonly filePath: string;
   private data: LedgerData;
+  /** Per-account promise chains that serialize reserve-check-and-debit. */
+  private readonly locks: Map<string, Promise<unknown>> = new Map();
 
   constructor(filePath?: string) {
     this.filePath =
@@ -144,10 +158,27 @@ export class CreditLedger {
 
   /**
    * Debit an account by an amount. Throws `insufficient_credit` when the
-   * balance would go negative.
+   * balance would go negative. Idempotent by `ref`: a debit whose `ref` was
+   * already applied is a no-op (returns the account unchanged) rather than
+   * double-charging.
    */
   debit(account: string, amount: string, ref: string): LedgerAccount {
     const acct = this.ensureAccount(account);
+    // A ref is "already applied" only when it has a debit that was NOT
+    // subsequently refunded. Counting debits vs. refunds for this ref lets a
+    // refunded reservation be re-debited on a genuine retry (same signed tx =>
+    // same ref) instead of hitting a free no-op, while a plain duplicate debit
+    // with no intervening refund stays idempotent.
+    const refundRef = `refund:${ref}`;
+    const debitCount = acct.history.filter(
+      (h) => h.type === 'debit' && h.ref === ref,
+    ).length;
+    const refundCount = acct.history.filter(
+      (h) => h.type === 'credit' && h.ref === refundRef,
+    ).length;
+    if (debitCount > refundCount) {
+      return acct;
+    }
     const remaining = toStroops(acct.balance) - toStroops(amount);
     if (remaining < 0n) {
       throw new Error('insufficient_credit');
@@ -169,5 +200,79 @@ export class CreditLedger {
     const acct = this.data.accounts[account];
     if (!acct) return false;
     return toStroops(acct.balance) >= toStroops(amount);
+  }
+
+  /**
+   * Run `fn` under a per-account lock so concurrent callers on the same account
+   * are serialized (reserve-check-and-debit is atomic). Callers on different
+   * accounts still run in parallel.
+   */
+  private async withLock<T>(account: string, fn: () => T | Promise<T>): Promise<T> {
+    const prev = this.locks.get(account) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chained = prev.then(() => gate);
+    this.locks.set(account, chained);
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.locks.get(account) === chained) {
+        this.locks.delete(account);
+      }
+    }
+  }
+
+  /**
+   * Atomically check credit and debit the fee BEFORE the caller submits. Under
+   * the per-account lock two concurrent reservations against a balance that only
+   * covers one will not both succeed. Throws `insufficient_credit` when the
+   * balance would go negative. Idempotent by `ref`.
+   *
+   * @returns A {@link Reservation} to pass to {@link refund} if the subsequent
+   *   submit throws.
+   */
+  async reserve(account: string, amount: string, ref: string): Promise<Reservation> {
+    return this.withLock(account, () => {
+      this.debit(account, amount, ref);
+      return { account, amount, ref };
+    });
+  }
+
+  /**
+   * Restore a previously {@link reserve}d amount after a failed submit. Serialized
+   * under the same per-account lock; a refund whose `ref` was not (or no longer)
+   * a live debit is a no-op so it cannot over-credit.
+   */
+  async refund(reservation: Reservation): Promise<void> {
+    await this.withLock(reservation.account, () => {
+      const acct = this.data.accounts[reservation.account];
+      if (!acct) return;
+      const refundRef = `refund:${reservation.ref}`;
+      // Refund only an OUTSTANDING debit: allow one refund per unrefunded debit
+      // for this ref. This keeps a repeated refund of the same reservation a
+      // no-op (debits == refunds) while still permitting a fresh refund after a
+      // retry re-debited under the same ref (debits > refunds again).
+      const debitCount = acct.history.filter(
+        (h) => h.type === 'debit' && h.ref === reservation.ref,
+      ).length;
+      const refundCount = acct.history.filter(
+        (h) => h.type === 'credit' && h.ref === refundRef,
+      ).length;
+      if (debitCount <= refundCount) return;
+      const next = toStroops(acct.balance) + toStroops(reservation.amount);
+      acct.balance = fromStroops(next);
+      acct.updatedAt = new Date().toISOString();
+      acct.history.push({
+        type: 'credit',
+        amount: reservation.amount,
+        ref: `refund:${reservation.ref}`,
+        at: acct.updatedAt,
+      });
+      this.persist();
+    });
   }
 }

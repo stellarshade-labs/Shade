@@ -4,6 +4,7 @@ import {
   MethodRequiredError,
   MethodNotEnabledError,
   MethodNotAvailableError,
+  MinimumAmountError,
 } from '../src/errors.js';
 import { SppAdapter } from '../src/methods/spp.js';
 
@@ -21,10 +22,15 @@ describe('send method resolution', () => {
   it("'auto' picks 'account' for native amount > 1 when account enabled", async () => {
     const client = new StealthClient({ network: 'local', methods: ['pool', 'account'] });
     // account adapter will fail at network I/O; we only assert it routed to account
-    // by checking the error is NOT MethodNotEnabledError and NOT MinimumAmountError.
-    await expect(
-      client.send(keys.metaAddress, 2, 'GARBAGE_SECRET', { method: 'auto' }),
-    ).rejects.toThrow();
+    // by checking the rejection is NOT MethodNotEnabledError (would mean it fell
+    // back to a disabled method) and NOT MinimumAmountError (amount 2 > 1 clears
+    // the account minimum, so reaching that error would mean a routing bug).
+    const err = await client
+      .send(keys.metaAddress, 2, 'GARBAGE_SECRET', { method: 'auto' })
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(MethodNotEnabledError);
+    expect(err).not.toBeInstanceOf(MinimumAmountError);
   });
 
   it("'auto' picks 'pool' when amount <= 1", async () => {

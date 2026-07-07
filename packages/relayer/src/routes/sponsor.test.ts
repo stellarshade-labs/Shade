@@ -137,7 +137,9 @@ describe('sponsor route', () => {
     const res = mockRes();
     await handleSponsor(req, res);
     expect(res.statusCode).toBe(200);
-    expect(ledger.getBalance(funding)).toBe('1.0000000');
+    // Debits startingBalance (2) PLUS the tx fee (100 stroops = 0.00001 XLM):
+    // 3 - 2 - 0.00001 = 0.99999.
+    expect(ledger.getBalance(funding)).toBe('0.9999900');
   });
 
   it('returns 402 when credit is insufficient', async () => {

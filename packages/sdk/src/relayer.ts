@@ -28,8 +28,12 @@ export interface SponsorClaimPrepareArgs {
   stealthAddress: string;
   /** Asset to add a trustline for, in "CODE:ISSUER" form. */
   asset: string;
-  /** Claimable balance id to claim (optional at prepare time). */
-  balanceId?: string;
+  /** Claimable balance id to claim. */
+  balanceId: string;
+  /** Destination that the claimed token is paid out to (must trust the asset). */
+  destination: string;
+  /** Amount of the claimed token to pay out to the destination (7-dp string). */
+  amount: string;
 }
 
 /** Response from {@link RelayerClient.sponsorClaimPrepare}. */
@@ -161,6 +165,8 @@ export class RelayerClient {
       stealthAddress: string;
       asset: string;
       balanceId: string;
+      destination: string;
+      amount: string;
       fundingAccount?: string;
     },
   ): Promise<{ txHash: string }> {
@@ -169,6 +175,8 @@ export class RelayerClient {
       stealthAddress: args.stealthAddress,
       asset: args.asset,
       balanceId: args.balanceId,
+      destination: args.destination,
+      amount: args.amount,
       fundingAccount: args.fundingAccount,
     });
   }

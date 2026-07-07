@@ -222,6 +222,20 @@ export class StealthClient {
     keys: StealthKeys,
     opts?: ScanOpts,
   ): Promise<ScanResult> {
+    return this.scanInternal(keys, opts, false);
+  }
+
+  /**
+   * Shared scan implementation. When `suppressClaimed` is set (the balance
+   * path), the account adapter drops fully-swept/merged native accounts (live
+   * balance 0) so a spent stealth account is not reported as spendable — while
+   * the plain discovery scan keeps returning still-claimable rows.
+   */
+  private async scanInternal(
+    keys: StealthKeys,
+    opts: ScanOpts | undefined,
+    suppressClaimed: boolean,
+  ): Promise<ScanResult> {
     const methods = (opts?.methods ?? this.enabledMethods).filter((m) =>
       this.adapters.has(m),
     );
@@ -231,7 +245,9 @@ export class StealthClient {
     for (const method of methods) {
       const adapter = this.getAdapter(method);
       const prev = cursor[method];
-      const result = await adapter.scan(keys, prev);
+      const result = await adapter.scan(keys, prev, {
+        suppressClaimedNative: suppressClaimed,
+      });
       for (const p of result.payments) {
         payments.push({ ...p, method });
       }
@@ -247,7 +263,7 @@ export class StealthClient {
    * @param keys - Your stealth keys (needs viewPrivKey + spendPubKey)
    */
   async balance(keys: StealthKeys): Promise<Balance[]> {
-    const payments = await this.scan(keys);
+    const { payments } = await this.scanInternal(keys, undefined, true);
     return payments.map((p) => ({
       stealthAddress: p.stealthAddress,
       token: p.token,

@@ -11,6 +11,8 @@ export {
   MethodNotEnabledError,
   MethodNotAvailableError,
   MinimumAmountError,
+  ClaimAmountError,
+  InvalidAmountError,
   WrongPasswordError,
 } from './errors.js';
 

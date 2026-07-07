@@ -6,7 +6,7 @@ import {
   Horizon,
   Transaction
 } from '@stellar/stellar-sdk';
-import type { CreditLedger } from '../ledger.js';
+import type { CreditLedger, Reservation } from '../ledger.js';
 import { validateStellarAddress } from '../utils/validation.js';
 
 let relayerKeypair: Keypair | null = null;
@@ -60,21 +60,9 @@ export async function handleRelay(req: Request, res: Response) {
     const baseFee = await server.fetchBaseFee();
     const bumpFee = (baseFee * 2).toString();
 
-    // Optional credit gating: require + reserve the fee-bump fee up front.
-    if (relayRequireCredit && relayLedger) {
-      const feeXlm = (Number(bumpFee) / 1e7).toFixed(7);
-      if (!validateStellarAddress(fundingAccount)) {
-        return res
-          .status(402)
-          .json({ error: 'Funding account required', code: 'insufficient_credit' });
-      }
-      if (!relayLedger.hasSufficient(fundingAccount, feeXlm)) {
-        return res
-          .status(402)
-          .json({ error: 'Insufficient credit', code: 'insufficient_credit' });
-      }
-    }
-
+    // Build the fee-bump FIRST so we can debit the actual total outer fee
+    // (per-op fee * (innerOps + 1)) rather than the per-op input, which
+    // otherwise undercharges 2-6x on multi-op inner transactions.
     const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
       relayerKeypair,
       bumpFee,
@@ -82,18 +70,41 @@ export async function handleRelay(req: Request, res: Response) {
       networkPassphrase
     );
 
+    // Optional credit gating: reserve the actual built total fee BEFORE submit.
+    const feeXlm = (Number(feeBumpTx.fee) / 1e7).toFixed(7);
+    let reservation: Reservation | null = null;
+    if (relayRequireCredit && relayLedger) {
+      if (!validateStellarAddress(fundingAccount)) {
+        return res
+          .status(402)
+          .json({ error: 'Funding account required', code: 'insufficient_credit' });
+      }
+      try {
+        reservation = await relayLedger.reserve(
+          fundingAccount,
+          feeXlm,
+          `relay:${feeBumpTx.hash().toString('hex')}`,
+        );
+      } catch {
+        return res
+          .status(402)
+          .json({ error: 'Insufficient credit', code: 'insufficient_credit' });
+      }
+    }
+
     feeBumpTx.sign(relayerKeypair);
 
     console.log(`[Relay] Submitting fee-bumped transaction...`);
 
-    const response = await server.submitTransaction(feeBumpTx);
+    let response;
+    try {
+      response = await server.submitTransaction(feeBumpTx);
+    } catch (submitErr) {
+      if (reservation && relayLedger) await relayLedger.refund(reservation);
+      throw submitErr;
+    }
 
     console.log(`[Relay] Transaction submitted: ${response.hash}`);
-
-    if (relayRequireCredit && relayLedger && fundingAccount) {
-      const feeXlm = (Number(bumpFee) / 1e7).toFixed(7);
-      relayLedger.debit(fundingAccount, feeXlm, `relay:${response.hash}`);
-    }
 
     return res.json({
       txHash: response.hash,

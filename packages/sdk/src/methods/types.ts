@@ -46,6 +46,7 @@ export interface DeliveryAdapter {
   scan(
     keys: StealthKeys,
     cursor?: string,
+    opts?: { suppressClaimedNative?: boolean },
   ): Promise<{ payments: Payment[]; cursor?: string }>;
 
   /**
