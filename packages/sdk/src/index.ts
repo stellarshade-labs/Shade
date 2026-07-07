@@ -13,6 +13,7 @@ export {
   MinimumAmountError,
   ClaimAmountError,
   InvalidAmountError,
+  SponsoredClaimMismatchError,
   WrongPasswordError,
 } from './errors.js';
 
@@ -26,7 +27,7 @@ export type {
   FetchLike,
 } from './horizon.js';
 
-export { RelayerClient } from './relayer.js';
+export { RelayerClient, challengeMessage } from './relayer.js';
 export type {
   RelayerHealth,
   RelayOpts,
@@ -34,6 +35,8 @@ export type {
   SponsorClaimPrepareArgs,
   SponsorClaimPrepared,
   CreditView,
+  FundingSigner,
+  CreditChallenge,
 } from './relayer.js';
 
 export { StealthSession } from './session.js';

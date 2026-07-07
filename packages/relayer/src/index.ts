@@ -8,6 +8,7 @@ import {
   handleSponsorClaimSubmit,
 } from './routes/sponsorClaim.js';
 import { handleCreditClaim, handleCreditBalance } from './routes/credit.js';
+import { handleCreditChallenge } from './routes/challenge.js';
 import { CreditLedger } from './ledger.js';
 import { initContext } from './context.js';
 import RateLimiter from './utils/rateLimit.js';
@@ -90,7 +91,7 @@ async function initRelayer() {
     const requireCredit = process.env.RELAYER_REQUIRE_CREDIT === '1';
     const ledger = new CreditLedger();
 
-    initContext({
+    const relayerCtx = initContext({
       keypair,
       network: NETWORK,
       horizonUrl,
@@ -98,7 +99,11 @@ async function initRelayer() {
       ledger,
       requireCredit,
     });
-    initRelayRoute(keypair, { ledger, requireCredit });
+    initRelayRoute(keypair, {
+      ledger,
+      requireCredit,
+      challenges: relayerCtx.challenges,
+    });
 
     app.get('/health', async (_, res) => {
       let balance = '0';
@@ -122,6 +127,7 @@ async function initRelayer() {
     app.post('/sponsor-claim/prepare', handleSponsorClaimPrepare);
     app.post('/sponsor-claim/submit', handleSponsorClaimSubmit);
     app.post('/credit/claim', handleCreditClaim);
+    app.get('/credit/challenge', handleCreditChallenge);
     app.get('/credit/:account', handleCreditBalance);
 
     const httpServer = app.listen(PORT, '0.0.0.0', () => {
@@ -136,6 +142,7 @@ async function initRelayer() {
       console.log(`  POST /sponsor-claim/prepare  - Build a sponsored claim tx`);
       console.log(`  POST /sponsor-claim/submit   - Co-sign + submit a sponsored claim`);
       console.log(`  POST /credit/claim           - Credit an app account from a deposit`);
+      console.log(`  GET  /credit/challenge       - Issue a proof-of-control nonce`);
       console.log(`  GET  /credit/:account        - Read an app account's credit`);
       console.log(`  GET  /health                 - Health check`);
     });

@@ -13,6 +13,7 @@ import {
   Account,
   Keypair,
   TransactionBuilder,
+  Transaction,
   Operation,
   Asset,
   Claimant,
@@ -26,6 +27,7 @@ import {
   MinimumAmountError,
   ClaimAmountError,
   InvalidAmountError,
+  SponsoredClaimMismatchError,
 } from '../errors.js';
 import type {
   StealthKeys,
@@ -591,8 +593,19 @@ export class AccountAdapter implements DeliveryAdapter {
       amount: payoutAmount,
     });
 
+    // CRITICAL: verify the relayer-prepared XDR against our OWN trusted inputs
+    // BEFORE signing. A malicious relayer could otherwise redirect the payout
+    // Payment or append an AccountMerge to steal the just-claimed token — the
+    // relayer-side opsMatch protects the relayer, not us.
+    const tx = this.verifySponsoredClaimXdr(xdr, {
+      stealthAddress: payment.stealthAddress,
+      asset,
+      balanceId,
+      destination,
+      payoutAmount,
+    });
+
     const stealthPrivKey = this.recoverKey(payment, opts);
-    const tx = TransactionBuilder.fromXDR(xdr, this.networkPassphrase);
     const sig = signWithStealthKey(tx.hash(), stealthPrivKey);
     tx.addSignature(payment.stealthAddress, Buffer.from(sig).toString('base64'));
 
@@ -608,6 +621,114 @@ export class AccountAdapter implements DeliveryAdapter {
       },
     );
     return { txHash, amount, method: 'account' };
+  }
+
+  /**
+   * Parse and verify a relayer-prepared sponsored-claim XDR against the client's
+   * OWN trusted inputs BEFORE signing. This is the client-side security control:
+   * the relayer-side `opsMatch` protects the relayer, not us, so a malicious
+   * relayer could otherwise redirect the payout Payment or append an
+   * AccountMerge to steal the just-claimed token.
+   *
+   * Verifies, throwing {@link SponsoredClaimMismatchError} on any mismatch:
+   * - the tx is sourced by the relayer (never the stealth account);
+   * - the tx carries no memo;
+   * - every operation is one of the allowed sponsor-claim shapes, in the exact
+   *   order the relayer builds — BeginSponsoring(stealth) -> optional
+   *   CreateAccount(stealth, '0') -> ChangeTrust(asset, source stealth) ->
+   *   EndSponsoring(source stealth) -> ClaimClaimableBalance(balanceId, source
+   *   stealth) -> Payment(destination, asset, amount, source stealth);
+   * - every value-moving op is sourced by the stealth account;
+   * - the payout Payment's destination/asset/amount equal the caller's intent;
+   * - no extra, missing, or reordered operations.
+   *
+   * Returns the parsed {@link Transaction} (ready to co-sign) on success.
+   */
+  private verifySponsoredClaimXdr(
+    xdr: string,
+    expected: {
+      stealthAddress: string;
+      asset: string;
+      balanceId: string;
+      destination: string;
+      payoutAmount: string;
+    },
+  ): Transaction {
+    let tx: Transaction;
+    try {
+      tx = new Transaction(xdr, this.networkPassphrase);
+    } catch {
+      throw new SponsoredClaimMismatchError('prepared XDR is not a valid transaction');
+    }
+
+    if (tx.memo && tx.memo.type !== 'none') {
+      throw new SponsoredClaimMismatchError('unexpected memo on the prepared transaction');
+    }
+
+    const relayer = tx.source;
+    const { stealthAddress, balanceId, destination, payoutAmount } = expected;
+    const wantAsset = parseAsset(expected.asset);
+    const wantAssetStr = wantAsset.isNative()
+      ? 'native'
+      : `${wantAsset.getCode()}:${wantAsset.getIssuer()}`;
+
+    // Rebuild the exact op sequence the relayer must have produced. CreateAccount
+    // is optional (only when the stealth account did not already exist), so we
+    // build both a with-create and without-create expectation and require the
+    // submitted ops to match one of them positionally.
+    // Normalize a decimal amount string so '0' and '0.0000000' (and '100' vs
+    // '100.0000000') compare equal regardless of how the SDK re-serialized it.
+    const amt = (value: string): string => String(Number(value));
+
+    const opStr = (op: Operation): string => {
+      const src = op.source ?? relayer;
+      switch (op.type) {
+        case 'beginSponsoringFutureReserves':
+          return `begin|${src}|${(op as Operation.BeginSponsoringFutureReserves).sponsoredId}`;
+        case 'createAccount': {
+          const o = op as Operation.CreateAccount;
+          return `create|${src}|${o.destination}|${amt(o.startingBalance)}`;
+        }
+        case 'changeTrust': {
+          const o = op as Operation.ChangeTrust;
+          return `trust|${src}|${assetToString(o.line as Asset)}`;
+        }
+        case 'endSponsoringFutureReserves':
+          return `end|${src}`;
+        case 'claimClaimableBalance':
+          return `claim|${src}|${(op as Operation.ClaimClaimableBalance).balanceId}`;
+        case 'payment': {
+          const o = op as Operation.Payment;
+          return `pay|${src}|${o.destination}|${assetToString(o.asset as Asset)}|${amt(o.amount)}`;
+        }
+        default:
+          return `UNSUPPORTED:${op.type}|${src}`;
+      }
+    };
+
+    const buildExpected = (withCreate: boolean): string[] => {
+      const ops: string[] = [];
+      ops.push(`begin|${relayer}|${stealthAddress}`);
+      // CreateAccount inherits the tx (relayer) source in the relayer's build.
+      if (withCreate) ops.push(`create|${relayer}|${stealthAddress}|${amt('0')}`);
+      ops.push(`trust|${stealthAddress}|${wantAssetStr}`);
+      ops.push(`end|${stealthAddress}`);
+      ops.push(`claim|${stealthAddress}|${balanceId}`);
+      ops.push(`pay|${stealthAddress}|${destination}|${wantAssetStr}|${amt(payoutAmount)}`);
+      return ops;
+    };
+
+    const submitted = tx.operations.map(opStr);
+    const withCreate = buildExpected(true).join('\n');
+    const withoutCreate = buildExpected(false).join('\n');
+    const actual = submitted.join('\n');
+    if (actual !== withCreate && actual !== withoutCreate) {
+      throw new SponsoredClaimMismatchError(
+        `operations do not match the expected sponsor-claim sequence (got: ${actual})`,
+      );
+    }
+
+    return tx;
   }
 
   /** Recover the raw stealth scalar for signing from the payment's ephemeral R. */

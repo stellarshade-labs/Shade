@@ -13,10 +13,15 @@ import {
   Operation,
   Keypair,
   Asset,
+  Memo,
 } from '@stellar/stellar-sdk';
 import { AccountAdapter } from '../src/methods/account.js';
 import { HorizonClient, type FetchLike } from '../src/horizon.js';
-import { ClaimAmountError, InvalidAmountError } from '../src/errors.js';
+import {
+  ClaimAmountError,
+  InvalidAmountError,
+  SponsoredClaimMismatchError,
+} from '../src/errors.js';
 import type { StealthKeys, Payment } from '../src/types.js';
 
 const NET = Networks.STANDALONE;
@@ -96,6 +101,65 @@ function makeCapturingHorizon(opts: {
 /** Parse a captured base64 envelope XDR into a Transaction to inspect ops. */
 function parseTx(xdr: string): Transaction {
   return new Transaction(xdr, NET);
+}
+
+/**
+ * Build the full relayer-sourced sponsor-claim sandwich XDR (unsigned) exactly
+ * as the relayer's `buildSponsorClaimOps` produces it, so the SDK's pre-signing
+ * verification accepts the honest case. Optional overrides let a test tamper with
+ * a single field (destination, amount, source), append an extra op, or add a memo
+ * to prove the verification rejects a malicious relayer.
+ */
+function buildSponsorClaimXdr(args: {
+  relayer: string;
+  stealthAddress: string;
+  asset: Asset;
+  balanceId: string;
+  destination: string;
+  amount: string;
+  withCreate?: boolean;
+  payoutDestination?: string;
+  payoutAmount?: string;
+  paymentSource?: string;
+  extraOp?: Operation;
+  memo?: Memo;
+  source?: string;
+}): string {
+  const builder = new TransactionBuilder(new Account(args.source ?? args.relayer, '5'), {
+    fee: '200',
+    networkPassphrase: NET,
+  });
+  builder.addOperation(
+    Operation.beginSponsoringFutureReserves({ sponsoredId: args.stealthAddress }),
+  );
+  if (args.withCreate) {
+    builder.addOperation(
+      Operation.createAccount({ destination: args.stealthAddress, startingBalance: '0' }),
+    );
+  }
+  builder.addOperation(
+    Operation.changeTrust({ asset: args.asset, source: args.stealthAddress }),
+  );
+  builder.addOperation(
+    Operation.endSponsoringFutureReserves({ source: args.stealthAddress }),
+  );
+  builder.addOperation(
+    Operation.claimClaimableBalance({
+      balanceId: args.balanceId,
+      source: args.stealthAddress,
+    }),
+  );
+  builder.addOperation(
+    Operation.payment({
+      destination: args.payoutDestination ?? args.destination,
+      asset: args.asset,
+      amount: args.payoutAmount ?? args.amount,
+      source: args.paymentSource ?? args.stealthAddress,
+    }),
+  );
+  if (args.extraOp) builder.addOperation(args.extraOp);
+  if (args.memo) builder.addMemo(args.memo);
+  return builder.setTimeout(60).build().toEnvelope().toXDR('base64');
 }
 
 afterEach(() => {
@@ -303,20 +367,17 @@ describe('account claim: token sponsored', () => {
     const { keys, stealthAddress, ephemeralPubKeyHex } = makeFixture();
 
     // Build a real relayer-sourced prepared tx (unsigned) that the SDK co-signs.
-    const source = new Account(RELAYER, '5');
-    const prepared = new TransactionBuilder(source, {
-      fee: '200',
-      networkPassphrase: NET,
-    })
-      .addOperation(Operation.payment({
-        destination: DEST,
-        asset: Asset.native(),
-        amount: '100.0000000',
-        source: stealthAddress,
-      }))
-      .setTimeout(60)
-      .build();
-    const preparedXdr = prepared.toEnvelope().toXDR('base64');
+    // The honest prepared tx is the full sponsor-claim sandwich the relayer
+    // builds; the SDK verifies it op-by-op before signing.
+    const preparedXdr = buildSponsorClaimXdr({
+      relayer: RELAYER,
+      stealthAddress,
+      asset: new Asset('USDC', ISSUER),
+      balanceId: CB_ID,
+      destination: DEST,
+      amount: '100.0000000',
+      withCreate: true,
+    });
 
     const calls: Array<{ path: string; body: unknown }> = [];
     // Stub global fetch: the RelayerClient uses it for prepare + submit.
@@ -388,6 +449,116 @@ describe('account claim: token sponsored', () => {
     expect((prepare!.body as { amount: string }).amount).toBe('100.0000000');
     expect((submit!.body as { destination: string }).destination).toBe(DEST);
     expect((submit!.body as { amount: string }).amount).toBe('100.0000000');
+  });
+
+  /**
+   * Run a sponsored claim against a relayer that returns `preparedXdr`, and
+   * assert the SDK throws SponsoredClaimMismatchError BEFORE any /submit call —
+   * i.e. it refuses to sign a tampered relayer-prepared transaction.
+   */
+  async function expectSponsoredClaimRejects(
+    fixture: ReturnType<typeof makeFixture>,
+    preparedXdr: string,
+  ): Promise<void> {
+    const { keys, stealthAddress, ephemeralPubKeyHex } = fixture;
+    const calls: Array<{ path: string; body: unknown }> = [];
+    vi.stubGlobal('fetch', async (url: string, init?: { body?: string }) => {
+      const path = url.replace('http://relayer', '');
+      const body = init?.body ? JSON.parse(init.body) : undefined;
+      calls.push({ path, body });
+      if (path === '/sponsor-claim/prepare') {
+        return { ok: true, status: 200, json: async () => ({ xdr: preparedXdr, expiresAt: 'later' }) };
+      }
+      if (path === '/sponsor-claim/submit') {
+        return { ok: true, status: 200, json: async () => ({ txHash: 'SPONSORED_HASH' }) };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    });
+    const destTrusts = {
+      id: DEST,
+      sequence: '1',
+      balances: [
+        { asset_type: 'credit_alphanum4', asset_code: 'USDC', asset_issuer: ISSUER, balance: '0.0000000' },
+      ],
+    };
+    const horizon = makeCapturingHorizon({
+      accountsByAddress: { [DEST]: destTrusts },
+      submitted: [],
+    });
+    const adapter = new AccountAdapter(NET, horizon, 'http://relayer');
+    const payment: Payment = {
+      stealthAddress,
+      ephemeralPubKey: ephemeralPubKeyHex,
+      token: ASSET,
+      asset: ASSET,
+      claimableBalanceId: CB_ID,
+      amount: 100,
+      method: 'account',
+    };
+
+    const err = await adapter
+      .claim(payment, DEST, { keys, sponsored: true })
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(SponsoredClaimMismatchError);
+    // The mismatch is detected BEFORE signing, so /submit is never reached.
+    expect(calls.find((c) => c.path === '/sponsor-claim/submit')).toBeUndefined();
+  }
+
+  const baseArgs = (stealthAddress: string) => ({
+    relayer: RELAYER,
+    stealthAddress,
+    asset: new Asset('USDC', ISSUER),
+    balanceId: CB_ID,
+    destination: DEST,
+    amount: '100.0000000',
+    withCreate: true,
+  });
+
+  it('rejects a tampered payout destination before signing', async () => {
+    const fixture = makeFixture();
+    const attacker = Keypair.random().publicKey();
+    await expectSponsoredClaimRejects(
+      fixture,
+      buildSponsorClaimXdr({ ...baseArgs(fixture.stealthAddress), payoutDestination: attacker }),
+    );
+  });
+
+  it('rejects a tampered payout amount before signing', async () => {
+    const fixture = makeFixture();
+    await expectSponsoredClaimRejects(
+      fixture,
+      buildSponsorClaimXdr({ ...baseArgs(fixture.stealthAddress), payoutAmount: '999.0000000' }),
+    );
+  });
+
+  it('rejects an extra appended AccountMerge op before signing', async () => {
+    const fixture = makeFixture();
+    await expectSponsoredClaimRejects(
+      fixture,
+      buildSponsorClaimXdr({
+        ...baseArgs(fixture.stealthAddress),
+        extraOp: Operation.accountMerge({
+          destination: Keypair.random().publicKey(),
+          source: fixture.stealthAddress,
+        }),
+      }),
+    );
+  });
+
+  it('rejects a payout op sourced by a non-stealth account before signing', async () => {
+    const fixture = makeFixture();
+    await expectSponsoredClaimRejects(
+      fixture,
+      buildSponsorClaimXdr({ ...baseArgs(fixture.stealthAddress), paymentSource: RELAYER }),
+    );
+  });
+
+  it('rejects an unexpected memo before signing', async () => {
+    const fixture = makeFixture();
+    await expectSponsoredClaimRejects(
+      fixture,
+      buildSponsorClaimXdr({ ...baseArgs(fixture.stealthAddress), memo: Memo.text('gotcha') }),
+    );
   });
 });
 

@@ -144,15 +144,31 @@ describe('account claim: fundingAccount threading', () => {
     const keys = makeKeys();
     const { stealthAddress, ephemeralPubKeyHex } = stealthFor(keys);
 
-    const source = new Account(Keypair.random().publicKey(), '5');
-    const prepared = new TransactionBuilder(source, {
+    // Honest relayer-sourced sponsor-claim sandwich; the SDK verifies it op-by-op
+    // before co-signing and threading fundingAccount into /submit.
+    const relayerPub = Keypair.random().publicKey();
+    const usdc = new Asset('USDC', ISSUER);
+    const prepared = new TransactionBuilder(new Account(relayerPub, '5'), {
       fee: '200',
       networkPassphrase: NET,
     })
       .addOperation(
+        Operation.beginSponsoringFutureReserves({ sponsoredId: stealthAddress }),
+      )
+      .addOperation(
+        Operation.createAccount({ destination: stealthAddress, startingBalance: '0' }),
+      )
+      .addOperation(Operation.changeTrust({ asset: usdc, source: stealthAddress }))
+      .addOperation(
+        Operation.endSponsoringFutureReserves({ source: stealthAddress }),
+      )
+      .addOperation(
+        Operation.claimClaimableBalance({ balanceId: CB_ID, source: stealthAddress }),
+      )
+      .addOperation(
         Operation.payment({
           destination: DEST,
-          asset: Asset.native(),
+          asset: usdc,
           amount: '100.0000000',
           source: stealthAddress,
         }),

@@ -1,5 +1,35 @@
 import type { FetchLike } from './horizon.js';
 
+/**
+ * Signs a canonical challenge message with the funding account's ed25519 key,
+ * proving control of that account for a fee-spending relayer request. Returns
+ * the signature as base64 or hex (or raw bytes). Kept abstract so an app can
+ * back it by a wallet, an HSM, or a raw secret key without the SDK ever holding
+ * the funding key.
+ */
+export type FundingSigner = (
+  message: string,
+) => Promise<Uint8Array | string> | Uint8Array | string;
+
+/** Response from `GET /credit/challenge`. */
+export interface CreditChallenge {
+  account: string;
+  nonce: string;
+}
+
+/**
+ * Canonical single-line message the funding account signs to authorize a spend.
+ * MUST match the relayer's `challengeMessage` byte-for-byte.
+ */
+export function challengeMessage(
+  endpoint: string,
+  fundingAccount: string,
+  nonce: string,
+  amount: string,
+): string {
+  return `stealth-relayer:v1:${endpoint}:${fundingAccount}:${nonce}:${amount}`;
+}
+
 /** Relayer `/health` response. */
 export interface RelayerHealth {
   status: string;
@@ -12,6 +42,13 @@ export interface RelayerHealth {
 export interface RelayOpts {
   /** App account to debit the fee-bump fee against (credit-gated relayers). */
   fundingAccount?: string;
+  /** Signer proving control of `fundingAccount` (credit-gated relayers). */
+  fundingSigner?: FundingSigner;
+  /**
+   * The fee/amount (7-dp XLM string) the proof-of-control signature authorizes.
+   * MUST equal the fee the relayer will charge, or the relayer rejects with 401.
+   */
+  authAmount?: string;
 }
 
 /** Options for {@link RelayerClient.sponsor}. */
@@ -20,6 +57,13 @@ export interface SponsorOpts {
   startingBalance?: string;
   /** App account to debit against (credit-gated relayers). */
   fundingAccount?: string;
+  /** Signer proving control of `fundingAccount` (credit-gated relayers). */
+  fundingSigner?: FundingSigner;
+  /**
+   * The total (startingBalance + fee, 7-dp XLM string) the proof-of-control
+   * signature authorizes. MUST equal what the relayer will charge.
+   */
+  authAmount?: string;
 }
 
 /** Arguments for {@link RelayerClient.sponsorClaimPrepare}. */
@@ -65,15 +109,51 @@ export interface CreditView {
 export class RelayerClient {
   private readonly baseUrl: string;
   private readonly fetchFn: FetchLike;
+  private readonly fundingSigner?: FundingSigner;
+  private readonly fundingAccount?: string;
 
   /**
    * @param baseUrl - Relayer root URL. A trailing `/relay` is stripped so a
    *   bare relay URL (back-compat) resolves to the service root.
    * @param fetchFn - Injectable fetch (defaults to the global `fetch`).
+   * @param opts - Optional default `fundingAccount` + `fundingSigner` used to
+   *   authenticate fee-spending requests against a credit-gated relayer.
    */
-  constructor(baseUrl: string, fetchFn?: FetchLike) {
+  constructor(
+    baseUrl: string,
+    fetchFn?: FetchLike,
+    opts?: { fundingAccount?: string; fundingSigner?: FundingSigner },
+  ) {
     this.baseUrl = baseUrl.replace(/\/relay\/?$/, '').replace(/\/$/, '');
     this.fetchFn = fetchFn ?? (globalThis.fetch as unknown as FetchLike);
+    this.fundingAccount = opts?.fundingAccount;
+    this.fundingSigner = opts?.fundingSigner;
+  }
+
+  /**
+   * Fetch a fresh challenge nonce for `fundingAccount`, sign the canonical
+   * message binding `endpoint` + account + nonce + `amount`, and return the
+   * `{ fundingAccount, nonce, signature }` to attach to a fee-spending request.
+   * Returns `undefined` when no signer is available (non-gated relayer path).
+   */
+  private async signedAuth(
+    endpoint: string,
+    fundingAccount: string | undefined,
+    signer: FundingSigner | undefined,
+    amount: string | undefined,
+  ): Promise<{ nonce: string; signature: string } | undefined> {
+    const account = fundingAccount ?? this.fundingAccount;
+    const fundingSigner = signer ?? this.fundingSigner;
+    if (!account || !fundingSigner) return undefined;
+    const authAmount = amount ?? '0';
+    const { nonce } = await this.get<CreditChallenge>(
+      `/credit/challenge?account=${encodeURIComponent(account)}`,
+    );
+    const message = challengeMessage(endpoint, account, nonce, authAmount);
+    const raw = await fundingSigner(message);
+    const signature =
+      typeof raw === 'string' ? raw : Buffer.from(raw).toString('base64');
+    return { nonce, signature };
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
@@ -115,9 +195,17 @@ export class RelayerClient {
    * @returns The submitted transaction hash.
    */
   async relay(xdr: string, opts?: RelayOpts): Promise<{ txHash: string }> {
+    const fundingAccount = opts?.fundingAccount ?? this.fundingAccount;
+    const auth = await this.signedAuth(
+      'relay',
+      fundingAccount,
+      opts?.fundingSigner,
+      opts?.authAmount,
+    );
     return this.post<{ txHash: string }>('/relay', {
       xdr,
-      fundingAccount: opts?.fundingAccount,
+      fundingAccount,
+      ...(auth ?? {}),
     });
   }
 
@@ -132,10 +220,18 @@ export class RelayerClient {
     address: string,
     opts?: SponsorOpts,
   ): Promise<{ txHash: string }> {
+    const fundingAccount = opts?.fundingAccount ?? this.fundingAccount;
+    const auth = await this.signedAuth(
+      'sponsor',
+      fundingAccount,
+      opts?.fundingSigner,
+      opts?.authAmount,
+    );
     return this.post<{ txHash: string }>('/sponsor', {
       address,
       startingBalance: opts?.startingBalance,
-      fundingAccount: opts?.fundingAccount,
+      fundingAccount,
+      ...(auth ?? {}),
     });
   }
 
@@ -168,8 +264,18 @@ export class RelayerClient {
       destination: string;
       amount: string;
       fundingAccount?: string;
+      fundingSigner?: FundingSigner;
+      /** Total (reserve + fee) the proof-of-control signature authorizes. */
+      authAmount?: string;
     },
   ): Promise<{ txHash: string }> {
+    const fundingAccount = args.fundingAccount ?? this.fundingAccount;
+    const auth = await this.signedAuth(
+      'sponsor-claim',
+      fundingAccount,
+      args.fundingSigner,
+      args.authAmount,
+    );
     return this.post<{ txHash: string }>('/sponsor-claim/submit', {
       xdr,
       stealthAddress: args.stealthAddress,
@@ -177,7 +283,8 @@ export class RelayerClient {
       balanceId: args.balanceId,
       destination: args.destination,
       amount: args.amount,
-      fundingAccount: args.fundingAccount,
+      fundingAccount,
+      ...(auth ?? {}),
     });
   }
 

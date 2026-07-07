@@ -8,9 +8,17 @@ import {
 } from '@stellar/stellar-sdk';
 import { getContext } from '../context.js';
 import type { Reservation } from '../ledger.js';
+import { toStroops, fromStroops } from '../ledger.js';
 import { validateStellarAddress } from '../utils/validation.js';
 
 const PREPARE_TTL_SECONDS = 60;
+
+/**
+ * Relayer-fronted sponsored reserve per claim: one base account reserve (0.5)
+ * plus one trustline entry (0.5) held under the sponsorship sandwich. Charged to
+ * the fundingAccount and tracked in `sponsoredHeld` (previously a silent drain).
+ */
+const SPONSORED_RESERVE_ESTIMATE = '1.0000000';
 
 function parseAsset(asset: string): Asset {
   if (!asset || asset === 'native' || asset === 'XLM') return Asset.native();
@@ -320,16 +328,26 @@ function opsMatch(
  * the expected op list with `buildSponsorClaimOps` and compare field-by-field
  * (type + source + destination + asset + balanceId + sponsoredId). A client
  * cannot mutate any operation parameter and still pass. Then add the relayer
- * signature, submit, and (when credit-gated) debit the fee.
+ * signature, submit, and (when credit-gated) authenticate + debit the caller.
  *
- * Reserve subsidy: the base reserve fronted for the sponsored CreateAccount
- * (startingBalance '0') + one trustline entry is relayer-subsidized and is NOT
- * charged to `fundingAccount` — only the tx fee is debited under credit gating.
+ * Reserve accounting: under a credit-gated relayer the base reserve fronted for
+ * the sponsored CreateAccount (startingBalance '0') + one trustline entry is
+ * charged to `fundingAccount` (recorded in `sponsoredHeld` under a per-funder
+ * cap) ALONGSIDE the tx fee — it is no longer a silent, uncharged drain.
  */
 export async function handleSponsorClaimSubmit(req: Request, res: Response) {
   const ctx = getContext();
-  const { xdr, fundingAccount, stealthAddress, asset, balanceId, destination, amount } =
-    req.body ?? {};
+  const {
+    xdr,
+    fundingAccount,
+    nonce,
+    signature,
+    stealthAddress,
+    asset,
+    balanceId,
+    destination,
+    amount,
+  } = req.body ?? {};
 
   if (!xdr || typeof xdr !== 'string') {
     return res.status(400).json({ error: 'Missing xdr', code: 'invalid_xdr' });
@@ -433,22 +451,64 @@ export async function handleSponsorClaimSubmit(req: Request, res: Response) {
     return res.status(400).json({ error: 'Unexpected memo', code: 'tampered' });
   }
 
-  // Reserve the fee BEFORE submit (credit gating). The reservation is refunded
-  // if submit throws, so a failed submit never leaves credit consumed and two
-  // concurrent requests cannot both pass when only one fee of credit exists.
+  // Reserve BEFORE submit (credit gating). Under a credit-gated relayer the
+  // fundingAccount is authenticated (proof-of-control), then charged the FULL
+  // relayer-fronted cost: the sponsored reserve (base account reserve + one
+  // trustline entry) PLUS the tx fee — the sponsored reserve was previously an
+  // uncharged, unbounded drain. The reserve is recorded in `sponsoredHeld` under
+  // a per-funder cap. The reservation is refunded if submit throws and settled
+  // on success so a replay cannot refund a legitimate charge.
   const feeXlm = (Number(tx.fee) / 1e7).toFixed(7);
+  const totalXlm = fromStroops(
+    toStroops(feeXlm) + toStroops(SPONSORED_RESERVE_ESTIMATE),
+  );
   let reservation: Reservation | null = null;
+  let heldRecorded = false;
+  // Key the sponsored-reserve hold by the SAME ref as the fee reservation (the
+  // signed tx hash) so a genuine retry of the identical tx does not double-count
+  // sponsoredHeld, and a released-then-retried tx re-applies the hold.
+  const holdRef = `sponsor-claim:${tx.hash().toString('hex')}`;
   if (ctx.requireCredit) {
     if (!validateStellarAddress(fundingAccount)) {
-      return res.status(402).json({ error: 'Funding account required', code: 'insufficient_credit' });
+      return res
+        .status(401)
+        .json({ error: 'Funding account required', code: 'missing_auth' });
+    }
+    // Proof-of-control: fundingAccount signs a fresh challenge nonce binding this
+    // endpoint + account + the total (reserve + fee) it authorizes.
+    const authErr = ctx.challenges.verify(
+      'sponsor-claim',
+      { fundingAccount, nonce, signature },
+      totalXlm,
+    );
+    if (authErr) {
+      return res.status(401).json({ error: 'Unauthorized', code: authErr });
+    }
+    // Enforce the per-funder sponsored-reserve ceiling BEFORE debiting the fee.
+    try {
+      await ctx.ledger.holdReserve(
+        fundingAccount,
+        SPONSORED_RESERVE_ESTIMATE,
+        ctx.sponsorClaimMaxHeld.toFixed(7),
+        holdRef,
+      );
+      heldRecorded = true;
+    } catch {
+      return res.status(402).json({
+        error: 'Sponsored reserve cap exceeded',
+        code: 'sponsored_held_exceeded',
+      });
     }
     try {
-      reservation = await ctx.ledger.reserve(
-        fundingAccount,
-        feeXlm,
-        `sponsor-claim:${tx.hash().toString('hex')}`,
-      );
+      reservation = await ctx.ledger.reserve(fundingAccount, totalXlm, holdRef);
     } catch {
+      if (heldRecorded) {
+        await ctx.ledger.releaseReserve(
+          fundingAccount,
+          SPONSORED_RESERVE_ESTIMATE,
+          holdRef,
+        );
+      }
       return res.status(402).json({ error: 'Insufficient credit', code: 'insufficient_credit' });
     }
   }
@@ -458,10 +518,18 @@ export async function handleSponsorClaimSubmit(req: Request, res: Response) {
     const response = (await ctx.server.submitTransaction(tx)) as unknown as {
       hash: string;
     };
+    if (reservation) await ctx.ledger.settle(reservation);
 
     return res.json({ txHash: response.hash });
   } catch (err: unknown) {
     if (reservation) await ctx.ledger.refund(reservation);
+    if (heldRecorded) {
+      await ctx.ledger.releaseReserve(
+        fundingAccount,
+        SPONSORED_RESERVE_ESTIMATE,
+        holdRef,
+      );
+    }
     const codes = resultCodes(err);
     if (codes) {
       return res.status(400).json({

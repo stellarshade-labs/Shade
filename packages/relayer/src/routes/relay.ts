@@ -8,18 +8,25 @@ import {
 } from '@stellar/stellar-sdk';
 import type { CreditLedger, Reservation } from '../ledger.js';
 import { validateStellarAddress } from '../utils/validation.js';
+import { ChallengeStore } from '../utils/auth.js';
 
 let relayerKeypair: Keypair | null = null;
 let relayLedger: CreditLedger | null = null;
 let relayRequireCredit = false;
+let relayChallenges: ChallengeStore | null = null;
 
 export function initRelayRoute(
   keypair: Keypair,
-  opts?: { ledger?: CreditLedger; requireCredit?: boolean },
+  opts?: {
+    ledger?: CreditLedger;
+    requireCredit?: boolean;
+    challenges?: ChallengeStore;
+  },
 ) {
   relayerKeypair = keypair;
   relayLedger = opts?.ledger ?? null;
   relayRequireCredit = opts?.requireCredit ?? false;
+  relayChallenges = opts?.challenges ?? null;
 }
 
 export async function handleRelay(req: Request, res: Response) {
@@ -28,7 +35,7 @@ export async function handleRelay(req: Request, res: Response) {
       return res.status(500).json({ error: 'Relayer not initialized' });
     }
 
-    const { xdr, fundingAccount } = req.body;
+    const { xdr, fundingAccount, nonce, signature } = req.body;
 
     if (!xdr || typeof xdr !== 'string') {
       return res.status(400).json({ error: 'Missing or invalid XDR' });
@@ -74,10 +81,31 @@ export async function handleRelay(req: Request, res: Response) {
     const feeXlm = (Number(feeBumpTx.fee) / 1e7).toFixed(7);
     let reservation: Reservation | null = null;
     if (relayRequireCredit && relayLedger) {
+      // Fail-closed: a credit-gated relayer MUST have a challenge store to prove
+      // control of the fundingAccount. Without one we cannot authenticate the
+      // caller, so we refuse rather than debit an attacker-named account with no
+      // signature check.
+      if (!relayChallenges) {
+        return res.status(500).json({
+          error: 'Relayer misconfigured: credit gating requires a challenge store',
+          code: 'server_error',
+        });
+      }
       if (!validateStellarAddress(fundingAccount)) {
         return res
           .status(402)
           .json({ error: 'Funding account required', code: 'insufficient_credit' });
+      }
+      // Proof-of-control: the fundingAccount must sign a fresh challenge nonce
+      // binding this endpoint + account + the authorized fee. Without it anyone
+      // could name a victim's account and spend its credit.
+      const authErr = relayChallenges.verify(
+        'relay',
+        { fundingAccount, nonce, signature },
+        feeXlm,
+      );
+      if (authErr) {
+        return res.status(401).json({ error: 'Unauthorized', code: authErr });
       }
       try {
         reservation = await relayLedger.reserve(
@@ -103,6 +131,7 @@ export async function handleRelay(req: Request, res: Response) {
       if (reservation && relayLedger) await relayLedger.refund(reservation);
       throw submitErr;
     }
+    if (reservation && relayLedger) await relayLedger.settle(reservation);
 
     console.log(`[Relay] Transaction submitted: ${response.hash}`);
 

@@ -148,4 +148,89 @@ describe('CreditLedger', () => {
     await ledger.reserve(ACC, '2', 'dup-ref');
     expect(ledger.getBalance(ACC)).toBe('3.0000000');
   });
+
+  it('reserve -> settle -> refund is a no-op (the charge stays)', async () => {
+    const ledger = new CreditLedger(file);
+    ledger.credit(ACC, '5', 'TX1');
+    const r = await ledger.reserve(ACC, '2', 'ref-settle');
+    expect(ledger.getBalance(ACC)).toBe('3.0000000');
+    await ledger.settle(r);
+    // A refund after a settled reservation must NOT restore the charge.
+    await ledger.refund(r);
+    expect(ledger.getBalance(ACC)).toBe('3.0000000');
+  });
+
+  it('a settled reservation cannot be refunded by a replay of the same id', async () => {
+    const ledger = new CreditLedger(file);
+    ledger.credit(ACC, '5', 'TX1');
+    const r = await ledger.reserve(ACC, '1', 'ref-replay');
+    await ledger.settle(r);
+    // Replay: same reservation object, refunded twice — stays a no-op.
+    await ledger.refund(r);
+    await ledger.refund(r);
+    expect(ledger.getBalance(ACC)).toBe('4.0000000');
+  });
+
+  it('reserve -> refund restores exactly once; a second refund is a no-op', async () => {
+    const ledger = new CreditLedger(file);
+    ledger.credit(ACC, '5', 'TX1');
+    const r = await ledger.reserve(ACC, '2', 'ref-once');
+    expect(ledger.getBalance(ACC)).toBe('3.0000000');
+    await ledger.refund(r);
+    expect(ledger.getBalance(ACC)).toBe('5.0000000');
+    await ledger.refund(r);
+    expect(ledger.getBalance(ACC)).toBe('5.0000000');
+  });
+
+  it('holdReserve tracks sponsoredHeld and enforces the cap', async () => {
+    const ledger = new CreditLedger(file);
+    const held = await ledger.holdReserve(ACC, '1', '2');
+    expect(held).toBe('1.0000000');
+    expect(ledger.getAccount(ACC)?.sponsoredHeld).toBe('1.0000000');
+    await ledger.holdReserve(ACC, '1', '2');
+    expect(ledger.getAccount(ACC)?.sponsoredHeld).toBe('2.0000000');
+    // Exceeding the cap throws and does not increment.
+    await expect(ledger.holdReserve(ACC, '1', '2')).rejects.toThrow(
+      'sponsored_held_exceeded',
+    );
+    expect(ledger.getAccount(ACC)?.sponsoredHeld).toBe('2.0000000');
+  });
+
+  it('holdReserve is idempotent by ref: a repeated ref does not double-increment', async () => {
+    const ledger = new CreditLedger(file);
+    const ref = 'sponsor-claim:deadbeef';
+    const first = await ledger.holdReserve(ACC, '1', '5', ref);
+    expect(first).toBe('1.0000000');
+    // A genuine retry of the SAME signed tx (same ref) is a no-op.
+    const second = await ledger.holdReserve(ACC, '1', '5', ref);
+    expect(second).toBe('1.0000000');
+    expect(ledger.getAccount(ACC)?.sponsoredHeld).toBe('1.0000000');
+    // A DIFFERENT ref still increments normally.
+    await ledger.holdReserve(ACC, '1', '5', 'sponsor-claim:feedface');
+    expect(ledger.getAccount(ACC)?.sponsoredHeld).toBe('2.0000000');
+  });
+
+  it('re-holds the same ref after a release (retry-after-failure path)', async () => {
+    const ledger = new CreditLedger(file);
+    const ref = 'sponsor-claim:cafebabe';
+    // Attempt 1: hold the sponsored reserve, then submit fails so we release it.
+    await ledger.holdReserve(ACC, '1', '5', ref);
+    expect(ledger.getAccount(ACC)?.sponsoredHeld).toBe('1.0000000');
+    await ledger.releaseReserve(ACC, '1', ref);
+    expect(ledger.getAccount(ACC)?.sponsoredHeld).toBe('0.0000000');
+    // Genuine retry of the SAME signed tx (same ref) must re-apply the hold,
+    // not hit the idempotency no-op (which would under-count held reserves).
+    await ledger.holdReserve(ACC, '1', '5', ref);
+    expect(ledger.getAccount(ACC)?.sponsoredHeld).toBe('1.0000000');
+  });
+
+  it('does not over-release a ref with no outstanding hold', async () => {
+    const ledger = new CreditLedger(file);
+    const ref = 'sponsor-claim:0badf00d';
+    await ledger.holdReserve(ACC, '1', '5', ref);
+    await ledger.releaseReserve(ACC, '1', ref);
+    // A second release of the already-released ref is a no-op (stays at zero).
+    await ledger.releaseReserve(ACC, '1', ref);
+    expect(ledger.getAccount(ACC)?.sponsoredHeld).toBe('0.0000000');
+  });
 });

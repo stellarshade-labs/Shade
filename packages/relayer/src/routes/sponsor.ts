@@ -14,10 +14,15 @@ interface HorizonAccountResponse {
 }
 
 /**
- * POST /sponsor { address, startingBalance?, fundingAccount? }
+ * POST /sponsor { address, startingBalance?, fundingAccount, nonce, signature }
  *
  * Create a stealth account with a plain funded CreateAccount from the relayer's
- * balance.
+ * balance. FAIL-CLOSED: this route ALWAYS requires an authenticated, funded
+ * `fundingAccount` (proof-of-control via a signed challenge nonce) and ALWAYS
+ * debits `startingBalance + fee` from that account's credit — there is no
+ * unauthenticated path, so it can never be used as an XLM faucet that drains the
+ * relayer's hot wallet. `startingBalance` is capped at a small bootstrap ceiling
+ * (`SPONSOR_MAX_XLM`, default 5).
  *
  * NOTE (vs the v1 route): there is deliberately NO
  * BeginSponsoringFutureReserves / EndSponsoringFutureReserves sandwich here.
@@ -28,12 +33,18 @@ interface HorizonAccountResponse {
  */
 export async function handleSponsor(req: Request, res: Response) {
   const ctx = getContext();
-  const { address, startingBalance, fundingAccount } = req.body ?? {};
+  const { address, startingBalance, fundingAccount, nonce, signature } =
+    req.body ?? {};
 
   if (!validateStellarAddress(address)) {
     return res
       .status(400)
       .json({ error: 'Invalid Stellar address', code: 'invalid_address' });
+  }
+  if (!validateStellarAddress(fundingAccount)) {
+    return res
+      .status(401)
+      .json({ error: 'Funding account required', code: 'missing_auth' });
   }
 
   const balance = startingBalance ?? '1';
@@ -86,28 +97,33 @@ export async function handleSponsor(req: Request, res: Response) {
       .setTimeout(30)
       .build();
 
-    // Credit gating: reserve the starting balance PLUS the tx fee BEFORE submit
-    // (the relayer pays both out of its own funds). Refund on submit failure.
-    let reservation: Reservation | null = null;
-    if (ctx.requireCredit) {
-      if (!validateStellarAddress(fundingAccount)) {
-        return res
-          .status(402)
-          .json({ error: 'Funding account required for credit', code: 'insufficient_credit' });
-      }
-      const feeXlm = Number(tx.fee) / 1e7;
-      const totalXlm = (balanceNum + feeXlm).toFixed(7);
-      try {
-        reservation = await ctx.ledger.reserve(
-          fundingAccount,
-          totalXlm,
-          `sponsor:${tx.hash().toString('hex')}`,
-        );
-      } catch {
-        return res
-          .status(402)
-          .json({ error: 'Insufficient credit', code: 'insufficient_credit' });
-      }
+    const feeXlm = Number(tx.fee) / 1e7;
+    const totalXlm = (balanceNum + feeXlm).toFixed(7);
+
+    // Proof-of-control: fundingAccount must sign a fresh challenge nonce binding
+    // this endpoint + account + the total (startingBalance + fee) it authorizes.
+    const authErr = ctx.challenges.verify(
+      'sponsor',
+      { fundingAccount, nonce, signature },
+      totalXlm,
+    );
+    if (authErr) {
+      return res.status(401).json({ error: 'Unauthorized', code: authErr });
+    }
+
+    // ALWAYS debit startingBalance + fee before submit (never fund from the
+    // relayer's own funds for free). Refund on submit failure.
+    let reservation: Reservation;
+    try {
+      reservation = await ctx.ledger.reserve(
+        fundingAccount,
+        totalXlm,
+        `sponsor:${tx.hash().toString('hex')}`,
+      );
+    } catch {
+      return res
+        .status(402)
+        .json({ error: 'Insufficient credit', code: 'insufficient_credit' });
     }
 
     tx.sign(ctx.keypair);
@@ -117,9 +133,10 @@ export async function handleSponsor(req: Request, res: Response) {
         hash: string;
       };
     } catch (submitErr) {
-      if (reservation) await ctx.ledger.refund(reservation);
+      await ctx.ledger.refund(reservation);
       throw submitErr;
     }
+    await ctx.ledger.settle(reservation);
 
     return res.json({ txHash: response.hash, stealthAddress: address });
   } catch (err: any) {

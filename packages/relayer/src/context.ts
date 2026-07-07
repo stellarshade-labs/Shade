@@ -1,5 +1,6 @@
 import { Keypair, Networks, Horizon } from '@stellar/stellar-sdk';
 import { CreditLedger } from './ledger.js';
+import { ChallengeStore } from './utils/auth.js';
 
 /** Shared, injectable relayer context — set once at startup, read by routes. */
 export interface RelayerContext {
@@ -11,8 +12,15 @@ export interface RelayerContext {
   ledger: CreditLedger;
   /** When true, fee-spending endpoints require + debit credit. */
   requireCredit: boolean;
-  /** Max XLM the /sponsor route will fund a new account with. */
+  /**
+   * Max XLM the /sponsor route will fund a new account with — a small bootstrap
+   * ceiling, NOT a large-balance faucet.
+   */
   sponsorMaxXlm: number;
+  /** Per-funder cap (XLM) on outstanding sponsored reserves the relayer fronts. */
+  sponsorClaimMaxHeld: number;
+  /** Proof-of-control challenge-nonce store for fee-spending endpoints. */
+  challenges: ChallengeStore;
 }
 
 let ctx: RelayerContext | null = null;
@@ -47,7 +55,13 @@ export function initContext(
     partial.requireCredit ?? process.env.RELAYER_REQUIRE_CREDIT === '1';
   const sponsorMaxXlm =
     partial.sponsorMaxXlm ??
-    (process.env.SPONSOR_MAX_XLM ? Number(process.env.SPONSOR_MAX_XLM) : 1000);
+    (process.env.SPONSOR_MAX_XLM ? Number(process.env.SPONSOR_MAX_XLM) : 5);
+  const sponsorClaimMaxHeld =
+    partial.sponsorClaimMaxHeld ??
+    (process.env.SPONSOR_CLAIM_MAX_HELD
+      ? Number(process.env.SPONSOR_CLAIM_MAX_HELD)
+      : 10);
+  const challenges = partial.challenges ?? new ChallengeStore();
 
   ctx = {
     keypair: partial.keypair,
@@ -58,6 +72,8 @@ export function initContext(
     ledger,
     requireCredit,
     sponsorMaxXlm,
+    sponsorClaimMaxHeld,
+    challenges,
   };
   return ctx;
 }

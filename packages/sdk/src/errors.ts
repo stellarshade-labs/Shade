@@ -82,6 +82,25 @@ export class InvalidAmountError extends Error {
 }
 
 /**
+ * Thrown by the sponsored token-claim path when the relayer-prepared XDR does
+ * NOT match the operation list the client re-derives from its own trusted inputs
+ * (stealth address, asset, balanceId, destination, amount). A malicious relayer
+ * could otherwise redirect the payout or append an AccountMerge to steal the
+ * just-claimed token; the client refuses to sign such a transaction. The message
+ * names the specific mismatch (e.g. a tampered payout destination or an extra
+ * appended operation) so the failure is diagnosable.
+ */
+export class SponsoredClaimMismatchError extends Error {
+  constructor(detail: string) {
+    super(
+      `Refusing to sign sponsored claim: prepared transaction does not match ` +
+        `the expected operations (${detail}). The relayer may be malicious.`,
+    );
+    this.name = 'SponsoredClaimMismatchError';
+  }
+}
+
+/**
  * Thrown by {@link StealthSession.unlock} when the supplied password fails to
  * decrypt the stored envelope. Surfaces as an AES-GCM authentication failure
  * (the tag does not verify), which is indistinguishable from tampering — either

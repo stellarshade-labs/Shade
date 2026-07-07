@@ -5,7 +5,8 @@ import path from 'path';
 import { Request, Response } from 'express';
 import { Keypair } from '@stellar/stellar-sdk';
 import { CreditLedger } from '../ledger.js';
-import { initContext, resetContext } from '../context.js';
+import { initContext, resetContext, getContext } from '../context.js';
+import { challengeMessage } from '../utils/auth.js';
 import { handleSponsor } from './sponsor.js';
 
 function mockRes(): Response & { statusCode: number; body: any } {
@@ -46,6 +47,21 @@ function mockServer(relayerKey: string, existing: string[] = []) {
   return { server: { loadAccount, submitTransaction } as any, submitTransaction };
 }
 
+/** Issue a challenge for `funder` and sign the canonical `sponsor` message. */
+function signedAuth(funder: Keypair, totalXlm: string) {
+  const nonce = getContext().challenges.issue(funder.publicKey());
+  const message = challengeMessage(
+    'sponsor',
+    funder.publicKey(),
+    nonce,
+    totalXlm,
+  );
+  const signature = funder
+    .sign(Buffer.from(message, 'utf8'))
+    .toString('base64');
+  return { fundingAccount: funder.publicKey(), nonce, signature };
+}
+
 describe('sponsor route', () => {
   let dir: string;
   let ledger: CreditLedger;
@@ -64,7 +80,7 @@ describe('sponsor route', () => {
     vi.clearAllMocks();
   });
 
-  it('creates a new stealth account (no sponsorship sandwich)', async () => {
+  it('rejects an unauthenticated request with 401 (no faucet)', async () => {
     const { server, submitTransaction } = mockServer(relayer.publicKey());
     initContext({ keypair: relayer, network: 'local', server, ledger });
 
@@ -72,16 +88,28 @@ describe('sponsor route', () => {
     const res = mockRes();
     await handleSponsor(req, res);
 
-    expect(res.statusCode).toBe(200);
-    expect(res.body.stealthAddress).toBe(stealth);
-    expect(res.body.txHash).toBe('SPONSOR_TX');
+    // No fundingAccount => 401, and no tx is submitted (fail-closed).
+    expect(res.statusCode).toBe(401);
+    expect(submitTransaction).not.toHaveBeenCalled();
+  });
 
-    // The submitted tx must NOT contain any sponsorship sandwich ops.
-    const submittedTx = submitTransaction.mock.calls[0]![0] as any;
-    const opTypes = submittedTx.operations.map((o: any) => o.type);
-    expect(opTypes).toEqual(['createAccount']);
-    expect(opTypes).not.toContain('beginSponsoringFutureReserves');
-    expect(opTypes).not.toContain('endSponsoringFutureReserves');
+  it('rejects a request whose signature is missing (401) even with a funder', async () => {
+    const funder = Keypair.random();
+    ledger.credit(funder.publicKey(), '10', 'DEP1');
+    const { server, submitTransaction } = mockServer(relayer.publicKey());
+    initContext({ keypair: relayer, network: 'local', server, ledger });
+
+    const req = {
+      body: {
+        address: stealth,
+        startingBalance: '2',
+        fundingAccount: funder.publicKey(),
+      },
+    } as Request;
+    const res = mockRes();
+    await handleSponsor(req, res);
+    expect(res.statusCode).toBe(401);
+    expect(submitTransaction).not.toHaveBeenCalled();
   });
 
   it('rejects an invalid address', async () => {
@@ -94,18 +122,10 @@ describe('sponsor route', () => {
     expect(res.body.code).toBe('invalid_address');
   });
 
-  it('returns 409 when the account already exists', async () => {
-    const { server } = mockServer(relayer.publicKey(), [stealth]);
-    initContext({ keypair: relayer, network: 'local', server, ledger });
-    const req = { body: { address: stealth } } as Request;
-    const res = mockRes();
-    await handleSponsor(req, res);
-    expect(res.statusCode).toBe(409);
-    expect(res.body.code).toBe('account_exists');
-  });
-
-  it('enforces SPONSOR_MAX_XLM', async () => {
-    const { server } = mockServer(relayer.publicKey());
+  it('rejects a startingBalance above the (lowered) cap with 400', async () => {
+    const funder = Keypair.random();
+    ledger.credit(funder.publicKey(), '100', 'DEP1');
+    const { server, submitTransaction } = mockServer(relayer.publicKey());
     initContext({
       keypair: relayer,
       network: 'local',
@@ -113,52 +133,138 @@ describe('sponsor route', () => {
       ledger,
       sponsorMaxXlm: 5,
     });
-    const req = { body: { address: stealth, startingBalance: '10' } } as Request;
-    const res = mockRes();
-    await handleSponsor(req, res);
-    expect(res.statusCode).toBe(400);
-  });
 
-  it('requires + debits credit when credit-gated', async () => {
-    const funding = Keypair.random().publicKey();
-    ledger.credit(funding, '3', 'DEP1');
-    const { server } = mockServer(relayer.publicKey());
-    initContext({
-      keypair: relayer,
-      network: 'local',
-      server,
-      ledger,
-      requireCredit: true,
-    });
-
+    // 10 > cap of 5 — rejected before any auth/debit.
     const req = {
-      body: { address: stealth, startingBalance: '2', fundingAccount: funding },
+      body: {
+        address: stealth,
+        startingBalance: '10',
+        fundingAccount: funder.publicKey(),
+      },
     } as Request;
     const res = mockRes();
     await handleSponsor(req, res);
-    expect(res.statusCode).toBe(200);
-    // Debits startingBalance (2) PLUS the tx fee (100 stroops = 0.00001 XLM):
-    // 3 - 2 - 0.00001 = 0.99999.
-    expect(ledger.getBalance(funding)).toBe('0.9999900');
+    expect(res.statusCode).toBe(400);
+    expect(res.body.code).toBe('balance_exceeds_max');
+    expect(submitTransaction).not.toHaveBeenCalled();
   });
 
-  it('returns 402 when credit is insufficient', async () => {
-    const funding = Keypair.random().publicKey();
-    ledger.credit(funding, '1', 'DEP1');
-    const { server } = mockServer(relayer.publicKey());
-    initContext({
-      keypair: relayer,
-      network: 'local',
-      server,
-      ledger,
-      requireCredit: true,
-    });
+  it('defaults the cap to 5 (a small bootstrap ceiling, not a faucet)', async () => {
+    const funder = Keypair.random();
+    ledger.credit(funder.publicKey(), '2000', 'DEP1');
+    const { server, submitTransaction } = mockServer(relayer.publicKey());
+    initContext({ keypair: relayer, network: 'local', server, ledger });
+
+    // The old faucet allowed up to 1000; the new default cap is 5.
     const req = {
-      body: { address: stealth, startingBalance: '2', fundingAccount: funding },
+      body: {
+        address: stealth,
+        startingBalance: '1000',
+        fundingAccount: funder.publicKey(),
+      },
+    } as Request;
+    const res = mockRes();
+    await handleSponsor(req, res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.code).toBe('balance_exceeds_max');
+    expect(submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 when the account already exists', async () => {
+    const funder = Keypair.random();
+    ledger.credit(funder.publicKey(), '10', 'DEP1');
+    const { server } = mockServer(relayer.publicKey(), [stealth]);
+    initContext({ keypair: relayer, network: 'local', server, ledger });
+    const req = {
+      body: { address: stealth, fundingAccount: funder.publicKey() },
+    } as Request;
+    const res = mockRes();
+    await handleSponsor(req, res);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.code).toBe('account_exists');
+  });
+
+  it('accepts a valid authenticated+funded request and debits startingBalance + fee', async () => {
+    const funder = Keypair.random();
+    ledger.credit(funder.publicKey(), '3', 'DEP1');
+    const { server, submitTransaction } = mockServer(relayer.publicKey());
+    initContext({ keypair: relayer, network: 'local', server, ledger });
+
+    // fee = 100 stroops = 0.00001; total authorized = 2 + 0.00001.
+    const auth = signedAuth(funder, '2.0000100');
+    const req = {
+      body: { address: stealth, startingBalance: '2', ...auth },
+    } as Request;
+    const res = mockRes();
+    await handleSponsor(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.stealthAddress).toBe(stealth);
+    expect(res.body.txHash).toBe('SPONSOR_TX');
+
+    // Only a plain createAccount — no sponsorship sandwich.
+    const submittedTx = submitTransaction.mock.calls[0]![0] as any;
+    const opTypes = submittedTx.operations.map((o: any) => o.type);
+    expect(opTypes).toEqual(['createAccount']);
+
+    // 3 - 2 - 0.00001 = 0.99999.
+    expect(ledger.getBalance(funder.publicKey())).toBe('0.9999900');
+  });
+
+  it('returns 402 when the funder credit is insufficient', async () => {
+    const funder = Keypair.random();
+    ledger.credit(funder.publicKey(), '1', 'DEP1');
+    const { server } = mockServer(relayer.publicKey());
+    initContext({ keypair: relayer, network: 'local', server, ledger });
+
+    const auth = signedAuth(funder, '2.0000100');
+    const req = {
+      body: { address: stealth, startingBalance: '2', ...auth },
     } as Request;
     const res = mockRes();
     await handleSponsor(req, res);
     expect(res.statusCode).toBe(402);
     expect(res.body.code).toBe('insufficient_credit');
+  });
+
+  it('rejects a signature bound to a different amount (401)', async () => {
+    const funder = Keypair.random();
+    ledger.credit(funder.publicKey(), '10', 'DEP1');
+    const { server, submitTransaction } = mockServer(relayer.publicKey());
+    initContext({ keypair: relayer, network: 'local', server, ledger });
+
+    // Sign for a smaller amount than the route will actually authorize.
+    const auth = signedAuth(funder, '1.0000000');
+    const req = {
+      body: { address: stealth, startingBalance: '2', ...auth },
+    } as Request;
+    const res = mockRes();
+    await handleSponsor(req, res);
+    expect(res.statusCode).toBe(401);
+    expect(submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a reused nonce (401 on replay)', async () => {
+    const funder = Keypair.random();
+    ledger.credit(funder.publicKey(), '10', 'DEP1');
+    const { server } = mockServer(relayer.publicKey());
+    initContext({ keypair: relayer, network: 'local', server, ledger });
+
+    const auth = signedAuth(funder, '2.0000100');
+    const first = {
+      body: { address: stealth, startingBalance: '2', ...auth },
+    } as Request;
+    const firstRes = mockRes();
+    await handleSponsor(first, firstRes);
+    expect(firstRes.statusCode).toBe(200);
+
+    // Replaying the same nonce for a second (fresh) account must fail.
+    const other = Keypair.random().publicKey();
+    const second = {
+      body: { address: other, startingBalance: '2', ...auth },
+    } as Request;
+    const secondRes = mockRes();
+    await handleSponsor(second, secondRes);
+    expect(secondRes.statusCode).toBe(401);
   });
 });

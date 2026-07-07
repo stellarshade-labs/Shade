@@ -6,6 +6,7 @@ import { Request, Response } from 'express';
 import { handleRelay, initRelayRoute } from './relay';
 import { Keypair, Networks } from '@stellar/stellar-sdk';
 import { CreditLedger } from '../ledger.js';
+import { ChallengeStore, challengeMessage } from '../utils/auth.js';
 
 const { mockServerInstance, MockTransaction } = vi.hoisted(() => {
   const mockServerInstance = {
@@ -181,17 +182,23 @@ describe('handleRelay credit gating', () => {
   let dir: string;
   let ledger: CreditLedger;
   let relayer: Keypair;
+  let funder: Keypair;
   let fundingAccount: string;
+  let challenges: ChallengeStore;
   let mockReq: Partial<Request>;
   let mockRes: Partial<Response>;
+
+  const FEE_XLM = '0.0000600'; // 600 stroops built fee-bump fee.
 
   beforeEach(() => {
     vi.clearAllMocks();
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-credit-'));
     ledger = new CreditLedger(path.join(dir, 'ledger.json'));
     relayer = Keypair.random();
-    fundingAccount = Keypair.random().publicKey();
-    initRelayRoute(relayer, { ledger, requireCredit: true });
+    funder = Keypair.random();
+    fundingAccount = funder.publicKey();
+    challenges = new ChallengeStore();
+    initRelayRoute(relayer, { ledger, requireCredit: true, challenges });
     mockRes = {
       status: vi.fn().mockReturnThis(),
       json: vi.fn().mockReturnThis(),
@@ -215,11 +222,20 @@ describe('handleRelay credit gating', () => {
     } as any;
   }
 
+  /** Produce a valid proof-of-control {nonce, signature} for the funder. */
+  function auth(amount: string): { nonce: string; signature: string } {
+    const nonce = challenges.issue(fundingAccount);
+    const msg = challengeMessage('relay', fundingAccount, nonce, amount);
+    const signature = funder.sign(Buffer.from(msg, 'utf8')).toString('base64');
+    return { nonce, signature };
+  }
+
   it('gates with 402 when the funding account has no credit', async () => {
     const { TransactionBuilder } = await import('@stellar/stellar-sdk');
     (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(
       mockFeeBump('600'),
     );
+    mockReq.body = { xdr: 'anything', fundingAccount, ...auth(FEE_XLM) };
 
     await handleRelay(mockReq as Request, mockRes as Response);
 
@@ -238,6 +254,7 @@ describe('handleRelay credit gating', () => {
       hash: 'RELAY_OK',
       successful: true,
     });
+    mockReq.body = { xdr: 'anything', fundingAccount, ...auth(FEE_XLM) };
 
     await handleRelay(mockReq as Request, mockRes as Response);
 
@@ -255,11 +272,162 @@ describe('handleRelay credit gating', () => {
     mockServerInstance.submitTransaction.mockRejectedValue(
       new Error('Network error'),
     );
+    mockReq.body = { xdr: 'anything', fundingAccount, ...auth(FEE_XLM) };
 
     await handleRelay(mockReq as Request, mockRes as Response);
 
     expect(mockRes.status).toHaveBeenCalledWith(500);
     // Credit restored after the failed submit.
     expect(ledger.getBalance(fundingAccount)).toBe('10.0000000');
+  });
+
+  it('fails closed (500) when credit-gated without a challenge store — no debit', async () => {
+    // A credit-gated relayer initialized WITHOUT a challenge store cannot prove
+    // control of the fundingAccount, so it must refuse rather than debit an
+    // attacker-named account with no signature check.
+    ledger.credit(fundingAccount, '10', 'DEP1');
+    initRelayRoute(relayer, { ledger, requireCredit: true });
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
+    (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(
+      mockFeeBump('600'),
+    );
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    expect(mockRes.status).toHaveBeenCalledWith(500);
+    expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
+    // No credit was spent.
+    expect(ledger.getBalance(fundingAccount)).toBe('10.0000000');
+  });
+});
+
+describe('handleRelay proof-of-control auth (credit-gated)', () => {
+  let dir: string;
+  let ledger: CreditLedger;
+  let relayer: Keypair;
+  let funder: Keypair;
+  let challenges: ChallengeStore;
+  let mockRes: Partial<Response>;
+
+  const FEE_XLM = '0.0000600'; // 600 stroops built fee-bump fee.
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-auth-'));
+    ledger = new CreditLedger(path.join(dir, 'ledger.json'));
+    relayer = Keypair.random();
+    funder = Keypair.random();
+    ledger.credit(funder.publicKey(), '10', 'DEP1');
+    challenges = new ChallengeStore();
+    initRelayRoute(relayer, { ledger, requireCredit: true, challenges });
+    mockRes = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockReturnThis(),
+    };
+    mockServerInstance.loadAccount.mockResolvedValue({});
+    mockServerInstance.fetchBaseFee.mockResolvedValue(100);
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    initRelayRoute(Keypair.random());
+  });
+
+  function mockFeeBump(feeStroops: string) {
+    return {
+      fee: feeStroops,
+      sign: vi.fn(),
+      hash: vi.fn().mockReturnValue(Buffer.from('feebumphash')),
+    } as any;
+  }
+
+  function auth(endpoint: string, signer: Keypair, amount: string, forNonceOf?: string) {
+    const nonce = challenges.issue(forNonceOf ?? funder.publicKey());
+    const msg = challengeMessage(endpoint, funder.publicKey(), nonce, amount);
+    const signature = signer.sign(Buffer.from(msg, 'utf8')).toString('base64');
+    return { nonce, signature };
+  }
+
+  async function callWith(body: Record<string, unknown>) {
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
+    (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(
+      mockFeeBump('600'),
+    );
+    mockServerInstance.submitTransaction.mockResolvedValue({
+      hash: 'RELAY_OK',
+      successful: true,
+    });
+    const req = {
+      body: { xdr: 'anything', fundingAccount: funder.publicKey(), ...body },
+    } as Request;
+    await handleRelay(req, mockRes as Response);
+  }
+
+  it('accepts a request with a valid signed nonce', async () => {
+    await callWith(auth('relay', funder, FEE_XLM));
+    expect(mockRes.json).toHaveBeenCalledWith({
+      success: true,
+      txHash: 'RELAY_OK',
+    });
+    expect(ledger.getBalance(funder.publicKey())).toBe('9.9999400');
+  });
+
+  it('rejects a missing signature with 401', async () => {
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
+    (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(
+      mockFeeBump('600'),
+    );
+    const nonce = challenges.issue(funder.publicKey());
+    const req = {
+      body: { xdr: 'anything', fundingAccount: funder.publicKey(), nonce },
+    } as Request;
+    await handleRelay(req, mockRes as Response);
+    expect(mockRes.status).toHaveBeenCalledWith(401);
+    expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a signature from the wrong signer with 401', async () => {
+    const attacker = Keypair.random();
+    await callWith(auth('relay', attacker, FEE_XLM));
+    expect(mockRes.status).toHaveBeenCalledWith(401);
+    expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a reused nonce with 401', async () => {
+    const a = auth('relay', funder, FEE_XLM);
+    await callWith(a);
+    expect(mockRes.json).toHaveBeenCalledWith({
+      success: true,
+      txHash: 'RELAY_OK',
+    });
+    // Replay the same nonce/signature.
+    const mockRes2: Partial<Response> = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockReturnThis(),
+    };
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
+    (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(
+      mockFeeBump('600'),
+    );
+    const req = {
+      body: { xdr: 'anything', fundingAccount: funder.publicKey(), ...a },
+    } as Request;
+    await handleRelay(req, mockRes2 as Response);
+    expect(mockRes2.status).toHaveBeenCalledWith(401);
+  });
+
+  it('rejects an expired nonce with 401', async () => {
+    const expiring = new ChallengeStore(0);
+    initRelayRoute(relayer, {
+      ledger,
+      requireCredit: true,
+      challenges: expiring,
+    });
+    const nonce = expiring.issue(funder.publicKey());
+    const msg = challengeMessage('relay', funder.publicKey(), nonce, FEE_XLM);
+    const signature = funder.sign(Buffer.from(msg, 'utf8')).toString('base64');
+    await callWith({ nonce, signature });
+    expect(mockRes.status).toHaveBeenCalledWith(401);
+    expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
   });
 });
