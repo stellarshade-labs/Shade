@@ -85,26 +85,37 @@ The demo will:
 ```typescript
 import { StealthClient } from '@stealth/sdk';
 
-const client = new StealthClient({ network: 'local', contractId: 'CXXX...' });
+// `contractId` is required whenever the pool method is enabled (mandatory on testnet).
+const client = new StealthClient({
+  network: 'local',
+  contractId: 'CXXX...',
+  methods: ['pool', 'account'],
+});
 
 // Generate keys (no network needed)
 const bobKeys = StealthClient.keygen();
 // bobKeys.metaAddress → "st:stellar:..." (share publicly)
 
-// Alice sends 100 XLM to Bob's stealth address
-const receipt = await client.send(bobKeys.metaAddress, 100, aliceSecret);
+// Alice sends 100 XLM to Bob's stealth address. A delivery method is REQUIRED —
+// 'pool' (private), 'account' (direct classic tx), or 'auto' (picks one). There
+// is no implicit default, so omitting `method` throws MethodRequiredError.
+const receipt = await client.send(bobKeys.metaAddress, 100, aliceSecret, {
+  method: 'auto',
+});
 // receipt.stealthAddress, receipt.txHash
 
-// Bob scans for received payments
+// Bob scans for received payments (client.scanWithCursor gives an incremental cursor).
 const payments = await client.scan(bobKeys);
-// [{ stealthAddress, amount: 100, token: "CXLM..." }]
+// [{ stealthAddress, amount: 100, asset: "XLM", method: "pool", ... }]
 
-// Bob withdraws to his real address
-const result = await client.withdraw(payments[0].stealthAddress, bobPublicKey, {
+// Bob claims a payment to his real address. `claim` takes the Payment object and
+// branches on its method (pool → signed withdraw, account → sweep/partial payout).
+const result = await client.claim(payments[0], bobPublicKey, {
   keys: bobKeys,
-  feePayer: feePayerSecret,           // someone pays the ~0.01 XLM tx fee
-  relay: 'http://localhost:3000',      // optional: relayer pays for privacy
+  feePayer: feePayerSecret,           // pool claims need a fee payer for the Soroban fee
+  relay: 'http://localhost:3000',      // optional: relayer fee-bumps for privacy
 });
+// result.txHash, result.amount, result.method
 ```
 
 That's it. No DKSAP math, no Soroban transactions, no message serialization.
@@ -112,26 +123,29 @@ That's it. No DKSAP math, no Soroban transactions, no message serialization.
 ## CLI Commands
 
 ```bash
-# Generate stealth keys
-stealth keygen                              # Random keys
-stealth keygen --mnemonic                   # From new BIP-39 mnemonic
-stealth keygen --recover                    # Recover from 12 words
-stealth keygen --show                       # Display meta-address
+# Generate stealth keys (keygen prints the meta-address; the keystore path is
+# --keystore <path> or $STEALTH_KEYSTORE, honored by every command).
+stealth keygen                              # Random keys (BIP-39 mnemonic under the hood)
+stealth keygen --mnemonic                   # New BIP-39 mnemonic (enables recovery)
+stealth keygen --recover                    # Recover from an existing 12-word mnemonic
+stealth keygen --password                   # Encrypt the keystore (AES-256-GCM; prompts on stderr)
 
-# Deposit tokens into stealth pool
-stealth send <meta-address> <amount> --from <secret>
-stealth send <meta-address> 100 --from SXXX --network local
-stealth send <meta-address> 200 --from SXXX --asset USDC:GISSUER
+# Send — a delivery method is REQUIRED (pool = private, account = direct, auto = pick).
+# Supply the secret via $STEALTH_FROM_SECRET or the prompt so it never hits shell history.
+stealth send <meta-address> 100 --method auto --network local
+stealth send <meta-address> 100 --method pool --from SXXX
+stealth send <meta-address> 200 --method account --asset USDC:GISSUER
 
-# Scan for received deposits
+# Scan + balance (pool AND account); balance shows the asset label (e.g. XLM, not the SAC C-address)
 stealth scan --network local
-
-# Check pool balances
 stealth balance --network local
 
-# Withdraw from pool
-stealth withdraw <stealth-addr> <destination> --fee-payer <secret>
-stealth withdraw <stealth-addr> <destination> --fee-payer SXXX --relay http://localhost:3000
+# Claim a discovered payment to your real address (unified pool + account path)
+stealth claim <stealth-addr> <destination> --relay http://localhost:3000        # account sweep
+stealth claim <stealth-addr> <destination> --fee-payer SXXX                      # pool withdraw
+stealth claim <stealth-addr> <destination> --sponsored --funding-account G...    # token, no reserves
+
+# (Legacy) direct pool withdraw — `claim` is the preferred unified command
 stealth withdraw <stealth-addr> <destination> --fee-payer SXXX --asset USDC:GISSUER
 ```
 
@@ -147,10 +161,14 @@ stealth withdraw <stealth-addr> <destination> --fee-payer SXXX --asset USDC:GISS
 | `get_announcements_by_tag(tag, start, limit)` | Filter by view tag |
 | `get_announcement_count()` | Total announcement count |
 
-**Withdraw message format** (must match between Rust and TypeScript):
+**Withdraw message format** (must match byte-for-byte between Rust and TypeScript):
 ```
-SHA256(stealth_pk(32) || token_strkey(56) || amount_be(16) || dest_strkey(56) || nonce_be(8))
+SHA256(stealth_pk(32) || token_strkey(56) || amount_be(16) || dest_strkey(56)
+       || nonce_be(8) || contract_strkey(56) || network_id(32))
 ```
+The trailing contract address and 32-byte network id (SHA-256 of the network passphrase,
+= `env.ledger().network_id()` on-chain) bind the signature to a single deployment + network,
+preventing cross-deployment / cross-network signature replay.
 
 ## Relayer
 
