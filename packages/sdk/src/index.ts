@@ -22,6 +22,7 @@ export {
   StealthAccountNotFoundError,
   DestinationTrustlineError,
   FeePayerRequiredError,
+  FeePayerAddressRequiredError,
   ContractIdRequiredError,
 } from './errors.js';
 
@@ -79,4 +80,5 @@ export type {
   ScanResult,
   ClaimOpts,
   ClaimReceipt,
+  TransactionSigner,
 } from './types.js';

@@ -7,6 +7,25 @@
  */
 export type DeliveryMethod = 'pool' | 'account' | 'spp';
 
+/**
+ * An external transaction signer, shaped like Freighter's `signTransaction`.
+ *
+ * Takes an UNSIGNED transaction XDR and returns a SIGNED transaction XDR. This
+ * lets a browser wallet (e.g. Freighter) sign the SENDER and FEE-PAYER legs of
+ * an SDK transaction so a dapp never touches a raw Stellar secret. The recovered
+ * stealth-key legs still sign locally — a wallet cannot hold the derived stealth
+ * scalar — so a signer is only ever applied to the sender / fee-payer legs.
+ *
+ * @param xdr - The unsigned transaction XDR (base64).
+ * @param opts - Network passphrase and, optionally, the G-address expected to
+ *   sign (the public key the caller passed where a secret normally goes).
+ * @returns The signed transaction XDR (base64).
+ */
+export type TransactionSigner = (
+  xdr: string,
+  opts: { networkPassphrase: string; address?: string },
+) => Promise<string>;
+
 /** Stealth key material. All keys are hex-encoded strings for easy serialization. */
 export interface StealthKeys {
   /** Meta-address string (shade:stellar:...) — share this publicly */
@@ -97,6 +116,21 @@ export interface SendOpts {
   method: DeliveryMethod | 'auto';
   /** Asset to send. Default: native XLM. Format: "CODE:ISSUER" */
   asset?: string;
+  /**
+   * External signer for the SENDER leg (Freighter-style). When set, the caller
+   * passes a PUBLIC key (G...) where a secret is normally expected — `send()`'s
+   * `senderSecret` positional carries the sender's G-address — and the SDK
+   * delegates signing to this function instead of `Keypair.fromSecret`. The
+   * stealth-key legs (claim/withdraw signatures) are unaffected: a wallet cannot
+   * hold the derived stealth scalar, so those always sign locally.
+   */
+  signTransaction?: TransactionSigner;
+  /**
+   * The G-address of the fee payer when {@link signTransaction} is used on a
+   * flow that needs a distinct fee payer. Unused by `send()` (whose fee payer is
+   * the sender itself); present here for symmetry with {@link ClaimOpts}.
+   */
+  feePayerAddress?: string;
 }
 
 /** Options for withdrawing from a stealth address (pool method). */
@@ -170,6 +204,24 @@ export interface ClaimOpts {
    * `insufficient_credit`. Ignored by a non-gated relayer.
    */
   fundingAccount?: string;
+  /**
+   * External signer for the FEE-PAYER leg (Freighter-style). When set on a pool
+   * claim, the caller passes the fee payer's PUBLIC key via
+   * {@link ClaimOpts.feePayerAddress} where a secret is normally expected (in
+   * {@link ClaimOpts.feePayer}) and the SDK delegates signing of the fee-paying
+   * transaction to this function instead of `Keypair.fromSecret`. The
+   * stealth-key withdrawal signature is unaffected — a wallet cannot hold the
+   * derived stealth scalar, so it always signs locally.
+   */
+  signTransaction?: TransactionSigner;
+  /**
+   * The fee payer's G-address, required when {@link signTransaction} is set on a
+   * pool claim (which needs a fee payer). The SDK never calls
+   * `Keypair.fromSecret` on this value; it is handed to {@link signTransaction}
+   * as the address to sign with. When {@link signTransaction} is set but this is
+   * missing, a {@link FeePayerAddressRequiredError} is thrown.
+   */
+  feePayerAddress?: string;
 }
 
 /** Receipt returned after a successful claim. */

@@ -33,12 +33,15 @@ import type {
   ClaimOpts,
 } from '../types.js';
 import type { DeliveryAdapter, AdapterSendParams } from './types.js';
+import type { TransactionSigner } from '../types.js';
 import {
   NoBalanceError,
   AnnouncementNotFoundError,
   FeePayerRequiredError,
+  FeePayerAddressRequiredError,
 } from '../errors.js';
 import { numberToStroops, formatStroops } from '../stroops.js';
+import { signTx } from './sign.js';
 
 const POOL_PAGE_SIZE = 200;
 
@@ -62,11 +65,13 @@ export class PoolAdapter implements DeliveryAdapter {
    * recording the announcement atomically with the deposit.
    */
   async send(params: AdapterSendParams): Promise<SendReceipt> {
-    const { metaAddress, amount, senderSecret, asset } = params;
+    const { metaAddress, amount, senderSecret, asset, signTransaction } = params;
     if (amount <= 0) throw new Error('Amount must be positive');
 
     const { spendPubKey, viewPubKey } = decodeMetaAddress(metaAddress);
-    const senderKeypair = Keypair.fromSecret(senderSecret);
+    const senderPublicKey = signTransaction
+      ? senderSecret
+      : Keypair.fromSecret(senderSecret).publicKey();
     const tokenAddress = resolveTokenAddress(asset, this.networkPassphrase);
     const stroops = numberToStroops(amount);
 
@@ -78,7 +83,7 @@ export class PoolAdapter implements DeliveryAdapter {
     );
 
     const contract = new Contract(this.contractId);
-    const account = await this.server.getAccount(senderKeypair.publicKey());
+    const account = await this.server.getAccount(senderPublicKey);
 
     const depositTx = new TransactionBuilder(account, {
       fee: '100',
@@ -87,7 +92,7 @@ export class PoolAdapter implements DeliveryAdapter {
       .addOperation(
         contract.call(
           'deposit',
-          new StellarSdk.Address(senderKeypair.publicKey()).toScVal(),
+          new StellarSdk.Address(senderPublicKey).toScVal(),
           new StellarSdk.Address(tokenAddress).toScVal(),
           nativeToScVal(stroops, { type: 'i128' }),
           nativeToScVal(Buffer.from(stealth.stealthPubKey)),
@@ -99,8 +104,13 @@ export class PoolAdapter implements DeliveryAdapter {
       .build();
 
     const prepared = await this.server.prepareTransaction(depositTx);
-    prepared.sign(senderKeypair);
-    const result = await this.server.sendTransaction(prepared);
+    const signed = await signTx(
+      prepared,
+      senderSecret,
+      this.networkPassphrase,
+      signTransaction,
+    );
+    const result = await this.server.sendTransaction(signed);
 
     if (result.status === 'ERROR') {
       throw new Error('Transaction submission failed');
@@ -216,12 +226,20 @@ export class PoolAdapter implements DeliveryAdapter {
     destination: string,
     opts: ClaimOpts,
   ): Promise<ClaimReceipt> {
+    // A pool claim always needs a fee payer. With an external signer the fee
+    // payer is identified by its G-address (never a secret) — require it up
+    // front so the SDK never calls Keypair.fromSecret on a public key.
+    if (opts.signTransaction && !opts.feePayerAddress) {
+      throw new FeePayerAddressRequiredError();
+    }
     const receipt = await this.withdraw(payment.stealthAddress, destination, {
       keys: opts.keys,
       feePayer: opts.feePayer ?? '',
       relay: opts.relay,
       asset: opts.asset,
       amount: opts.amount,
+      signTransaction: opts.signTransaction,
+      feePayerAddress: opts.feePayerAddress,
     });
     return { txHash: receipt.txHash, amount: receipt.amount, method: 'pool' };
   }
@@ -239,6 +257,8 @@ export class PoolAdapter implements DeliveryAdapter {
       relay?: string;
       asset?: string;
       amount?: number;
+      signTransaction?: TransactionSigner;
+      feePayerAddress?: string;
     },
   ): Promise<{ txHash: string; amount: number }> {
     if (!StrKey.isValidEd25519PublicKey(stealthAddress)) {
@@ -247,7 +267,12 @@ export class PoolAdapter implements DeliveryAdapter {
     if (!StrKey.isValidEd25519PublicKey(destination)) {
       throw new Error('Invalid destination address');
     }
-    if (!opts.feePayer) {
+    // With an external signer the fee payer is a G-address, not a secret.
+    if (opts.signTransaction) {
+      if (!opts.feePayerAddress) {
+        throw new FeePayerAddressRequiredError();
+      }
+    } else if (!opts.feePayer) {
       throw new FeePayerRequiredError();
     }
 
@@ -343,11 +368,11 @@ export class PoolAdapter implements DeliveryAdapter {
 
     const signature = signWithStealthKey(messageHash, stealthPrivKey);
 
-    const feePayerKeypair = Keypair.fromSecret(opts.feePayer);
+    const feePayerPublicKey = opts.signTransaction
+      ? opts.feePayerAddress!
+      : Keypair.fromSecret(opts.feePayer).publicKey();
     const contract = new Contract(this.contractId);
-    const feePayerAccount = await this.server.getAccount(
-      feePayerKeypair.publicKey(),
-    );
+    const feePayerAccount = await this.server.getAccount(feePayerPublicKey);
 
     const withdrawTx = new TransactionBuilder(feePayerAccount, {
       fee: '100',
@@ -368,7 +393,12 @@ export class PoolAdapter implements DeliveryAdapter {
       .build();
 
     const prepared = await this.server.prepareTransaction(withdrawTx);
-    prepared.sign(feePayerKeypair);
+    const signedWithdraw = await signTx(
+      prepared,
+      opts.signTransaction ? feePayerPublicKey : opts.feePayer,
+      this.networkPassphrase,
+      opts.signTransaction,
+    );
 
     let txHash: string;
     if (opts.relay) {
@@ -376,7 +406,7 @@ export class PoolAdapter implements DeliveryAdapter {
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ xdr: prepared.toEnvelope().toXDR('base64') }),
+        body: JSON.stringify({ xdr: signedWithdraw.toEnvelope().toXDR('base64') }),
       });
       if (!res.ok) {
         const err = (await res.json()) as { error?: string };
@@ -385,7 +415,7 @@ export class PoolAdapter implements DeliveryAdapter {
       const data = (await res.json()) as { txHash: string };
       txHash = data.txHash;
     } else {
-      const result = await this.server.sendTransaction(prepared);
+      const result = await this.server.sendTransaction(signedWithdraw);
       if (result.status === 'ERROR') throw new Error('Transaction submission failed');
       if (result.status === 'PENDING') {
         await waitForTransaction(this.server, result.hash);

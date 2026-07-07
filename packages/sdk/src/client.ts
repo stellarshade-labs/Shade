@@ -206,7 +206,13 @@ export class StealthClient {
     }
     const method = this.resolveMethod(opts.method, amount, opts.asset);
     const adapter = this.getAdapter(method);
-    return adapter.send({ metaAddress, amount, senderSecret, asset: opts.asset });
+    return adapter.send({
+      metaAddress,
+      amount,
+      senderSecret,
+      asset: opts.asset,
+      signTransaction: opts.signTransaction,
+    });
   }
 
   /**

@@ -96,6 +96,49 @@ loudly instead of deriving unrecoverable keys. Scope keys with a matching
 different, non-interoperable keys). Wallet compromise equals stealth-key compromise —
 the accepted trade-off for keyless recovery.
 
+## External signing (Freighter)
+
+A dapp can let a browser wallet (Freighter) sign the **sender** and **fee-payer**
+legs so it never handles a raw Stellar secret. Pass a `signTransaction` function
+(Freighter's `signTransaction` shape) and, where a secret is normally expected,
+pass the corresponding **public** `G...` address instead.
+
+`TransactionSigner` returns the signed XDR **string**, so wallets whose API
+returns an object (Freighter resolves to `{ signedTxXdr, signerAddress }`) must
+**unwrap** it inside the adapter:
+
+```typescript
+import freighterApi from '@stellar/freighter-api';
+import { StealthClient, type TransactionSigner } from '@shade/sdk';
+
+const signTransaction: TransactionSigner = async (xdr, { networkPassphrase }) => {
+  const { signedTxXdr } = await freighterApi.signTransaction(xdr, { networkPassphrase });
+  return signedTxXdr;
+};
+
+const client = new StealthClient({ network: 'testnet', contractId: 'C...' });
+
+// `senderSecret` positional carries the sender's G-ADDRESS when signing externally.
+await client.send(metaAddress, 100, senderGAddress, {
+  method: 'account',
+  signTransaction,
+});
+
+// A pool claim needs a fee payer — supply its G-address (never a secret).
+await client.claim(payment, destinationG, {
+  keys,
+  signTransaction,
+  feePayerAddress: feePayerGAddress,
+});
+```
+
+The recovered **stealth-key** claim/withdraw legs still sign **locally**: Freighter
+cannot hold the derived stealth scalar, so `signTransaction` only ever applies to
+the sender / fee-payer legs. Omitting `signTransaction` keeps the existing
+secret-based behavior unchanged. Omitting `feePayerAddress` on a signed pool claim
+throws `FeePayerAddressRequiredError` rather than treating a public key as a secret.
+The CLI stays secret-based (no Freighter in the terminal).
+
 ## Roadmap / known limitations
 
 Crypto is pending external audit (not for mainnet yet). The relayer's JSON credit

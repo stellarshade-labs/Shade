@@ -5,6 +5,7 @@ import type {
   Payment,
   ClaimReceipt,
   ClaimOpts,
+  TransactionSigner,
 } from '../types.js';
 
 /** Parameters passed to a delivery adapter's `send`. */
@@ -13,10 +14,19 @@ export interface AdapterSendParams {
   metaAddress: string;
   /** Amount in whole units */
   amount: number;
-  /** Sender's Stellar secret key */
+  /**
+   * Sender's Stellar secret key — OR, when {@link signTransaction} is set, the
+   * sender's PUBLIC G-address (the SDK never calls `Keypair.fromSecret` on it).
+   */
   senderSecret: string;
   /** Asset to send. Default: native XLM. Format: "CODE:ISSUER" */
   asset?: string;
+  /**
+   * Optional external signer for the sender leg (Freighter-style). When set,
+   * {@link senderSecret} carries the sender's G-address and the adapter
+   * delegates signing to this function instead of `Keypair.fromSecret`.
+   */
+  signTransaction?: TransactionSigner;
 }
 
 /**

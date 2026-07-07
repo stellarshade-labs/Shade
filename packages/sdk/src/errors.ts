@@ -173,6 +173,23 @@ export class FeePayerRequiredError extends Error {
 }
 
 /**
+ * Thrown by the pool claim path when an external {@link TransactionSigner} is
+ * supplied (via `signTransaction`) but no `feePayerAddress` is given. A pool
+ * claim needs a fee payer; with external signing the fee payer is identified by
+ * its G-address, never a secret. Failing loudly here prevents the SDK from ever
+ * calling `Keypair.fromSecret` on a public key.
+ */
+export class FeePayerAddressRequiredError extends Error {
+  constructor() {
+    super(
+      'feePayerAddress is required when signTransaction is set on a pool claim. ' +
+        'Pass the fee payer G-address (opts.feePayerAddress) — the SDK signs it via signTransaction.',
+    );
+    this.name = 'FeePayerAddressRequiredError';
+  }
+}
+
+/**
  * Thrown by the {@link StealthClient} constructor when a pool-capable method is
  * enabled but no contract id could be resolved for the target network (there is
  * no built-in default outside `local`). Failing here — rather than deep inside a

@@ -47,6 +47,7 @@ import type {
   ClaimOpts,
 } from '../types.js';
 import type { DeliveryAdapter, AdapterSendParams } from './types.js';
+import { signTx } from './sign.js';
 
 const HORIZON_PAGE_SIZE = 200;
 
@@ -184,7 +185,7 @@ export class AccountAdapter implements DeliveryAdapter {
 
   /** Native XLM send: CreateAccount (falls back to Payment on retry). */
   private async sendNative(params: AdapterSendParams): Promise<SendReceipt> {
-    const { metaAddress, amount, senderSecret } = params;
+    const { metaAddress, amount, senderSecret, signTransaction } = params;
     if (amount <= 1) {
       throw new MinimumAmountError(amount);
     }
@@ -199,10 +200,12 @@ export class AccountAdapter implements DeliveryAdapter {
 
     const memo = Memo.hash(Buffer.from(stealth.ephemeralPubKey));
     const startingBalance = formatStroops(numberToStroops(amount));
+    const senderPublicKey = signTransaction
+      ? senderSecret
+      : Keypair.fromSecret(senderSecret).publicKey();
 
     const submit = async (useCreate: boolean): Promise<string> => {
-      const senderKeypair = Keypair.fromSecret(senderSecret);
-      const account = await this.horizon.getAccount(senderKeypair.publicKey());
+      const account = await this.horizon.getAccount(senderPublicKey);
       if (!account) {
         throw new Error('Sender account not found on Horizon — is it funded?');
       }
@@ -228,9 +231,14 @@ export class AccountAdapter implements DeliveryAdapter {
         .setTimeout(30)
         .build();
 
-      tx.sign(senderKeypair);
+      const signed = await signTx(
+        tx,
+        senderSecret,
+        this.networkPassphrase,
+        signTransaction,
+      );
       const res = await this.horizon.submitTransaction(
-        tx.toEnvelope().toXDR('base64'),
+        signed.toEnvelope().toXDR('base64'),
       );
       return res.hash;
     };
@@ -280,8 +288,10 @@ export class AccountAdapter implements DeliveryAdapter {
     );
 
     const memo = Memo.hash(Buffer.from(stealth.ephemeralPubKey));
-    const senderKeypair = Keypair.fromSecret(senderSecret);
-    const account = await this.horizon.getAccount(senderKeypair.publicKey());
+    const senderPublicKey = params.signTransaction
+      ? senderSecret
+      : Keypair.fromSecret(senderSecret).publicKey();
+    const account = await this.horizon.getAccount(senderPublicKey);
     if (!account) {
       throw new Error('Sender account not found on Horizon — is it funded?');
     }
@@ -313,9 +323,14 @@ export class AccountAdapter implements DeliveryAdapter {
       .setTimeout(30)
       .build();
 
-    tx.sign(senderKeypair);
+    const signed = await signTx(
+      tx,
+      senderSecret,
+      this.networkPassphrase,
+      params.signTransaction,
+    );
     const res = await this.horizon.submitTransaction(
-      tx.toEnvelope().toXDR('base64'),
+      signed.toEnvelope().toXDR('base64'),
     );
 
     return { stealthAddress: stealth.stealthAddress, txHash: res.hash };
