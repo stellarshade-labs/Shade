@@ -328,6 +328,8 @@ export class PoolAdapter implements DeliveryAdapter {
       withdrawAmount,
       destination,
       nonce,
+      this.contractId,
+      this.networkPassphrase,
     );
 
     const signature = signWithStealthKey(messageHash, stealthPrivKey);

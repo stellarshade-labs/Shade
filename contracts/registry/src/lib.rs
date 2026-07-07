@@ -30,8 +30,8 @@ pub enum DataKey {
     Balance(BytesN<32>, Address),
     /// Replay-protection nonce per stealth key
     Nonce(BytesN<32>),
-    /// Append-only list of all announcements
-    Announcements,
+    /// A single announcement stored at its own index (O(1) append, no history rewrite)
+    Announcement(u64),
     /// Counter for total announcements
     AnnouncementCount,
 }
@@ -61,6 +61,9 @@ impl StealthPoolContract {
         sender.require_auth();
         assert!(amount > 0, "amount must be positive");
 
+        // Keep the contract instance callable even after long idle periods.
+        env.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+
         // Transfer tokens from sender to contract
         let token_client = token::Client::new(&env, &token_addr);
         token_client.transfer(&sender, &env.current_contract_address(), &amount);
@@ -71,7 +74,10 @@ impl StealthPoolContract {
         env.storage().persistent().set(&bal_key, &(current + amount));
         env.storage().persistent().extend_ttl(&bal_key, TTL_THRESHOLD, TTL_EXTEND_TO);
 
-        // Append announcement
+        // Append announcement as its OWN keyed entry at index == current count.
+        // This is O(1): we never read or rewrite prior history, so deposit cost
+        // does not scale with the number of past announcements.
+        let count: u64 = env.storage().persistent().get(&DataKey::AnnouncementCount).unwrap_or(0);
         let entry = AnnouncementEntry {
             ephemeral_pk: ephemeral_pk.clone(),
             view_tag,
@@ -80,18 +86,11 @@ impl StealthPoolContract {
             amount,
             sequence: env.ledger().sequence(),
         };
-
-        let mut announcements: Vec<AnnouncementEntry> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Announcements)
-            .unwrap_or_else(|| vec![&env]);
-        announcements.push_back(entry);
-        env.storage().persistent().set(&DataKey::Announcements, &announcements);
-        env.storage().persistent().extend_ttl(&DataKey::Announcements, TTL_THRESHOLD, TTL_EXTEND_TO);
+        let ann_key = DataKey::Announcement(count);
+        env.storage().persistent().set(&ann_key, &entry);
+        env.storage().persistent().extend_ttl(&ann_key, TTL_THRESHOLD, TTL_EXTEND_TO);
 
         // Increment counter
-        let count: u64 = env.storage().persistent().get(&DataKey::AnnouncementCount).unwrap_or(0);
         env.storage().persistent().set(&DataKey::AnnouncementCount, &(count + 1));
         env.storage().persistent().extend_ttl(&DataKey::AnnouncementCount, TTL_THRESHOLD, TTL_EXTEND_TO);
 
@@ -108,8 +107,11 @@ impl StealthPoolContract {
     /// NOT via Soroban require_auth. This allows anyone (including a relayer)
     /// to submit the transaction on behalf of the recipient.
     ///
-    /// Message format: SHA256(stealth_pk || token || amount || destination || nonce)
-    /// All fields are concatenated as raw bytes.
+    /// Message format:
+    ///   SHA256(stealth_pk || token || amount || destination || nonce
+    ///          || contract_address || network_id)
+    /// This binds the signature to a specific contract deployment and network,
+    /// preventing cross-deployment / cross-network replay.
     pub fn withdraw(
         env: Env,
         stealth_pk: BytesN<32>,
@@ -120,6 +122,9 @@ impl StealthPoolContract {
         signature: BytesN<64>,
     ) {
         assert!(amount > 0, "amount must be positive");
+
+        // Keep the contract instance callable even after long idle periods.
+        env.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
 
         // Replay protection: nonce must be strictly greater than stored
         let nonce_key = DataKey::Nonce(stealth_pk.clone());
@@ -139,10 +144,17 @@ impl StealthPoolContract {
         // Verify ed25519 signature — panics if invalid
         env.crypto().ed25519_verify(&stealth_pk, &message, &signature);
 
-        // Check and decrement balance
+        // Check balance
         let bal_key = DataKey::Balance(stealth_pk.clone(), token_addr.clone());
         let current: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
         assert!(current >= amount, "insufficient balance");
+
+        // Checks-effects-interactions: commit ALL state changes (nonce + balance)
+        // BEFORE the external token transfer, so a malicious token contract cannot
+        // reenter and replay this withdrawal.
+        env.storage().persistent().set(&nonce_key, &nonce);
+        env.storage().persistent().extend_ttl(&nonce_key, TTL_THRESHOLD, TTL_EXTEND_TO);
+
         let new_balance = current - amount;
         if new_balance > 0 {
             env.storage().persistent().set(&bal_key, &new_balance);
@@ -151,13 +163,9 @@ impl StealthPoolContract {
             env.storage().persistent().remove(&bal_key);
         }
 
-        // Transfer tokens from contract to destination
+        // Interaction: transfer tokens from contract to destination LAST.
         let token_client = token::Client::new(&env, &token_addr);
         token_client.transfer(&env.current_contract_address(), &destination, &amount);
-
-        // Update nonce
-        env.storage().persistent().set(&nonce_key, &nonce);
-        env.storage().persistent().extend_ttl(&nonce_key, TTL_THRESHOLD, TTL_EXTEND_TO);
 
         // Emit event
         env.events().publish(
@@ -167,7 +175,14 @@ impl StealthPoolContract {
     }
 
     /// Build the message bytes for withdraw signature verification.
-    /// Format: SHA256(stealth_pk(32) || token_str_bytes || amount_be(16) || dest_str_bytes || nonce_be(8))
+    ///
+    /// Format (fixed-width fields concatenated, then SHA-256):
+    ///   stealth_pk[32] || token_strkey_ascii[56] || amount_be_i128[16]
+    ///   || dest_strkey_ascii[56] || nonce_be_u64[8]
+    ///   || contract_strkey_ascii[56] || network_id[32]
+    ///
+    /// The trailing contract address and network id provide domain separation so a
+    /// signature cannot be replayed on a different deployment or network.
     fn build_withdraw_message(
         env: &Env,
         stealth_pk: &BytesN<32>,
@@ -199,10 +214,23 @@ impl StealthPoolContract {
         // nonce: 8 bytes big-endian u64
         msg.append(&Bytes::from_slice(env, &nonce.to_be_bytes()));
 
+        // Domain separation: this contract's address as StrKey bytes (56 chars)
+        let contract_str = env.current_contract_address().to_string();
+        let mut contract_buf = [0u8; 56];
+        contract_str.copy_into_slice(&mut contract_buf);
+        msg.append(&Bytes::from_slice(env, &contract_buf));
+
+        // Domain separation: 32-byte network id (SHA-256 of the network passphrase)
+        msg.append(&Bytes::from_slice(env, &env.ledger().network_id().to_array()));
+
         env.crypto().sha256(&msg).into()
     }
 
     /// Get balance for a stealth key + token pair.
+    ///
+    /// Note: Balance/Nonce are persistent entries. A long-idle entry whose TTL has
+    /// lapsed to the archived state may require a `RestoreFootprint` operation before
+    /// a subsequent `withdraw` can read/write it (client-side restore is roadmap).
     pub fn get_balance(env: Env, stealth_pk: BytesN<32>, token_addr: Address) -> i128 {
         let bal_key = DataKey::Balance(stealth_pk, token_addr);
         env.storage().persistent().get(&bal_key).unwrap_or(0)
@@ -215,22 +243,25 @@ impl StealthPoolContract {
     }
 
     /// Get announcements with pagination.
+    ///
+    /// Reads each announcement from its own keyed persistent entry, so it only
+    /// deserializes the requested `start..min(start+limit, count)` window rather
+    /// than the entire history.
     pub fn get_announcements(env: Env, start: u64, limit: u64) -> Vec<AnnouncementEntry> {
-        let announcements: Vec<AnnouncementEntry> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Announcements)
-            .unwrap_or_else(|| vec![&env]);
-
-        let total = announcements.len() as u64;
+        let total: u64 = env.storage().persistent().get(&DataKey::AnnouncementCount).unwrap_or(0);
         if start >= total {
             return vec![&env];
         }
 
-        let end = core::cmp::min(start + limit, total);
+        // saturating_add avoids u64 overflow (e.g. limit == u64::MAX).
+        let end = core::cmp::min(start.saturating_add(limit), total);
         let mut result = vec![&env];
         for i in start..end {
-            if let Some(entry) = announcements.get(i as u32) {
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Announcement(i))
+            {
                 result.push_back(entry);
             }
         }
@@ -238,17 +269,23 @@ impl StealthPoolContract {
     }
 
     /// Get announcements filtered by view tag.
+    ///
+    /// This iterates every index `0..count`, reading each keyed entry — it is O(n)
+    /// storage reads. The SDK normally filters by view tag client-side after paging
+    /// through `get_announcements`; this helper is a convenience for small pools.
     pub fn get_announcements_by_tag(env: Env, view_tag: u32) -> Vec<AnnouncementEntry> {
-        let announcements: Vec<AnnouncementEntry> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Announcements)
-            .unwrap_or_else(|| vec![&env]);
+        let total: u64 = env.storage().persistent().get(&DataKey::AnnouncementCount).unwrap_or(0);
 
         let mut result = vec![&env];
-        for announcement in announcements.iter() {
-            if announcement.view_tag == view_tag {
-                result.push_back(announcement);
+        for i in 0..total {
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, AnnouncementEntry>(&DataKey::Announcement(i))
+            {
+                if entry.view_tag == view_tag {
+                    result.push_back(entry);
+                }
             }
         }
         result
@@ -381,14 +418,16 @@ mod tests {
         let nonce: u64 = 1;
         let amount: i128 = 50;
 
-        let message = StealthPoolContract::build_withdraw_message(
-            &env,
-            &stealth_pk,
-            &token_id,
-            amount,
-            &destination,
-            nonce,
-        );
+        let message = env.as_contract(&contract_id, || {
+            StealthPoolContract::build_withdraw_message(
+                &env,
+                &stealth_pk,
+                &token_id,
+                amount,
+                &destination,
+                nonce,
+            )
+        });
 
         // Extract raw bytes and sign with ed25519_dalek
         let mut msg_raw = [0u8; 32];
@@ -456,9 +495,11 @@ mod tests {
         client.deposit(&sender, &token_id, &200, &stealth_pk, &ephemeral_pk, &42);
 
         // First withdraw with nonce 1
-        let msg1 = StealthPoolContract::build_withdraw_message(
-            &env, &stealth_pk, &token_id, 50, &destination, 1,
-        );
+        let msg1 = env.as_contract(&contract_id, || {
+            StealthPoolContract::build_withdraw_message(
+                &env, &stealth_pk, &token_id, 50, &destination, 1,
+            )
+        });
         let mut msg1_raw = [0u8; 32];
         msg1.copy_into_slice(&mut msg1_raw);
         let sig1 = signing_key.sign(&msg1_raw);
@@ -491,9 +532,11 @@ mod tests {
         client.deposit(&sender, &token_id, &100, &stealth_pk, &ephemeral_pk, &42);
 
         // Withdraw more than balance
-        let msg = StealthPoolContract::build_withdraw_message(
-            &env, &stealth_pk, &token_id, 200, &destination, 1,
-        );
+        let msg = env.as_contract(&contract_id, || {
+            StealthPoolContract::build_withdraw_message(
+                &env, &stealth_pk, &token_id, 200, &destination, 1,
+            )
+        });
         let mut msg_raw = [0u8; 32];
         msg.copy_into_slice(&mut msg_raw);
         let sig = signing_key.sign(&msg_raw);
@@ -522,9 +565,11 @@ mod tests {
         client.deposit(&sender, &token_id, &100, &stealth_pk, &ephemeral_pk, &42);
 
         // Withdraw full amount
-        let msg = StealthPoolContract::build_withdraw_message(
-            &env, &stealth_pk, &token_id, 100, &destination, 1,
-        );
+        let msg = env.as_contract(&contract_id, || {
+            StealthPoolContract::build_withdraw_message(
+                &env, &stealth_pk, &token_id, 100, &destination, 1,
+            )
+        });
         let mut msg_raw = [0u8; 32];
         msg.copy_into_slice(&mut msg_raw);
         let sig = signing_key.sign(&msg_raw);
@@ -675,5 +720,121 @@ mod tests {
 
         let tag99 = client.get_announcements_by_tag(&99);
         assert_eq!(tag99.len(), 0);
+    }
+
+    #[test]
+    fn test_keyed_storage_deposit_does_not_scale_with_history() {
+        // With keyed announcement entries, deposit is O(1): it never reads or
+        // rewrites prior history. Many deposits still succeed and windows read
+        // back correctly regardless of how much history precedes them.
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(StealthPoolContract, ());
+        let client = StealthPoolContractClient::new(&env, &contract_id);
+
+        let (token_id, _admin, sac) = setup_token(&env);
+        let sender = Address::generate(&env);
+        sac.mint(&sender, &1_000_000);
+
+        let n: u64 = 300;
+        for i in 0..n {
+            let stealth_pk = BytesN::from_array(&env, &[(i % 251) as u8 + 1; 32]);
+            let mut eph = [0u8; 32];
+            eph[0] = (i & 0xff) as u8;
+            eph[1] = ((i >> 8) & 0xff) as u8;
+            let eph_pk = BytesN::from_array(&env, &eph);
+            client.deposit(&sender, &token_id, &10, &stealth_pk, &eph_pk, &((i % 256) as u32));
+        }
+
+        assert_eq!(client.get_announcement_count(), n);
+
+        // A window deep into history reads back exactly and independently.
+        let window = client.get_announcements(&250, &10);
+        assert_eq!(window.len(), 10);
+        let first = window.get(0).unwrap();
+        assert_eq!(first.ephemeral_pk.get(0).unwrap(), 250u8); // 250 & 0xff
+        assert_eq!(first.ephemeral_pk.get(1).unwrap(), 0u8); // (250 >> 8) == 0
+
+        // A window straddling the 256 boundary also reads back correctly.
+        let cross = client.get_announcements(&255, &2);
+        assert_eq!(cross.len(), 2);
+        assert_eq!(cross.get(0).unwrap().ephemeral_pk.get(0).unwrap(), 255u8);
+        assert_eq!(cross.get(0).unwrap().ephemeral_pk.get(1).unwrap(), 0u8);
+        assert_eq!(cross.get(1).unwrap().ephemeral_pk.get(0).unwrap(), 0u8); // 256 & 0xff
+        assert_eq!(cross.get(1).unwrap().ephemeral_pk.get(1).unwrap(), 1u8); // 256 >> 8
+
+        // The very last announcement is present at index n-1.
+        let tail = client.get_announcements(&(n - 1), &10);
+        assert_eq!(tail.len(), 1);
+    }
+
+    #[test]
+    fn test_get_announcements_limit_overflow_no_panic() {
+        // start + limit would overflow u64; saturating_add must clamp instead of panic.
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(StealthPoolContract, ());
+        let client = StealthPoolContractClient::new(&env, &contract_id);
+
+        let (token_id, _admin, sac) = setup_token(&env);
+        let sender = Address::generate(&env);
+        sac.mint(&sender, &10000);
+
+        for i in 0u8..3 {
+            let stealth_pk = BytesN::from_array(&env, &[i + 1; 32]);
+            let eph = BytesN::from_array(&env, &[i + 20; 32]);
+            client.deposit(&sender, &token_id, &100, &stealth_pk, &eph, &(i as u32));
+        }
+
+        // start=1, limit=u64::MAX -> tail window [1, 3) without overflow panic.
+        let tail = client.get_announcements(&1, &u64::MAX);
+        assert_eq!(tail.len(), 2);
+    }
+
+    #[test]
+    fn test_withdraw_message_binds_contract_and_network() {
+        // A signature built for one contract deployment must NOT verify on another,
+        // even with identical token/amount/destination/nonce.
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_a = env.register(StealthPoolContract, ());
+        let contract_b = env.register(StealthPoolContract, ());
+        let client_a = StealthPoolContractClient::new(&env, &contract_a);
+        let client_b = StealthPoolContractClient::new(&env, &contract_b);
+
+        let (token_id, _admin, sac) = setup_token(&env);
+        let sender = Address::generate(&env);
+        let destination = Address::generate(&env);
+        sac.mint(&sender, &1000);
+
+        let signing_key = SigningKey::from_bytes(&[46u8; 32]);
+        let pub_bytes = signing_key.verifying_key().to_bytes();
+        let stealth_pk = BytesN::from_array(&env, &pub_bytes);
+        let ephemeral_pk = BytesN::from_array(&env, &[2u8; 32]);
+
+        client_a.deposit(&sender, &token_id, &100, &stealth_pk, &ephemeral_pk, &42);
+        client_b.deposit(&sender, &token_id, &100, &stealth_pk, &ephemeral_pk, &42);
+
+        // Sign a message bound to contract A.
+        let msg_a = env.as_contract(&contract_a, || {
+            StealthPoolContract::build_withdraw_message(
+                &env, &stealth_pk, &token_id, 50, &destination, 1,
+            )
+        });
+        let mut raw_a = [0u8; 32];
+        msg_a.copy_into_slice(&mut raw_a);
+        let sig_a = signing_key.sign(&raw_a);
+        let sig_a_bytes = BytesN::from_array(&env, &sig_a.to_bytes());
+
+        // Valid on A.
+        client_a.withdraw(&stealth_pk, &token_id, &50, &destination, &1, &sig_a_bytes);
+        assert_eq!(client_a.get_balance(&stealth_pk, &token_id), 50);
+
+        // Same signature must be rejected on B (different contract address).
+        let res = client_b.try_withdraw(&stealth_pk, &token_id, &50, &destination, &1, &sig_a_bytes);
+        assert!(res.is_err(), "signature must not replay across deployments");
     }
 }

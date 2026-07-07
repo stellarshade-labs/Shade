@@ -216,29 +216,49 @@ function u64ToBigEndian(value: bigint): Uint8Array {
   return buf;
 }
 
-/** Build the withdraw message hash. Must be byte-identical to the contract's build_withdraw_message. */
+/**
+ * Build the withdraw message hash. Must be byte-identical to the contract's
+ * `build_withdraw_message`.
+ *
+ * Layout (concatenated, then SHA-256):
+ *   stealth_pk[32] || token_strkey_ascii[56] || amount_be_i128[16]
+ *   || dest_strkey_ascii[56] || nonce_be_u64[8]
+ *   || contract_strkey_ascii[56] || network_id[32]
+ *
+ * The trailing contract address and network id provide domain separation so a
+ * signature cannot be replayed on a different deployment or network.
+ * `networkId` equals `SHA-256(utf8(networkPassphrase))`, which matches the
+ * on-chain `env.ledger().network_id()`.
+ */
 export function buildWithdrawMessage(
   stealthPk: Uint8Array,
   tokenAddress: string,
   amount: bigint,
   destination: string,
   nonce: bigint,
+  contractId: string,
+  networkPassphrase: string,
 ): Uint8Array {
   const tokenBytes = Buffer.from(tokenAddress, 'utf-8');
   const destBytes = Buffer.from(destination, 'utf-8');
+  const contractBytes = Buffer.from(contractId, 'utf-8');
   if (tokenBytes.length !== 56) throw new Error(`Token address must be 56 bytes StrKey, got ${tokenBytes.length}`);
   if (destBytes.length !== 56) throw new Error(`Destination must be 56 bytes StrKey, got ${destBytes.length}`);
+  if (contractBytes.length !== 56) throw new Error(`Contract address must be 56 bytes StrKey, got ${contractBytes.length}`);
 
   const amountBytes = i128ToBigEndian(amount);
   const nonceBytes = u64ToBigEndian(nonce);
+  const networkId = sha256(Buffer.from(networkPassphrase, 'utf-8'));
 
-  const msg = new Uint8Array(32 + 56 + 16 + 56 + 8);
+  const msg = new Uint8Array(32 + 56 + 16 + 56 + 8 + 56 + 32);
   let offset = 0;
   msg.set(stealthPk, offset); offset += 32;
   msg.set(tokenBytes, offset); offset += 56;
   msg.set(amountBytes, offset); offset += 16;
   msg.set(destBytes, offset); offset += 56;
-  msg.set(nonceBytes, offset);
+  msg.set(nonceBytes, offset); offset += 8;
+  msg.set(contractBytes, offset); offset += 56;
+  msg.set(networkId, offset);
 
   return sha256(msg);
 }

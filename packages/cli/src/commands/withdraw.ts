@@ -59,23 +59,31 @@ function buildWithdrawMessage(
   amount: bigint,
   destination: string,
   nonce: bigint,
+  contractId: string,
+  networkPassphrase: string,
 ): Uint8Array {
-  // Format: SHA256(stealth_pk(32) || token_strkey(56) || amount_be(16) || dest_strkey(56) || nonce_be(8))
+  // Format: SHA256(stealth_pk(32) || token_strkey(56) || amount_be(16) || dest_strkey(56)
+  //                || nonce_be(8) || contract_strkey(56) || network_id(32))
   const tokenBytes = Buffer.from(tokenAddress, 'utf-8'); // 56 bytes StrKey
   const destBytes = Buffer.from(destination, 'utf-8');   // 56 bytes StrKey
+  const contractBytes = Buffer.from(contractId, 'utf-8'); // 56 bytes StrKey
 
   if (tokenBytes.length !== 56) throw new Error(`Token address must be 56 bytes StrKey, got ${tokenBytes.length}`);
   if (destBytes.length !== 56) throw new Error(`Destination must be 56 bytes StrKey, got ${destBytes.length}`);
+  if (contractBytes.length !== 56) throw new Error(`Contract address must be 56 bytes StrKey, got ${contractBytes.length}`);
   const amountBytes = i128ToBigEndian(amount);           // 16 bytes
   const nonceBytes = u64ToBigEndian(nonce);              // 8 bytes
+  const networkId = sha256(Buffer.from(networkPassphrase, 'utf-8')); // 32 bytes
 
-  const msg = new Uint8Array(32 + tokenBytes.length + 16 + destBytes.length + 8);
+  const msg = new Uint8Array(32 + tokenBytes.length + 16 + destBytes.length + 8 + contractBytes.length + 32);
   let offset = 0;
   msg.set(stealthPk, offset); offset += 32;
   msg.set(tokenBytes, offset); offset += tokenBytes.length;
   msg.set(amountBytes, offset); offset += 16;
   msg.set(destBytes, offset); offset += destBytes.length;
-  msg.set(nonceBytes, offset);
+  msg.set(nonceBytes, offset); offset += 8;
+  msg.set(contractBytes, offset); offset += contractBytes.length;
+  msg.set(networkId, offset);
 
   return sha256(msg);
 }
@@ -352,6 +360,8 @@ export const withdrawCommand = new Command('withdraw')
         withdrawAmount,
         destination,
         nonce,
+        contractAddress,
+        networkPassphrase,
       );
 
       const signature = signWithStealthKey(messageHash, stealthPrivKey);
