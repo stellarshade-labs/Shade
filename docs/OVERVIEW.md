@@ -12,7 +12,7 @@ On a normal blockchain, your address is like a **glass mailbox**: every payment 
 
 Shade gives you a **new mailbox for every single payment** — and only *you* can tell which mailboxes are yours. You hand out one public "meta-address"; senders use it to compute a brand-new one-time address each time. On-chain those addresses look unrelated to you and to each other.
 
-What Shade **does** hide: *who* the recipient is. What it **doesn't** hide: that *a* payment happened and its amount (unless you use the future ZK method). Privacy is about identity, not making money invisible.
+What Shade **does** hide: *who* the recipient is. What it **doesn't** hide: that *a* payment happened, the amount, or the flow of funds on-chain. Privacy is about identity, not making the money invisible.
 
 ---
 
@@ -39,14 +39,14 @@ The same meta-address works with three "delivery methods." They differ in where 
 
 | | **pool** | **account** | **spp** |
 |---|---|---|---|
-| Where funds sit | Shared Soroban **pool contract**, keyed by your stealth key | A one-time real Stellar account / claimable balance | ZK shielded pool *(future)* |
-| Privacy | **Strongest today** — you only ever touch the shared pool | Weaker — there's a direct on-chain edge from sender to the one-time account | Strongest *(planned)* |
+| Where funds sit | Shared Soroban **pool contract**, keyed by your stealth key | A one-time real Stellar account / claimable balance | Reserved slot — *external, not built* |
+| Privacy | Hides your **identity** — the stealth key and payout are unlinkable to your meta-address without the view key. **Not a mixer:** the deposit and withdraw both name the stealth key, so the money *flow* stays traceable. | Same identity-hiding, but the one-time account has its own on-chain life (create / merge) and claiming may touch a wallet you control | — *(not a Shade method)* |
 | Assets | Any SAC token (XLM, USDC, …) | Native XLM or any classic/SAC asset | — |
-| Discovery | Contract announcements + view-tag fast scan | A `MemoHash` on the funding tx, found via Horizon | — |
+| Discovery (both scan) | Scan the contract's **announcements**, with a **view-tag** fast-path (~25×) | Scan **Horizon** for the ephemeral key in a `MemoHash`, then match the derived address (no view tag) | — |
 | Claim | Signature-verified `withdraw` (no Stellar account needed) | Sign with the recovered stealth key, or a relayer-sponsored payout | — |
-| Status | ✅ Implemented | ✅ Implemented | ⏳ Reserved |
+| Status | ✅ Implemented | ✅ Implemented | ⏳ Reserved (external) |
 
-Rule of thumb: **`pool`** for best privacy and any token; **`account`** for the simplest path that works with vanilla Horizon tooling; **`spp`** is a reserved slot so apps can opt into Stellar Private Payments later with *zero API changes*.
+Rule of thumb: **`pool`** for the best privacy/cost trade-off and any token (you never need a funded account to claim); **`account`** for the simplest path that works with vanilla Horizon tooling. **`spp`** is only a reserved enum slot — a hook for a *separate, external* private-payments effort if one ever lands; **Shade does not build it** and it isn't implemented.
 
 > **For developers.** `DeliveryMethod = 'pool' | 'account' | 'spp'` (`packages/sdk/src/types.ts`); adapters in `packages/sdk/src/methods/{pool,account,spp}.ts`. `spp` throws `MethodNotAvailableError` for now.
 
@@ -94,8 +94,6 @@ A web app usually needs to remember you between visits. Shade does this **withou
 1. **Encrypted session blob.** Your keys + scan progress are encrypted (AES-256-GCM under a password) and saved into whatever storage the app plugs in — `localStorage`, IndexedDB, even a cookie wrapper if the app insists. Shade doesn't care which; it just needs a key/value store.
 2. **Re-derive from the wallet (store nothing).** If you used the wallet-signature method (§4), the app doesn't need to store your keys at all — you reconnect your wallet, re-sign the fixed message, and the same keys come back. At most it caches *scan progress* so you don't re-scan from zero.
 
-So: "if the keys come from the wallet, there's no cookie needed to keep a session" — exactly right. Cookies were never part of the design.
-
 > **For developers.** `StealthSession` (`packages/sdk/src/session.ts`): PBKDF2-SHA256 (600k) → AES-256-GCM; public keys stored in the clear, private keys + scan state encrypted. Storage is the `KVStorage` interface (`getItem/setItem/removeItem`), which `window.localStorage` satisfies directly.
 
 ---
@@ -109,14 +107,14 @@ The **relayer** solves both. It's the reference service in this repo (`packages/
 - **Fee-bump** (`/relay`) — the relayer pays your withdrawal's fee, so you never reveal a funded account of your own.
 - **Reserve fronting / sponsored claims** (`/sponsor`, `/sponsor-claim/*`) — it fronts the ~1 XLM account reserve (+ ~0.5 XLM trustline reserve for tokens) so you can cash out to a **fresh, unfunded address**.
 
-**This is the "default relayer service" you had in mind.** It's metered by a simple **credit** system so it isn't a free-for-all:
+It's metered by a simple **credit** system so it isn't a free-for-all:
 
 1. An app sends the relayer a normal XLM payment.
 2. It calls `POST /credit/claim` with the **transaction hash**.
 3. The relayer checks Horizon (the payment really happened, to it, from that account, not already claimed) and credits that amount.
 4. From then on the relayer supports that app's withdrawals/claims, drawing down the credit.
 
-Two things to be clear about: the top-up is a **plain Stellar payment** (not SPP — SPP is a future *delivery method*, unrelated to paying the relayer), and there is **no hard-coded/hosted relayer URL** — "default" means the reference service you deploy and point your app at.
+Two things to be clear about: today the top-up is a **plain Stellar payment** verified by its `txHash` — a private funding rail (an external Stellar private-payments protocol, say) could do the same job later, but none is integrated yet — and there is **no hard-coded/hosted relayer URL**, so "default" just means the reference service you deploy and point your app at.
 
 > **For developers.** Endpoints in `packages/relayer/src/index.ts`; logic in `routes/{credit,sponsor,sponsorClaim}.ts` and `ledger.ts`. Credit-gating is switched on with `RELAYER_REQUIRE_CREDIT=1`. Clients get `SponsoredClaimMismatchError` protection: the SDK re-derives a sponsored claim from your own inputs and refuses to sign if a malicious relayer altered the payout.
 
@@ -140,7 +138,7 @@ The relayer is a standalone service (no dependency on the crypto package), so it
 
 Step-by-step is in `packages/relayer/README.md`.
 
-> **Roadmap caveat (stated honestly):** Railway's filesystem is ephemeral, so the JSON credit ledger doesn't survive restarts. That's fine for a testnet demo; a durable store (Postgres/Redis) is the production fix.
+> **Roadmap caveat:** Railway's filesystem is ephemeral, so the JSON credit ledger doesn't survive restarts. That's fine for a testnet demo; a durable store (Postgres/Redis) is the production fix.
 
 ---
 
@@ -195,7 +193,7 @@ Everything is there: delivery methods, cursor-aware `scanWithCursor`, Freighter 
 
 **Implemented today:** `pool` + `account` delivery, the relayer (fee-bump / sponsor / credit), Freighter external signing, encrypted sessions, wallet-signature key derivation, and testnet deployment.
 
-**On the roadmap:** `spp` (ZK shielded pool), an external cryptography audit (so **not for mainnet yet**), a durable credit ledger, a Horizon indexer for faster account-method scans, and a Rust-crate rename.
+**On the roadmap (Shade's own work):** an external cryptography audit (so **not for mainnet yet**), a durable credit ledger, a Horizon indexer for faster account-method scans, and a Rust-crate rename. Note: `spp` is **not** on this list — it's a reserved hook for a *separate, external* private-payments effort, not something Shade is building.
 
 ---
 
