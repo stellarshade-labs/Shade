@@ -19,6 +19,22 @@ dotenv.config();
 
 const app = express();
 
+// Behind Railway's (or any reverse-proxy's) edge, req.ip must reflect the real
+// client, not the proxy. Trust exactly as many hops as the rate limiter does:
+// TRUST_PROXY_HOPS (default 0 = trust nothing when not behind a proxy). Never
+// hardcode `true` — that would trust every hop and re-open the X-Forwarded-For
+// spoof that utils/rateLimit.ts closes.
+const trustProxyHops = (() => {
+  const raw = process.env.TRUST_PROXY_HOPS;
+  if (raw !== undefined && raw !== '') {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n > 0) return n;
+    return 0;
+  }
+  return process.env.TRUST_PROXY === 'true' ? 1 : 0;
+})();
+app.set('trust proxy', trustProxyHops);
+
 // CORS configuration
 const corsOptions = {
   origin: process.env.CORS_ORIGIN || '*',
