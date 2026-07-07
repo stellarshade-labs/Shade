@@ -18,6 +18,16 @@ export interface HoldHistoryEntry {
   at: string;
 }
 
+/**
+ * Per-ref net-applied counters. `debit` counts debits minus refunds for a ref;
+ * `hold` counts holds minus releases for a ref. These give O(1) idempotency and
+ * retry-after-refund decisions without scanning the (bounded) history array.
+ */
+export interface RefCounters {
+  debit?: Record<string, number>;
+  hold?: Record<string, number>;
+}
+
 /** Per-account credit bookkeeping. */
 export interface LedgerAccount {
   balance: string;
@@ -26,7 +36,25 @@ export interface LedgerAccount {
   history: LedgerHistoryEntry[];
   /** Sponsored-reserve hold/release history (refund-aware, mirrors `history`). */
   holdHistory?: HoldHistoryEntry[];
+  /**
+   * O(1) net-applied counters per ref (debit-minus-refund, hold-minus-release).
+   * Authoritative for idempotency; `history`/`holdHistory` are a bounded, purely
+   * informational trail that may be rotated/capped without affecting decisions.
+   */
+  refCounters?: RefCounters;
+  /** Total entries ever appended to `history` (survives history rotation). */
+  historyTotal?: number;
+  /** Total entries ever appended to `holdHistory` (survives rotation). */
+  holdHistoryTotal?: number;
 }
+
+/**
+ * Max entries retained in each per-account history trail. Older entries are
+ * dropped (rotated out) once the cap is exceeded so history cannot grow without
+ * bound. Idempotency decisions never read the trail (see {@link RefCounters}),
+ * so rotation is safe.
+ */
+const MAX_HISTORY_ENTRIES = 200;
 
 /** Terminal state of a reservation once its route has resolved. */
 export type ReservationState = 'OUTSTANDING' | 'SETTLED' | 'REFUNDED';
@@ -151,10 +179,65 @@ export class CreditLedger {
         updatedAt: new Date().toISOString(),
         history: [],
         holdHistory: [],
+        refCounters: { debit: {}, hold: {} },
+        historyTotal: 0,
+        holdHistoryTotal: 0,
       };
       this.data.accounts[account] = acct;
     }
+    // Backfill fields for ledgers persisted before this schema. When migrating a
+    // legacy ledger that only has history arrays, reconstruct the net counters
+    // once so idempotency is preserved across the upgrade.
+    if (!acct.refCounters) {
+      acct.refCounters = { debit: {}, hold: {} };
+      for (const h of acct.history) {
+        if (h.type === 'debit') {
+          this.bumpCounter(acct.refCounters.debit!, h.ref, 1);
+        } else if (h.type === 'credit' && h.ref.startsWith('refund:')) {
+          this.bumpCounter(acct.refCounters.debit!, h.ref.slice('refund:'.length), -1);
+        }
+      }
+      for (const h of acct.holdHistory ?? []) {
+        this.bumpCounter(acct.refCounters.hold!, h.ref, h.type === 'hold' ? 1 : -1);
+      }
+    }
+    if (!acct.refCounters.debit) acct.refCounters.debit = {};
+    if (!acct.refCounters.hold) acct.refCounters.hold = {};
+    if (acct.historyTotal === undefined) acct.historyTotal = acct.history.length;
+    if (acct.holdHistoryTotal === undefined) {
+      acct.holdHistoryTotal = acct.holdHistory?.length ?? 0;
+    }
     return acct;
+  }
+
+  /** Adjust a per-ref counter, pruning it to keep the map from growing at zero. */
+  private bumpCounter(map: Record<string, number>, ref: string, delta: number): number {
+    const next = (map[ref] ?? 0) + delta;
+    if (next === 0) {
+      delete map[ref];
+    } else {
+      map[ref] = next;
+    }
+    return next;
+  }
+
+  /** Append to the credit trail with rotation so it stays bounded. */
+  private pushHistory(acct: LedgerAccount, entry: LedgerHistoryEntry): void {
+    acct.history.push(entry);
+    acct.historyTotal = (acct.historyTotal ?? 0) + 1;
+    if (acct.history.length > MAX_HISTORY_ENTRIES) {
+      acct.history.splice(0, acct.history.length - MAX_HISTORY_ENTRIES);
+    }
+  }
+
+  /** Append to the hold trail with rotation so it stays bounded. */
+  private pushHoldHistory(acct: LedgerAccount, entry: HoldHistoryEntry): void {
+    if (!acct.holdHistory) acct.holdHistory = [];
+    acct.holdHistory.push(entry);
+    acct.holdHistoryTotal = (acct.holdHistoryTotal ?? 0) + 1;
+    if (acct.holdHistory.length > MAX_HISTORY_ENTRIES) {
+      acct.holdHistory.splice(0, acct.holdHistory.length - MAX_HISTORY_ENTRIES);
+    }
   }
 
   /** Whether a deposit tx hash has already been credited. */
@@ -184,7 +267,7 @@ export class CreditLedger {
     const next = toStroops(acct.balance) + toStroops(amount);
     acct.balance = fromStroops(next);
     acct.updatedAt = new Date().toISOString();
-    acct.history.push({
+    this.pushHistory(acct, {
       type: 'credit',
       amount,
       ref: txHash,
@@ -219,14 +302,10 @@ export class CreditLedger {
     ref: string,
   ): { acct: LedgerAccount; debited: boolean } {
     const acct = this.ensureAccount(account);
-    const refundRef = `refund:${ref}`;
-    const debitCount = acct.history.filter(
-      (h) => h.type === 'debit' && h.ref === ref,
-    ).length;
-    const refundCount = acct.history.filter(
-      (h) => h.type === 'credit' && h.ref === refundRef,
-    ).length;
-    if (debitCount > refundCount) {
+    // O(1): the net counter is (debits - refunds) for this ref. A positive
+    // value means there is an outstanding, un-refunded debit => idempotent no-op.
+    const net = acct.refCounters!.debit![ref] ?? 0;
+    if (net > 0) {
       return { acct, debited: false };
     }
     const remaining = toStroops(acct.balance) - toStroops(amount);
@@ -235,7 +314,8 @@ export class CreditLedger {
     }
     acct.balance = fromStroops(remaining);
     acct.updatedAt = new Date().toISOString();
-    acct.history.push({
+    this.bumpCounter(acct.refCounters!.debit!, ref, 1);
+    this.pushHistory(acct, {
       type: 'debit',
       amount,
       ref,
@@ -335,12 +415,14 @@ export class CreditLedger {
         }
         return;
       }
-      const acct = this.data.accounts[rec.account];
-      if (!acct) return;
+      const acct = this.ensureAccount(rec.account);
       const next = toStroops(acct.balance) + toStroops(rec.amount);
       acct.balance = fromStroops(next);
       acct.updatedAt = new Date().toISOString();
-      acct.history.push({
+      // O(1): decrement the net debit counter so a genuine retry of the SAME
+      // signed tx (same ref) re-debits instead of hitting the no-op path.
+      this.bumpCounter(acct.refCounters!.debit!, rec.ref, -1);
+      this.pushHistory(acct, {
         type: 'credit',
         amount: rec.amount,
         ref: `refund:${rec.ref}`,
@@ -373,16 +455,11 @@ export class CreditLedger {
   ): Promise<string> {
     return this.withLock(account, () => {
       const acct = this.ensureAccount(account);
-      if (!acct.holdHistory) acct.holdHistory = [];
       if (ref) {
-        const holdCount = acct.holdHistory.filter(
-          (h) => h.type === 'hold' && h.ref === ref,
-        ).length;
-        const releaseCount = acct.holdHistory.filter(
-          (h) => h.type === 'release' && h.ref === ref,
-        ).length;
-        if (holdCount > releaseCount) {
-          // An outstanding (not-yet-released) hold for this ref — no-op.
+        // O(1): net counter is (holds - releases) for this ref. A positive value
+        // means an outstanding (not-yet-released) hold => idempotent no-op.
+        const net = acct.refCounters!.hold![ref] ?? 0;
+        if (net > 0) {
           return acct.sponsoredHeld;
         }
       }
@@ -393,7 +470,8 @@ export class CreditLedger {
       acct.sponsoredHeld = fromStroops(next);
       acct.updatedAt = new Date().toISOString();
       if (ref) {
-        acct.holdHistory.push({
+        this.bumpCounter(acct.refCounters!.hold!, ref, 1);
+        this.pushHoldHistory(acct, {
           type: 'hold',
           amount,
           ref,
@@ -420,16 +498,10 @@ export class CreditLedger {
   ): Promise<string> {
     return this.withLock(account, () => {
       const acct = this.ensureAccount(account);
-      if (!acct.holdHistory) acct.holdHistory = [];
       if (ref) {
-        const holdCount = acct.holdHistory.filter(
-          (h) => h.type === 'hold' && h.ref === ref,
-        ).length;
-        const releaseCount = acct.holdHistory.filter(
-          (h) => h.type === 'release' && h.ref === ref,
-        ).length;
-        if (holdCount <= releaseCount) {
-          // No outstanding hold for this ref — nothing to release.
+        // O(1): only release when there is an outstanding hold for this ref.
+        const net = acct.refCounters!.hold![ref] ?? 0;
+        if (net <= 0) {
           return acct.sponsoredHeld;
         }
       }
@@ -438,7 +510,8 @@ export class CreditLedger {
       acct.sponsoredHeld = fromStroops(next);
       acct.updatedAt = new Date().toISOString();
       if (ref) {
-        acct.holdHistory.push({
+        this.bumpCounter(acct.refCounters!.hold!, ref, -1);
+        this.pushHoldHistory(acct, {
           type: 'release',
           amount,
           ref,

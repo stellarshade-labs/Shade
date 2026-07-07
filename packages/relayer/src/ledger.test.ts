@@ -233,4 +233,73 @@ describe('CreditLedger', () => {
     await ledger.releaseReserve(ACC, '1', ref);
     expect(ledger.getAccount(ACC)?.sponsoredHeld).toBe('0.0000000');
   });
+
+  it('bounds per-account history under a net-zero reserve/refund churn loop', async () => {
+    const ledger = new CreditLedger(file);
+    ledger.credit(ACC, '1', 'TX1'); // room for exactly one fee at a time
+
+    // Reserve then refund the SAME signed tx many times: net balance stays put
+    // but a naive implementation would append two history rows per cycle without
+    // bound. Verify the trail is capped.
+    for (let i = 0; i < 500; i++) {
+      const r = await ledger.reserve(ACC, '1', 'churn-ref');
+      await ledger.refund(r);
+    }
+
+    expect(ledger.getBalance(ACC)).toBe('1.0000000');
+    const acct = ledger.getAccount(ACC)!;
+    // History is capped (does not grow with the number of cycles).
+    expect(acct.history.length).toBeLessThanOrEqual(200);
+    // The net debit counter for the ref nets back to zero (pruned away), so the
+    // idempotency map does not grow without bound either.
+    expect(acct.refCounters?.debit?.['churn-ref']).toBeUndefined();
+  });
+
+  it('debit/refund cost does not scale with history length', async () => {
+    const ledger = new CreditLedger(file);
+    ledger.credit(ACC, '1000', 'TX1');
+
+    // Build up a long history with many distinct debit refs.
+    for (let i = 0; i < 400; i++) {
+      ledger.debit(ACC, '0.0000001', `bulk-ref-${i}`);
+    }
+    const acct = ledger.getAccount(ACC)!;
+    // History is capped even though 400 distinct debits were applied.
+    expect(acct.history.length).toBeLessThanOrEqual(200);
+    // Yet the cumulative count of appended entries is preserved for accounting.
+    expect(acct.historyTotal).toBeGreaterThanOrEqual(401);
+
+    // A fresh debit and its refund still behave correctly against the capped
+    // trail (idempotency/retry decisions come from the O(1) counter, not the
+    // rotated history — so a ref rotated out of the trail is NOT re-debited
+    // for free while outstanding).
+    const r = await ledger.reserve(ACC, '2', 'final-ref');
+    expect(ledger.getBalance(ACC)).toBe(
+      fromStroops(toStroops('1000') - toStroops('0.0000001') * 400n - toStroops('2')),
+    );
+    // Duplicate reserve of the same outstanding ref is a no-op.
+    await ledger.reserve(ACC, '2', 'final-ref');
+    expect(ledger.getBalance(ACC)).toBe(
+      fromStroops(toStroops('1000') - toStroops('0.0000001') * 400n - toStroops('2')),
+    );
+    await ledger.refund(r);
+    // After refund the same ref re-debits (net counter went back to zero).
+    await ledger.reserve(ACC, '2', 'final-ref');
+    expect(ledger.getBalance(ACC)).toBe(
+      fromStroops(toStroops('1000') - toStroops('0.0000001') * 400n - toStroops('2')),
+    );
+  });
+
+  it('bounds hold/release churn history and preserves idempotency', async () => {
+    const ledger = new CreditLedger(file);
+    const ref = 'sponsor-claim:churn';
+    for (let i = 0; i < 500; i++) {
+      await ledger.holdReserve(ACC, '1', '5', ref);
+      await ledger.releaseReserve(ACC, '1', ref);
+    }
+    expect(ledger.getAccount(ACC)?.sponsoredHeld).toBe('0.0000000');
+    const acct = ledger.getAccount(ACC)!;
+    expect((acct.holdHistory ?? []).length).toBeLessThanOrEqual(200);
+    expect(acct.refCounters?.hold?.[ref]).toBeUndefined();
+  });
 });

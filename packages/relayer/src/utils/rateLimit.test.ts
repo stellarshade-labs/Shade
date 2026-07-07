@@ -143,7 +143,52 @@ describe('RateLimiter', () => {
     process.env.TRUST_PROXY = originalEnv;
   });
 
-  it('should handle unknown client gracefully', () => {
+  it('a spoofed leftmost X-Forwarded-For cannot mint unlimited buckets', () => {
+    // Behind a single trusted proxy. An attacker on one real connection varies
+    // the client-supplied (leftmost) XFF entry on every request to try to get a
+    // fresh bucket each time. The rightmost trusted hop is what our proxy
+    // appended and is identical across the attacker's requests, so all requests
+    // must land in the SAME bucket and get rate-limited.
+    const originalHops = process.env.TRUST_PROXY_HOPS;
+    const originalTrust = process.env.TRUST_PROXY;
+    process.env.TRUST_PROXY_HOPS = '1';
+    delete process.env.TRUST_PROXY;
+
+    const limiter = new RateLimiter(5, 5, 60000);
+    const middleware = limiter.middleware();
+    const proxyIp = '203.0.113.7'; // appended by our trusted proxy (rightmost)
+
+    let blocked = false;
+    for (let i = 0; i < 20; i++) {
+      const res = {
+        status: vi.fn().mockReturnThis(),
+        json: vi.fn().mockReturnThis(),
+        set: vi.fn().mockReturnThis(),
+      } as unknown as Response;
+      const spoofReq = {
+        ip: '10.9.9.9',
+        socket: { remoteAddress: '10.9.9.9' } as any,
+        headers: {
+          // Unique forged client IP each request + constant real proxy hop.
+          'x-forwarded-for': `10.0.0.${i}, ${proxyIp}`,
+        },
+      } as unknown as Request;
+      middleware(spoofReq, res, nextFn);
+      if ((res.status as any).mock.calls.some((c: any[]) => c[0] === 429)) {
+        blocked = true;
+      }
+    }
+
+    // Capacity is 5; the attacker's 20 requests must not all pass.
+    expect(blocked).toBe(true);
+    expect((nextFn as any).mock.calls.length).toBeLessThanOrEqual(5);
+
+    process.env.TRUST_PROXY_HOPS = originalHops;
+    if (originalTrust === undefined) delete process.env.TRUST_PROXY;
+    else process.env.TRUST_PROXY = originalTrust;
+  });
+
+  it('handle unknown client gracefully', () => {
     const middleware = rateLimiter.middleware();
     const reqNoIp = { headers: {} } as Request;
 

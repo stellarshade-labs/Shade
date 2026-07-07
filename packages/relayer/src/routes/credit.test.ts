@@ -199,6 +199,41 @@ describe('credit routes', () => {
     expect(res.body.code).toBe('not_a_deposit');
   });
 
+  it('concurrent duplicate claims credit exactly once and the loser gets 409 (no hang)', async () => {
+    // Both requests start before either has written consumedTxs, so both pass the
+    // early hasConsumed() gate and reach ledger.credit(); the loser must throw
+    // tx_already_claimed and be translated to a 409 rather than an uncaught
+    // rejection that hangs the socket.
+    setup({
+      tx: { successful: true, source_account: FUNDING, hash: 'TX_RACE' },
+      ops: [
+        {
+          type: 'payment',
+          asset_type: 'native',
+          to: relayer.publicKey(),
+          amount: '3.0000000',
+        },
+      ],
+    });
+
+    const mkReq = () =>
+      ({ body: { fundingAccount: FUNDING, txHash: 'TX_RACE' } } as Request);
+    const resA = mockRes();
+    const resB = mockRes();
+
+    await Promise.all([
+      handleCreditClaim(mkReq(), resA),
+      handleCreditClaim(mkReq(), resB),
+    ]);
+
+    const codes = [resA.statusCode, resB.statusCode].sort();
+    expect(codes).toEqual([200, 409]);
+    const loser = resA.statusCode === 409 ? resA : resB;
+    expect(loser.body.code).toBe('tx_already_claimed');
+    // Credited exactly once — not doubled.
+    expect(ledger.getBalance(FUNDING)).toBe('3.0000000');
+  });
+
   it('GET /credit/:account returns balance, 404 when unknown', async () => {
     ledger.credit(FUNDING, '3', 'TXA');
     setup({});

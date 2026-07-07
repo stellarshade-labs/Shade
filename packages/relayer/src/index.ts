@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { Keypair, Horizon } from '@stellar/stellar-sdk';
 import { initRelayRoute, handleRelay } from './routes/relay.js';
@@ -38,6 +38,20 @@ app.use(logger.middleware());
 const RELAYER_SECRET = process.env.RELAYER_SECRET;
 const NETWORK = process.env.NETWORK || 'local';
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+
+/**
+ * Wrap a possibly-async route handler so a rejected promise is forwarded to the
+ * Express error-handling middleware via `next(err)`. Without this, an async
+ * handler that throws/rejects under Express 4 produces an unhandled rejection
+ * and leaves the request socket hanging.
+ */
+function asyncHandler(
+  fn: (req: Request, res: Response) => unknown | Promise<unknown>,
+) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    Promise.resolve(fn(req, res)).catch(next);
+  };
+}
 
 async function initRelayer() {
   try {
@@ -122,13 +136,24 @@ async function initRelayer() {
       });
     });
 
-    app.post('/relay', handleRelay);
-    app.post('/sponsor', handleSponsor);
-    app.post('/sponsor-claim/prepare', handleSponsorClaimPrepare);
-    app.post('/sponsor-claim/submit', handleSponsorClaimSubmit);
-    app.post('/credit/claim', handleCreditClaim);
-    app.get('/credit/challenge', handleCreditChallenge);
-    app.get('/credit/:account', handleCreditBalance);
+    app.post('/relay', asyncHandler(handleRelay));
+    app.post('/sponsor', asyncHandler(handleSponsor));
+    app.post('/sponsor-claim/prepare', asyncHandler(handleSponsorClaimPrepare));
+    app.post('/sponsor-claim/submit', asyncHandler(handleSponsorClaimSubmit));
+    app.post('/credit/claim', asyncHandler(handleCreditClaim));
+    app.get('/credit/challenge', asyncHandler(handleCreditChallenge));
+    app.get('/credit/:account', asyncHandler(handleCreditBalance));
+
+    // Global error handler: any unexpected async rejection (Express 4 does not
+    // catch rejected promises from async handlers on its own) is funneled here
+    // via asyncHandler() so the client gets a 500 JSON body instead of a hung
+    // socket. Must be registered AFTER the routes.
+    app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+      const message = err instanceof Error ? err.message : 'internal error';
+      logger.error('Unhandled route error', { error: message });
+      if (res.headersSent) return;
+      res.status(500).json({ error: 'Internal server error', code: 'server_error' });
+    });
 
     const httpServer = app.listen(PORT, '0.0.0.0', () => {
       logger.info('Relayer started', { port: PORT, network: NETWORK });

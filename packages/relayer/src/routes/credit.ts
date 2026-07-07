@@ -89,7 +89,22 @@ export async function handleCreditClaim(req: Request, res: Response) {
     return res.status(400).json({ error: 'No native payment to relayer', code: 'not_a_deposit' });
   }
 
-  const acct = ctx.ledger.credit(fundingAccount, fromStroops(totalStroops), txHash);
+  // credit() is idempotent-by-throw: a concurrent duplicate claim that passed the
+  // earlier hasConsumed() check (both requests read "not consumed" before either
+  // wrote) reaches here and one of them throws `tx_already_claimed`. Catch it so
+  // the loser returns a clean 409 instead of an uncaught async rejection that
+  // (under Express 4) would hang the socket. Any other error surfaces as 500.
+  let acct;
+  try {
+    acct = ctx.ledger.credit(fundingAccount, fromStroops(totalStroops), txHash);
+  } catch (err: any) {
+    if (err?.message === 'tx_already_claimed') {
+      return res
+        .status(409)
+        .json({ error: 'Transaction already claimed', code: 'tx_already_claimed' });
+    }
+    return res.status(500).json({ error: err?.message ?? 'credit failed', code: 'server_error' });
+  }
   return res.json({
     fundingAccount,
     balance: acct.balance,
