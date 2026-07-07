@@ -16,6 +16,7 @@ import * as StellarSdk from '@stellar/stellar-sdk';
 import { randomBytes } from '@noble/hashes/utils';
 import {
   resolveTokenAddress,
+  labelForToken,
   fetchAnnouncements,
   fetchAnnouncementCount,
   queryBalance,
@@ -197,6 +198,7 @@ export class PoolAdapter implements DeliveryAdapter {
         stealthAddress: ann.stealthAddress,
         ephemeralPubKey: Buffer.from(ann.ephemeralPubKey).toString('hex'),
         token: ann.token,
+        asset: labelForToken(ann.token, this.networkPassphrase),
         amount: Number(balance) / 1e7,
         amountStroops: balance.toString(),
         method: 'pool',

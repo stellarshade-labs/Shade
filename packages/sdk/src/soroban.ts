@@ -82,6 +82,36 @@ export function resolveTokenAddress(
   return new Asset(parts[0], parts[1]).contractId(networkPassphrase);
 }
 
+/**
+ * Give a human-readable label for a SAC token contract address (the opaque
+ * `C...` string stored in pool announcements). The native XLM SAC has a
+ * deterministic contract id — `Asset.native().contractId(passphrase)` — so we
+ * detect it and return `'XLM'`; anything else cannot be reversed to CODE:ISSUER
+ * from the address alone, so the original `C...` address is returned unchanged.
+ *
+ * This is what turns a balance/scan row from an unreadable C-address into a
+ * recognizable token name for the common (native) case.
+ *
+ * @param tokenAddress - The token's SAC contract address, or 'native'/'unknown'.
+ * @param networkPassphrase - Passphrase used to derive the native SAC id.
+ * @returns 'XLM' for the native SAC (or the literal 'native'); otherwise the input.
+ */
+export function labelForToken(
+  tokenAddress: string,
+  networkPassphrase: string,
+): string {
+  if (!tokenAddress || tokenAddress === 'unknown') return tokenAddress;
+  if (tokenAddress === 'native' || tokenAddress === 'XLM') return 'XLM';
+  try {
+    if (tokenAddress === Asset.native().contractId(networkPassphrase)) {
+      return 'XLM';
+    }
+  } catch {
+    // Fall through to the raw address.
+  }
+  return tokenAddress;
+}
+
 /** Poll for transaction confirmation. Throws on failure or timeout. */
 export async function waitForTransaction(
   server: StellarSdk.rpc.Server,

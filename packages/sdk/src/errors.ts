@@ -171,3 +171,20 @@ export class FeePayerRequiredError extends Error {
     this.name = 'FeePayerRequiredError';
   }
 }
+
+/**
+ * Thrown by the {@link StealthClient} constructor when a pool-capable method is
+ * enabled but no contract id could be resolved for the target network (there is
+ * no built-in default outside `local`). Failing here — rather than deep inside a
+ * later Soroban call with an opaque error — makes the misconfiguration obvious:
+ * pass `contractId` explicitly for `testnet`.
+ */
+export class ContractIdRequiredError extends Error {
+  constructor(network: string) {
+    super(
+      `contractId is required for network '${network}'. Deploy the pool contract ` +
+        'and pass its C-address as ClientConfig.contractId (only `local` has a built-in default).',
+    );
+    this.name = 'ContractIdRequiredError';
+  }
+}

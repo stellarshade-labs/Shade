@@ -22,6 +22,7 @@ export {
   StealthAccountNotFoundError,
   DestinationTrustlineError,
   FeePayerRequiredError,
+  ContractIdRequiredError,
 } from './errors.js';
 
 export {
@@ -29,6 +30,8 @@ export {
   numberToStroops,
   formatStroops,
 } from './stroops.js';
+
+export { labelForToken, resolveTokenAddress } from './soroban.js';
 
 export { HorizonClient } from './horizon.js';
 export type {

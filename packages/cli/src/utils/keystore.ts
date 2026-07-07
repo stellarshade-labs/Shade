@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
+import readline from 'readline';
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'crypto';
 
 export interface Keystore {
@@ -21,7 +22,125 @@ interface EncryptedKeystore {
   };
 }
 
-const KEYSTORE_PATH = process.env.STEALTH_KEYSTORE || path.join(os.homedir(), '.stealth-keys.json');
+/** The home-directory default keystore location. */
+export const DEFAULT_KEYSTORE_PATH = path.join(os.homedir(), '.stealth-keys.json');
+
+/**
+ * Resolve the keystore path from a single source of truth so `keygen` (writes)
+ * and the read commands (scan/balance/claim/withdraw) always agree.
+ *
+ * Precedence: an explicit `--keystore` flag wins, then the `STEALTH_KEYSTORE`
+ * environment variable, then the home-directory default. Previously `keygen`
+ * ignored `STEALTH_KEYSTORE` while the read commands honored it, so a keystore
+ * written by `keygen` could not be found by a scan pointed at the env var.
+ */
+export function resolveKeystorePath(flagValue?: string): string {
+  if (flagValue) return flagValue;
+  if (process.env.STEALTH_KEYSTORE) return process.env.STEALTH_KEYSTORE;
+  return DEFAULT_KEYSTORE_PATH;
+}
+
+const KEYSTORE_PATH = resolveKeystorePath();
+
+/** True when the keystore file on disk is an encrypted (password-protected) envelope. */
+export async function isKeystoreEncrypted(
+  filepath: string = KEYSTORE_PATH,
+): Promise<boolean> {
+  try {
+    const data = await fs.readFile(filepath, 'utf-8');
+    const parsed = JSON.parse(data);
+    return !!parsed.encrypted;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Prompt for a secret on stderr without echoing keystrokes to the terminal.
+ *
+ * When stdin is a TTY, terminal echo is disabled via raw mode so typed
+ * characters never appear on screen or in scrollback; bytes are accumulated
+ * until CR/LF, with backspace and Ctrl-C handled. When stdin is not a TTY
+ * (piped/redirected input) it falls back to a line read via readline, which
+ * has no terminal echo to suppress.
+ */
+export function promptPassword(question: string): Promise<string> {
+  const stdin = process.stdin as NodeJS.ReadStream & {
+    isTTY?: boolean;
+    isRawMode?: boolean;
+    setRawMode?: (mode: boolean) => void;
+  };
+  const stderr = process.stderr;
+
+  if (stdin.isTTY && typeof stdin.setRawMode === 'function') {
+    return new Promise((resolve, reject) => {
+      stderr.write(question);
+      let input = '';
+      const wasRaw = stdin.isRawMode ?? false;
+      stdin.setRawMode!(true);
+      stdin.resume();
+      stdin.setEncoding('utf8');
+
+      const cleanup = (): void => {
+        stdin.removeListener('data', onData);
+        stdin.setRawMode!(wasRaw);
+        stdin.pause();
+        stderr.write('\n');
+      };
+
+      const onData = (chunk: string): void => {
+        for (const ch of chunk) {
+          switch (ch) {
+            case '\r':
+            case '\n':
+              cleanup();
+              resolve(input.trim());
+              return;
+            case '\u0003': // Ctrl-C
+              cleanup();
+              reject(new Error('Aborted'));
+              return;
+            case '\u007f': // Backspace/DEL
+            case '\b':
+              input = input.slice(0, -1);
+              break;
+            default:
+              if (ch >= ' ') input += ch;
+              break;
+          }
+        }
+      };
+
+      stdin.on('data', onData);
+    });
+  }
+
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: stderr });
+    rl.question(question, (answer) => {
+      rl.close();
+      stderr.write('\n');
+      resolve(answer.trim());
+    });
+  });
+}
+
+/**
+ * Load a keystore, transparently handling encryption: if the file is encrypted
+ * and no password was provided, prompt for one on stderr. Read commands use this
+ * so an encrypted keystore round-trips without every command re-implementing the
+ * prompt.
+ */
+export async function loadKeystoreInteractive(
+  filepath: string = KEYSTORE_PATH,
+  password?: string,
+): Promise<Keystore> {
+  let pw = password;
+  if (pw === undefined && (await isKeystoreEncrypted(filepath))) {
+    pw = await promptPassword('Enter keystore password: ');
+  }
+  return loadKeystore(filepath, pw);
+}
 
 export async function saveKeystore(
   filepath: string = KEYSTORE_PATH,

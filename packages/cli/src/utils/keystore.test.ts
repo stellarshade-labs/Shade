@@ -16,6 +16,16 @@ const saveKeystore = async (filepath: string, keystore: any, password?: string) 
   return save(filepath, keystore, password);
 };
 
+const resolveKeystorePath = async (flagValue?: string) => {
+  const { resolveKeystorePath: resolve } = await import('./keystore.js');
+  return resolve(flagValue);
+};
+
+const isKeystoreEncrypted = async (filepath: string) => {
+  const { isKeystoreEncrypted: check } = await import('./keystore.js');
+  return check(filepath);
+};
+
 describe('keystore', () => {
   const tempDir = path.join(os.tmpdir(), 'test-keystore-temp');
   const keystorePath = path.join(tempDir, 'test-keystore.json');
@@ -124,5 +134,79 @@ describe('keystore', () => {
     expect(parsed.encrypted).toHaveProperty('iv');
     expect(parsed).toHaveProperty('version');
     expect(parsed.version).toBe(1);
+  });
+});
+
+describe('resolveKeystorePath', () => {
+  const original = process.env.STEALTH_KEYSTORE;
+
+  afterEach(() => {
+    if (original === undefined) delete process.env.STEALTH_KEYSTORE;
+    else process.env.STEALTH_KEYSTORE = original;
+  });
+
+  it('prefers an explicit flag over the env var', async () => {
+    process.env.STEALTH_KEYSTORE = '/env/path.json';
+    expect(await resolveKeystorePath('/flag/path.json')).toBe('/flag/path.json');
+  });
+
+  it('falls back to STEALTH_KEYSTORE when no flag is given', async () => {
+    process.env.STEALTH_KEYSTORE = '/env/path.json';
+    expect(await resolveKeystorePath(undefined)).toBe('/env/path.json');
+  });
+
+  it('falls back to the home default when neither is set', async () => {
+    delete process.env.STEALTH_KEYSTORE;
+    const resolved = await resolveKeystorePath(undefined);
+    expect(resolved).toContain('.stealth-keys.json');
+  });
+
+  it('keygen writes and a read command reads the SAME env-var path', async () => {
+    // Simulates the fixed BLOCKING #1 flow: with STEALTH_KEYSTORE set and no
+    // flag, both writer and reader resolve to the same file.
+    const envPath = path.join(os.tmpdir(), 'test-keystore-temp', 'env-keystore.json');
+    process.env.STEALTH_KEYSTORE = envPath;
+
+    const writePath = await resolveKeystorePath(undefined);
+    const keystore = {
+      spendPrivateKey: Buffer.from(randomBytes(32)).toString('hex'),
+      viewPrivateKey: Buffer.from(randomBytes(32)).toString('hex'),
+      spendPublicKey: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      viewPublicKey: 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
+    };
+    await saveKeystore(writePath, keystore, 'pw123');
+
+    const readPath = await resolveKeystorePath(undefined);
+    expect(readPath).toBe(writePath);
+
+    const loaded = await loadKeystore(readPath, 'pw123');
+    expect(loaded.spendPrivateKey).toBe(keystore.spendPrivateKey);
+
+    try {
+      fsSync.unlinkSync(envPath);
+    } catch {}
+  });
+
+  it('detects an encrypted keystore vs a plaintext one', async () => {
+    const dir = path.join(os.tmpdir(), 'test-keystore-temp');
+    const encPath = path.join(dir, 'enc.json');
+    const plainPath = path.join(dir, 'plain.json');
+    const keystore = {
+      spendPrivateKey: Buffer.from(randomBytes(32)).toString('hex'),
+      viewPrivateKey: Buffer.from(randomBytes(32)).toString('hex'),
+      spendPublicKey: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      viewPublicKey: 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
+    };
+
+    await saveKeystore(encPath, keystore, 'secret');
+    await saveKeystore(plainPath, keystore);
+
+    expect(await isKeystoreEncrypted(encPath)).toBe(true);
+    expect(await isKeystoreEncrypted(plainPath)).toBe(false);
+
+    try {
+      fsSync.unlinkSync(encPath);
+      fsSync.unlinkSync(plainPath);
+    } catch {}
   });
 });

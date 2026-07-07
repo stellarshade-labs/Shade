@@ -4,6 +4,18 @@ import os from 'os';
 
 const CONFIG_DIR = path.join(os.homedir(), '.stealth');
 
+/**
+ * Resolve the stealth pool contract address for a network.
+ *
+ * Precedence: the per-network config file under `~/.stealth/<network>-contract`,
+ * then (for `local` only) a project-local `packages/cli/.stealth/local-contract`,
+ * then the built-in `local` default. There is deliberately NO built-in testnet
+ * address — testnet resets quarterly and a placeholder C-address only produces
+ * an opaque Soroban failure later. If none is configured for testnet we throw an
+ * actionable error naming the file to write.
+ *
+ * @throws {Error} When no contract address is configured for `testnet`.
+ */
 export function getContractAddress(network: 'local' | 'testnet'): string {
   const configFile = path.join(CONFIG_DIR, `${network}-contract`);
 
@@ -14,7 +26,6 @@ export function getContractAddress(network: 'local' | 'testnet'): string {
     // Fall through to defaults
   }
 
-  // Default addresses (these should be updated after deployment)
   if (network === 'local') {
     // Try to read from project config first
     try {
@@ -25,9 +36,13 @@ export function getContractAddress(network: 'local' | 'testnet'): string {
       // Use fallback
     }
     return 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGABAX';
-  } else {
-    return 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
   }
+
+  throw new Error(
+    `No stealth pool contract configured for network 'testnet'. Deploy the ` +
+      `contract and save its C-address to ${configFile} ` +
+      `(e.g. 'stellar contract deploy ...' then write the id there).`,
+  );
 }
 
 export function saveContractAddress(network: 'local' | 'testnet', address: string): void {

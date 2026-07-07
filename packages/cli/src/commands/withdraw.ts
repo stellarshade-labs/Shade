@@ -12,7 +12,11 @@ import {
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { sha256 } from '@noble/hashes/sha256';
 import { parseStroops, formatStroops } from '@stealth/sdk';
-import { loadKeystore } from '../utils/keystore.js';
+import {
+  loadKeystoreInteractive,
+  resolveKeystorePath,
+} from '../utils/keystore.js';
+import { resolveSecret } from '../utils/secrets.js';
 import { getContractAddress } from '../utils/config.js';
 import chalk from 'chalk';
 
@@ -220,15 +224,22 @@ export const withdrawCommand = new Command('withdraw')
   .argument('<stealth-address>', 'Stealth address to withdraw from')
   .argument('<destination>', 'Destination Stellar address')
   .option('--network <network>', 'Network to use', 'local')
+  .option('--keystore <path>', 'Keystore file path (defaults to $STEALTH_KEYSTORE or ~/.stealth-keys.json)')
+  .option('--password <password>', 'Keystore password (prompts on stderr if omitted for an encrypted keystore)')
   .option('--amount <amount>', 'Amount to withdraw (default: full balance)')
   .option('--asset <asset>', 'Asset to withdraw (default: native XLM, or CODE:ISSUER)')
-  .option('--fee-payer <secret>', 'Secret key of account paying the Soroban fee')
+  .option('--fee-payer <secret>', 'Secret key of account paying the Soroban fee (or set STEALTH_FEE_PAYER / prompt; flags leak into shell history)')
   .option('--relay <url>', 'Relay URL for fee-bumped submission')
   .option('--verbose', 'Show detailed output')
   .action(async (stealthAddress: string, destination: string, options) => {
     try {
       const network = options.network as 'local' | 'testnet';
-      const keystore = await loadKeystore();
+      const keystorePath = resolveKeystorePath(options.keystore);
+      const keystore = await loadKeystoreInteractive(keystorePath, options.password).catch(() => {
+        console.error(chalk.red('Error: Missing keystore'));
+        console.error(chalk.gray("  Run 'stealth keygen' first to create keys"));
+        process.exit(1);
+      });
 
       if (!keystore.viewPrivateKey || !keystore.spendPrivateKey) {
         console.error(chalk.red('Error: Missing private keys in keystore'));
@@ -245,9 +256,15 @@ export const withdrawCommand = new Command('withdraw')
         process.exit(1);
       }
 
-      if (!options.feePayer) {
-        console.error(chalk.red('Error: --fee-payer <secret> is required'));
+      const feePayer = await resolveSecret(
+        options.feePayer,
+        'STEALTH_FEE_PAYER',
+        chalk.white('Enter fee-payer secret (S...): '),
+      );
+      if (!feePayer) {
+        console.error(chalk.red('Error: a fee-payer secret is required'));
         console.error(chalk.gray('  A funded account must pay the Soroban invocation fee'));
+        console.error(chalk.gray('  Provide it via --fee-payer, the STEALTH_FEE_PAYER env var, or the prompt'));
         console.error(chalk.gray('  Optionally add --relay <url> for the relayer to fee-bump'));
         process.exit(1);
       }
@@ -373,7 +390,7 @@ export const withdrawCommand = new Command('withdraw')
       // Build Soroban transaction
       console.log(chalk.cyan('Building withdraw transaction...'));
 
-      const feePayerKeypair = Keypair.fromSecret(options.feePayer);
+      const feePayerKeypair = Keypair.fromSecret(feePayer);
 
       const contract = new Contract(contractAddress);
       const feePayerAccount = await server.getAccount(feePayerKeypair.publicKey());

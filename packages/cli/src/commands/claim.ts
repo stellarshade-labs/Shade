@@ -1,7 +1,11 @@
 import { Command } from 'commander';
 import { StealthClient, type StealthKeys, type Payment } from '@stealth/sdk';
 import { StrKey } from '@stellar/stellar-sdk';
-import { loadKeystore } from '../utils/keystore.js';
+import {
+  loadKeystoreInteractive,
+  resolveKeystorePath,
+} from '../utils/keystore.js';
+import { resolveSecret } from '../utils/secrets.js';
 import { findHorizonPayment } from '../utils/config.js';
 import { withdrawCommand } from './withdraw.js';
 import chalk from 'chalk';
@@ -20,6 +24,8 @@ async function claimViaPool(
     relay?: string;
     feePayer?: string;
     asset?: string;
+    keystore?: string;
+    password?: string;
     verbose?: boolean;
   },
 ): Promise<void> {
@@ -34,6 +40,8 @@ async function claimViaPool(
   if (options.asset) argv.push('--asset', options.asset);
   if (options.feePayer) argv.push('--fee-payer', options.feePayer);
   if (options.relay) argv.push('--relay', options.relay);
+  if (options.keystore) argv.push('--keystore', options.keystore);
+  if (options.password !== undefined) argv.push('--password', options.password);
   if (options.verbose) argv.push('--verbose');
   await withdrawCommand.parseAsync(argv);
 }
@@ -43,12 +51,14 @@ export const claimCommand = new Command('claim')
   .argument('<stealth-address>', 'Stealth address holding the funds')
   .argument('<destination>', 'Destination Stellar address (G...)')
   .option('--network <network>', 'Network to use', 'local')
+  .option('--keystore <path>', 'Keystore file path (defaults to $STEALTH_KEYSTORE or ~/.stealth-keys.json)')
+  .option('--password <password>', 'Keystore password (prompts on stderr if omitted for an encrypted keystore)')
   .option('--merge', 'Sweep the whole account via AccountMerge (account method)')
   .option('--no-merge', 'Leave the stealth account open (partial payout)')
   .option('--relay <url>', 'Relayer URL for fee-bumped submission')
   .option('--sponsored', 'Use the relayer sponsor-claim pair (token claimable-balance claims)')
   .option('--funding-account <address>', 'App account to debit a credit-gated relayer fee against')
-  .option('--fee-payer <secret>', 'Secret key paying the pool-withdraw Soroban fee')
+  .option('--fee-payer <secret>', 'Secret key paying the pool-withdraw Soroban fee (or set STEALTH_FEE_PAYER / prompt; flags leak into shell history)')
   .option('--asset <asset>', 'Asset to claim (pool method): native or CODE:ISSUER')
   .option('--amount <amount>', 'Partial claim amount (account method, with --no-merge)')
   .option('--verbose', 'Show detailed output')
@@ -65,29 +75,39 @@ export const claimCommand = new Command('claim')
         process.exit(1);
       }
 
+      const keystorePath = resolveKeystorePath(options.keystore);
+
       // Resolve the payment from the persisted account-method scan cache. A miss
       // means either no scan has run OR the payment arrived via the pool.
       const cached = findHorizonPayment(network, stealthAddress);
 
       if (!cached) {
-        if (options.verbose) {
-          console.log(
-            chalk.gray(
-              'No account-method payment cached — treating as a pool claim (delegating to withdraw).',
-            ),
-          );
-        }
+        console.log(
+          chalk.gray(
+            `No scanned payment for ${stealthAddress} — run 'stealth scan' first ` +
+              '(or it may be a pool deposit). Delegating to the pool withdraw path...',
+          ),
+        );
+        // Pool withdraws need a fee-payer secret; resolve it once here so the
+        // delegated withdraw does not re-prompt, and so env/prompt work too.
+        const feePayer = await resolveSecret(
+          options.feePayer,
+          'STEALTH_FEE_PAYER',
+          chalk.white('Enter fee-payer secret (S...): '),
+        );
         await claimViaPool(stealthAddress, destination, {
           network,
           relay: options.relay,
-          feePayer: options.feePayer,
+          feePayer,
           asset: options.asset,
+          keystore: options.keystore,
+          password: options.password,
           verbose: options.verbose,
         });
         return;
       }
 
-      const keystore = await loadKeystore().catch(() => {
+      const keystore = await loadKeystoreInteractive(keystorePath, options.password).catch(() => {
         console.error(chalk.red('Error: Missing keystore'));
         console.error(chalk.gray("  Run 'stealth keygen' first to create keys"));
         process.exit(1);

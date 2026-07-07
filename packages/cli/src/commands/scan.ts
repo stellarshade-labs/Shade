@@ -1,9 +1,9 @@
 import { Command } from 'commander';
 import { scanAnnouncements } from '@stealth/crypto';
-import { StealthClient, type StealthKeys } from '@stealth/sdk';
+import { StealthClient, labelForToken, type StealthKeys } from '@stealth/sdk';
 import { StrKey, Networks, Contract, nativeToScVal } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { loadKeystore } from '../utils/keystore.js';
+import { loadKeystoreInteractive, resolveKeystorePath } from '../utils/keystore.js';
 import {
   getContractAddress,
   loadHorizonCursor,
@@ -64,9 +64,11 @@ async function scanAccountMethod(
     saveHorizonPayments(network, persisted);
   }
 
+  const networkPassphrase =
+    network === 'local' ? Networks.STANDALONE : Networks.TESTNET;
   return result.payments.map((p) => ({
     stealthAddress: p.stealthAddress,
-    token: p.asset ?? p.token,
+    token: p.asset ?? labelForToken(p.token, networkPassphrase),
     amount: p.amount,
     txHash: p.txHash,
   }));
@@ -170,13 +172,16 @@ async function getContractBalance(
 export const scanCommand = new Command('scan')
   .description('Scan for stealth payments you received (pool + account methods)')
   .option('--network <network>', 'Network to use', 'local')
+  .option('--keystore <path>', 'Keystore file path (defaults to $STEALTH_KEYSTORE or ~/.stealth-keys.json)')
+  .option('--password <password>', 'Keystore password (prompts on stderr if omitted for an encrypted keystore)')
   .option('--since-ledger <ledger>', 'Only scan announcements since this ledger', parseInt)
   .option('--full-rescan', 'Reset the account-method Horizon cursor and rescan from genesis')
   .option('--verbose', 'Show detailed scan progress')
   .action(async (options) => {
     try {
       const network = options.network as 'local' | 'testnet';
-      const keystore = await loadKeystore().catch(() => {
+      const keystorePath = resolveKeystorePath(options.keystore);
+      const keystore = await loadKeystoreInteractive(keystorePath, options.password).catch(() => {
         console.error(chalk.red('Error: Missing keystore'));
         console.error(chalk.gray("  Run 'stealth keygen' first to create keys"));
         process.exit(1);
@@ -242,7 +247,8 @@ export const scanCommand = new Command('scan')
             networkPassphrase,
           );
           const displayBalance = (Number(balance) / 1e7).toFixed(7);
-          table.push(['pool', match.address, ann.token, displayBalance]);
+          const label = labelForToken(ann.token, networkPassphrase);
+          table.push(['pool', match.address, label, displayBalance]);
           found++;
         }
       }

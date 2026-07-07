@@ -14,6 +14,7 @@ import {
   MethodRequiredError,
   MethodNotEnabledError,
   MethodNotAvailableError,
+  ContractIdRequiredError,
 } from './errors.js';
 import type { DeliveryAdapter } from './methods/types.js';
 import type {
@@ -84,6 +85,14 @@ export class StealthClient {
     this.enabledMethods = config.methods && config.methods.length > 0
       ? config.methods
       : ['pool'];
+
+    // The pool method cannot function without a contract id. There is only a
+    // built-in default for `local`, so a `testnet` client with pool enabled and
+    // no explicit contractId must fail loudly here instead of surfacing an
+    // opaque Soroban error on the first pool call.
+    if (this.enabledMethods.includes('pool') && !this.contractId) {
+      throw new ContractIdRequiredError(config.network);
+    }
 
     const horizonUrl =
       config.horizonUrl || DEFAULT_HORIZON[config.network] || DEFAULT_HORIZON.local;

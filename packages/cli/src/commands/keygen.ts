@@ -10,10 +10,8 @@ import {
 } from '@stealth/crypto';
 import { Keypair } from '@stellar/stellar-sdk';
 import { sha256 } from '@noble/hashes/sha256';
-import { saveKeystore } from '../utils/keystore.js';
+import { saveKeystore, resolveKeystorePath, promptPassword } from '../utils/keystore.js';
 import chalk from 'chalk';
-import path from 'path';
-import os from 'os';
 import readline from 'readline';
 
 /**
@@ -55,7 +53,8 @@ function promptLine(question: string): Promise<string> {
 
 export const keygenCommand = new Command('keygen')
   .description('Generate a new stealth meta-address')
-  .option('--keystore <path>', 'Keystore file path', path.join(os.homedir(), '.stealth-keys.json'))
+  .option('--keystore <path>', 'Keystore file path (defaults to $STEALTH_KEYSTORE or ~/.stealth-keys.json)')
+  .option('--password [password]', 'Encrypt the keystore with AES-256-GCM (prompts on stderr if the flag is given without a value)')
   .option('--mnemonic', 'Generate keys from a new BIP-39 mnemonic (enables recovery)')
   .option('--recover', 'Recover keys from an existing 12-word mnemonic')
   .option('--from-stellar-secret [secret]', 'Derive keys deterministically from a Stellar secret (SEP-53)')
@@ -126,17 +125,42 @@ export const keygenCommand = new Command('keygen')
 
       const encoded = encodeMetaAddress({ spendPubKey, viewPubKey });
 
-      await saveKeystore(options.keystore, {
-        spendPublicKey: Buffer.from(spendPubKey).toString('hex'),
-        spendPrivateKey: Buffer.from(spendPrivKey).toString('hex'),
-        viewPublicKey: Buffer.from(viewPubKey).toString('hex'),
-        viewPrivateKey: Buffer.from(viewPrivKey).toString('hex'),
-      });
+      const keystorePath = resolveKeystorePath(options.keystore);
+
+      // --password (encrypt): a bare `--password` (boolean true) prompts on
+      // stderr so the secret never lands in shell history; `--password X` uses X.
+      let password: string | undefined;
+      if (options.password !== undefined) {
+        password =
+          typeof options.password === 'string' && options.password.length > 0
+            ? options.password
+            : await promptPassword(chalk.white('Enter a password to encrypt the keystore: '));
+        if (!password) {
+          console.error(chalk.red('Error: an empty password cannot encrypt the keystore'));
+          process.exit(1);
+        }
+      }
+
+      await saveKeystore(
+        keystorePath,
+        {
+          spendPublicKey: Buffer.from(spendPubKey).toString('hex'),
+          spendPrivateKey: Buffer.from(spendPrivKey).toString('hex'),
+          viewPublicKey: Buffer.from(viewPubKey).toString('hex'),
+          viewPrivateKey: Buffer.from(viewPrivKey).toString('hex'),
+        },
+        password,
+      );
 
       console.log(chalk.green('\n\u2713 Stealth keys generated successfully'));
       console.log(chalk.white('\nMeta-address (share this to receive funds):'));
       console.log(chalk.yellow(encoded));
-      console.log(chalk.gray(`\nKeystore saved to: ${options.keystore}`));
+      console.log(chalk.gray(`\nKeystore saved to: ${keystorePath}`));
+      if (password) {
+        console.log(chalk.gray('Keystore is encrypted (AES-256-GCM). You will be prompted for the password on read.'));
+      } else {
+        console.log(chalk.yellow('Warning: keystore is UNENCRYPTED plaintext. Re-run with --password to encrypt.'));
+      }
       console.log(chalk.gray('Keep this file safe — it contains your private keys!'));
 
     } catch (error: any) {

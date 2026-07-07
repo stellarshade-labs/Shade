@@ -4,11 +4,12 @@ import {
   StealthClient,
   formatStroops,
   numberToStroops,
+  labelForToken,
   type StealthKeys,
 } from '@stealth/sdk';
 import { StrKey, Networks, Contract, nativeToScVal } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { loadKeystore } from '../utils/keystore.js';
+import { loadKeystoreInteractive, resolveKeystorePath } from '../utils/keystore.js';
 import { getContractAddress } from '../utils/config.js';
 import Table from 'cli-table3';
 import chalk from 'chalk';
@@ -105,10 +106,17 @@ async function getContractBalance(
 export const balanceCommand = new Command('balance')
   .description('Show total balance across all stealth payments')
   .option('--network <network>', 'Network to use', 'local')
+  .option('--keystore <path>', 'Keystore file path (defaults to $STEALTH_KEYSTORE or ~/.stealth-keys.json)')
+  .option('--password <password>', 'Keystore password (prompts on stderr if omitted for an encrypted keystore)')
   .action(async (options) => {
     try {
       const network = options.network as 'local' | 'testnet';
-      const keystore = await loadKeystore();
+      const keystorePath = resolveKeystorePath(options.keystore);
+      const keystore = await loadKeystoreInteractive(keystorePath, options.password).catch(() => {
+        console.error(chalk.red('Error: Missing keystore'));
+        console.error(chalk.gray("  Run 'stealth keygen' first to create keys"));
+        process.exit(1);
+      });
 
       if (!keystore.viewPrivateKey) {
         console.error(chalk.red('Error: No view private key in keystore'));
@@ -174,10 +182,11 @@ export const balanceCommand = new Command('balance')
           );
 
           if (balance > 0n) {
-            const prev = tokenBalances.get(ann.token) || 0n;
-            tokenBalances.set(ann.token, prev + balance);
+            const label = labelForToken(ann.token, networkPassphrase);
+            const prev = tokenBalances.get(label) || 0n;
+            tokenBalances.set(label, prev + balance);
             const displayBalance = formatStroops(balance);
-            table.push(['pool', match.address, ann.token, displayBalance]);
+            table.push(['pool', match.address, label, displayBalance]);
           }
         }
       }
@@ -198,7 +207,7 @@ export const balanceCommand = new Command('balance')
             ? BigInt(p.amountStroops)
             : numberToStroops(p.amount);
           if (stroops <= 0n) continue;
-          const label = p.token || 'native';
+          const label = labelForToken(p.token || 'native', networkPassphrase);
           const prev = tokenBalances.get(label) || 0n;
           tokenBalances.set(label, prev + stroops);
           table.push(['account', p.stealthAddress, label, formatStroops(stroops)]);
