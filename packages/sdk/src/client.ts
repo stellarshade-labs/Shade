@@ -268,6 +268,7 @@ export class StealthClient {
       stealthAddress: p.stealthAddress,
       token: p.token,
       amount: p.amount,
+      amountStroops: p.amountStroops,
     }));
   }
 

@@ -284,7 +284,7 @@ describe('account scan', () => {
     expect(token!.method).toBe('account');
   });
 
-  it('surfaces BOTH a genuine 500 XLM CreateAccount and the token, suppressing only the 1.5001 stub', async () => {
+  it('suppresses the native funding leg of a token send by CB presence, not by a magic amount', async () => {
     const { keys, raw } = keysToHex();
     const mine = deriveStealthAddressWithSecret(
       raw.metaAddress.spendPubKey,
@@ -304,11 +304,14 @@ describe('account scan', () => {
         memo_type: 'hash',
         memo: Buffer.from(mine.ephemeralPubKey).toString('base64'),
         successful: true,
+        source_account: 'GSENDERXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
       },
     ];
-    // A protocol-conformant tx bundling a GENUINE 500 XLM CreateAccount (NOT the
-    // 1.5001 funding stub) with a matching claimable balance. Both legs are real
-    // income and must surface.
+    // A create_account whose starting balance is NOT the 1.5001 stub constant,
+    // bundled with a matching claimable balance in the SAME tx. Per the fixed
+    // contract, the native leg is suppressed because a token CB rides in the
+    // same tx (the funding stub), NOT because of any magic amount — only the one
+    // logical token payment surfaces.
     const operationsByTx = {
       HASH_BUNDLE: [
         {
@@ -316,7 +319,7 @@ describe('account scan', () => {
           type: 'create_account',
           transaction_hash: 'HASH_BUNDLE',
           account: mine.stealthAddress,
-          starting_balance: '500.0000000',
+          starting_balance: '3.0000000',
         },
         {
           id: 'o1',
@@ -334,6 +337,7 @@ describe('account scan', () => {
           id: CB_ID,
           asset: ASSET,
           amount: '100.0000000',
+          sponsor: 'GSENDERXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
           claimants: [{ destination: mine.stealthAddress }],
         },
       ],
@@ -346,15 +350,59 @@ describe('account scan', () => {
     const adapter = new AccountAdapter(Networks.STANDALONE, horizon);
     const { payments } = await adapter.scan(keys);
 
-    // Two payments: the 500 XLM native leg AND the token claimable balance.
-    expect(payments).toHaveLength(2);
-    const native = payments.find((p) => p.token === 'native');
+    // Only the token claimable balance surfaces; the native funding leg is gone.
+    expect(payments).toHaveLength(1);
     const token = payments.find((p) => p.claimableBalanceId);
-    expect(native).toBeDefined();
-    expect(native!.amount).toBe(500);
     expect(token).toBeDefined();
     expect(token!.amount).toBe(100);
     expect(token!.asset).toBe(ASSET);
+    expect(payments.some((p) => p.token === 'native')).toBe(false);
+  });
+
+  it('discovers a genuine 1.5001 XLM native send (no CB) — not misclassified as a stub', async () => {
+    const { keys, raw } = keysToHex();
+    const mine = deriveStealthAddressWithSecret(
+      raw.metaAddress.spendPubKey,
+      raw.metaAddress.viewPubKey,
+      new Uint8Array(randomBytes(32)),
+    );
+
+    const transactions = [
+      {
+        id: 't1',
+        hash: 'HASH_1_5001',
+        paging_token: '1',
+        memo_type: 'hash',
+        memo: Buffer.from(mine.ephemeralPubKey).toString('base64'),
+        successful: true,
+      },
+    ];
+    // A genuine native send of EXACTLY 1.5001 XLM with NO claimable balance in
+    // the tx. The old amount-based heuristic suppressed this; the fixed
+    // CB-presence gate must surface it as real native income.
+    const operationsByTx = {
+      HASH_1_5001: [
+        {
+          id: 'o1',
+          type: 'create_account',
+          transaction_hash: 'HASH_1_5001',
+          account: mine.stealthAddress,
+          starting_balance: '1.5001000',
+        },
+      ],
+    };
+
+    const horizon = new HorizonClient(
+      'http://localhost:8000',
+      makeStubFetch({ transactions, operationsByTx }),
+    );
+    const adapter = new AccountAdapter(Networks.STANDALONE, horizon);
+    const { payments } = await adapter.scan(keys);
+
+    expect(payments).toHaveLength(1);
+    expect(payments[0]!.token).toBe('native');
+    expect(payments[0]!.amount).toBe(1.5001);
+    expect(payments[0]!.amountStroops).toBe('15001000');
   });
 
   it('suppresses a merged/claimed native account when suppressClaimedNative is set', async () => {

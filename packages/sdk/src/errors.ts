@@ -112,3 +112,62 @@ export class WrongPasswordError extends Error {
     this.name = 'WrongPasswordError';
   }
 }
+
+/**
+ * Thrown by the pool withdraw path when the resolved stealth address holds no
+ * balance in the pool contract for the requested asset — there is nothing to
+ * withdraw. Recoverable: the caller may have already withdrawn, or is querying
+ * the wrong asset.
+ */
+export class NoBalanceError extends Error {
+  constructor() {
+    super('Stealth address has no balance in the pool.');
+    this.name = 'NoBalanceError';
+  }
+}
+
+/**
+ * Thrown by the pool withdraw path when no announcement matching the given
+ * stealth address can be found for these keys — the payment is not ours or has
+ * not yet been indexed.
+ */
+export class AnnouncementNotFoundError extends Error {
+  constructor() {
+    super('Could not find announcement for this stealth address.');
+    this.name = 'AnnouncementNotFoundError';
+  }
+}
+
+/**
+ * Thrown by the account claim path when the stealth account cannot be found on
+ * Horizon — typically because the funding send has not yet confirmed.
+ */
+export class StealthAccountNotFoundError extends Error {
+  constructor() {
+    super('Stealth account not found on Horizon — has the send confirmed?');
+    this.name = 'StealthAccountNotFoundError';
+  }
+}
+
+/**
+ * Thrown by a token claim when the destination account does not (or cannot yet)
+ * trust the asset being claimed. The message names the actionable fix — add the
+ * trustline on the destination before claiming.
+ */
+export class DestinationTrustlineError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DestinationTrustlineError';
+  }
+}
+
+/**
+ * Thrown by the pool withdraw path when a fee-payer secret is required (to pay
+ * the Soroban invocation fee) but none was supplied.
+ */
+export class FeePayerRequiredError extends Error {
+  constructor() {
+    super('A fee payer secret is required for pool withdrawals.');
+    this.name = 'FeePayerRequiredError';
+  }
+}

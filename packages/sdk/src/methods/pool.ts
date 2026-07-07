@@ -32,6 +32,12 @@ import type {
   ClaimOpts,
 } from '../types.js';
 import type { DeliveryAdapter, AdapterSendParams } from './types.js';
+import {
+  NoBalanceError,
+  AnnouncementNotFoundError,
+  FeePayerRequiredError,
+} from '../errors.js';
+import { numberToStroops, formatStroops } from '../stroops.js';
 
 const POOL_PAGE_SIZE = 200;
 
@@ -61,7 +67,7 @@ export class PoolAdapter implements DeliveryAdapter {
     const { spendPubKey, viewPubKey } = decodeMetaAddress(metaAddress);
     const senderKeypair = Keypair.fromSecret(senderSecret);
     const tokenAddress = resolveTokenAddress(asset, this.networkPassphrase);
-    const stroops = BigInt(Math.round(amount * 1e7));
+    const stroops = numberToStroops(amount);
 
     const ephemeralPrivKey = new Uint8Array(randomBytes(32));
     const stealth = deriveStealthAddressWithSecret(
@@ -192,6 +198,7 @@ export class PoolAdapter implements DeliveryAdapter {
         ephemeralPubKey: Buffer.from(ann.ephemeralPubKey).toString('hex'),
         token: ann.token,
         amount: Number(balance) / 1e7,
+        amountStroops: balance.toString(),
         method: 'pool',
       });
     }
@@ -239,7 +246,7 @@ export class PoolAdapter implements DeliveryAdapter {
       throw new Error('Invalid destination address');
     }
     if (!opts.feePayer) {
-      throw new Error('A fee payer secret is required for pool withdrawals');
+      throw new FeePayerRequiredError();
     }
 
     const viewPrivKey = Buffer.from(opts.keys.viewPrivKey, 'hex');
@@ -283,7 +290,7 @@ export class PoolAdapter implements DeliveryAdapter {
     });
 
     if (!matchedAnn) {
-      throw new Error('Could not find announcement for this stealth address');
+      throw new AnnouncementNotFoundError();
     }
 
     const stealthPrivKey = recoverStealthPrivateKey(
@@ -300,14 +307,14 @@ export class PoolAdapter implements DeliveryAdapter {
       this.networkPassphrase,
     );
 
-    if (balance <= 0n) throw new Error('Stealth address has no balance in the pool');
+    if (balance <= 0n) throw new NoBalanceError();
 
     let withdrawAmount: bigint;
     if (opts.amount !== undefined) {
-      withdrawAmount = BigInt(Math.round(opts.amount * 1e7));
+      withdrawAmount = numberToStroops(opts.amount);
       if (withdrawAmount > balance) {
         throw new Error(
-          `Requested ${opts.amount} but balance is ${Number(balance) / 1e7}`,
+          `Requested ${opts.amount} but balance is ${formatStroops(balance)}`,
         );
       }
     } else {

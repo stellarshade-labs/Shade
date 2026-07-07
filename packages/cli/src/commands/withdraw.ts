@@ -11,6 +11,7 @@ import {
 } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { sha256 } from '@noble/hashes/sha256';
+import { parseStroops, formatStroops } from '@stealth/sdk';
 import { loadKeystore } from '../utils/keystore.js';
 import { getContractAddress } from '../utils/config.js';
 import chalk from 'chalk';
@@ -321,19 +322,22 @@ export const withdrawCommand = new Command('withdraw')
         process.exit(0);
       }
 
-      const displayBalance = (Number(balance) / 1e7).toFixed(7);
+      const displayBalance = formatStroops(balance);
       console.log(chalk.gray(`  Pool balance: ${displayBalance}`));
 
-      // Determine withdraw amount
-      let withdrawAmount: bigint;
+      // Determine withdraw amount (exact stroops; reject >7dp / non-numeric)
+      let withdrawAmount = balance;
       if (options.amount) {
-        withdrawAmount = BigInt(Math.round(parseFloat(options.amount) * 1e7));
+        try {
+          withdrawAmount = parseStroops(options.amount);
+        } catch (e) {
+          console.error(chalk.red(`Error: ${(e as Error).message}`));
+          process.exit(1);
+        }
         if (withdrawAmount > balance) {
           console.error(chalk.red(`Error: Requested ${options.amount} but balance is ${displayBalance}`));
           process.exit(1);
         }
-      } else {
-        withdrawAmount = balance;
       }
 
       // Get nonce
@@ -424,7 +428,7 @@ export const withdrawCommand = new Command('withdraw')
         txHash = result.hash;
       }
 
-      const displayWithdraw = (Number(withdrawAmount) / 1e7).toFixed(7);
+      const displayWithdraw = formatStroops(withdrawAmount);
       console.log(chalk.green(`\u2713 Withdrawn ${displayWithdraw} to ${destination}`));
       console.log(chalk.gray(`  Tx hash: ${txHash}`));
 

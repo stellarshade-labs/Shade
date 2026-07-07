@@ -1,6 +1,11 @@
 import { Command } from 'commander';
 import { scanAnnouncements } from '@stealth/crypto';
-import { StealthClient, type StealthKeys } from '@stealth/sdk';
+import {
+  StealthClient,
+  formatStroops,
+  numberToStroops,
+  type StealthKeys,
+} from '@stealth/sdk';
 import { StrKey, Networks, Contract, nativeToScVal } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { loadKeystore } from '../utils/keystore.js';
@@ -171,7 +176,7 @@ export const balanceCommand = new Command('balance')
           if (balance > 0n) {
             const prev = tokenBalances.get(ann.token) || 0n;
             tokenBalances.set(ann.token, prev + balance);
-            const displayBalance = (Number(balance) / 1e7).toFixed(7);
+            const displayBalance = formatStroops(balance);
             table.push(['pool', match.address, ann.token, displayBalance]);
           }
         }
@@ -189,12 +194,14 @@ export const balanceCommand = new Command('balance')
         const client = new StealthClient({ network, methods: ['account'] });
         const accountPayments = await client.balance(keys);
         for (const p of accountPayments) {
-          if (p.amount <= 0) continue;
+          const stroops = p.amountStroops
+            ? BigInt(p.amountStroops)
+            : numberToStroops(p.amount);
+          if (stroops <= 0n) continue;
           const label = p.token || 'native';
-          const stroops = BigInt(Math.round(p.amount * 1e7));
           const prev = tokenBalances.get(label) || 0n;
           tokenBalances.set(label, prev + stroops);
-          table.push(['account', p.stealthAddress, label, p.amount.toFixed(7)]);
+          table.push(['account', p.stealthAddress, label, formatStroops(stroops)]);
         }
       } catch (e: any) {
         console.error(chalk.yellow(`Warning: account-method balance scan failed: ${e.message}`));

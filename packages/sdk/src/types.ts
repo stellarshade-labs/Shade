@@ -49,6 +49,14 @@ export interface Payment {
   claimableBalanceId?: string;
   /** Amount in whole units (e.g. 100.0 = 100 XLM) */
   amount: number;
+  /**
+   * Exact amount as a decimal `bigint` count of stroops (1e-7 units), serialized
+   * as a string. Present alongside {@link amount} so callers that need exactness
+   * above ~9.007e8 XLM (where a float can no longer represent every stroop) can
+   * avoid the lossy `number`. The `number` field is retained for display and
+   * backwards compatibility.
+   */
+  amountStroops?: string;
   /** Which delivery method surfaced this payment */
   method: DeliveryMethod;
   /** Transaction hash that delivered the payment (when known) */
@@ -63,6 +71,12 @@ export interface Balance {
   token: string;
   /** Amount in whole units */
   amount: number;
+  /**
+   * Exact amount as a decimal `bigint` count of stroops, serialized as a string.
+   * Present so callers can sum/display without a lossy float. See
+   * {@link Payment.amountStroops}.
+   */
+  amountStroops?: string;
 }
 
 /** Result of a withdrawal. */

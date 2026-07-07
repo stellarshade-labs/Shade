@@ -9,7 +9,7 @@ import {
   nativeToScVal,
 } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { StealthClient } from '@stealth/sdk';
+import { StealthClient, parseStroops } from '@stealth/sdk';
 import { getContractAddress } from '../utils/config.js';
 import { formatError, validateMetaAddress } from '../utils/network.js';
 import chalk from 'chalk';
@@ -144,11 +144,20 @@ export const sendCommand = new Command('send')
 
       const { spendPubKey, viewPubKey } = metaKeys;
 
-      const parsedAmount = parseFloat(amount);
-      if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      // Parse to exact stroops first so an out-of-range or >7-dp amount is
+      // rejected here (before any float drift), then derive the display number.
+      let amountStroops: bigint;
+      try {
+        amountStroops = parseStroops(amount);
+      } catch (e) {
+        console.error(chalk.red(`Error: ${(e as Error).message}`));
+        process.exit(1);
+      }
+      if (amountStroops <= 0n) {
         console.error(chalk.red('Error: Invalid amount'));
         process.exit(1);
       }
+      const parsedAmount = parseFloat(amount);
 
       if (!options.from) {
         console.error(chalk.red('Error: Please provide sender secret key with --from'));
@@ -203,8 +212,8 @@ export const sendCommand = new Command('send')
         console.log(chalk.gray(`  Token SAC:        ${tokenAddress}`));
       }
 
-      // Convert amount to stroops (7 decimal places for Stellar assets)
-      const stroops = BigInt(Math.round(parsedAmount * 1e7));
+      // Exact stroops parsed above — no lossy float round-trip.
+      const stroops = amountStroops;
 
       // Setup Soroban RPC
       const rpcUrl = network === 'local'

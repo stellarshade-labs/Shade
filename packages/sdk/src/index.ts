@@ -17,7 +17,18 @@ export {
   InvalidAmountError,
   SponsoredClaimMismatchError,
   WrongPasswordError,
+  NoBalanceError,
+  AnnouncementNotFoundError,
+  StealthAccountNotFoundError,
+  DestinationTrustlineError,
+  FeePayerRequiredError,
 } from './errors.js';
+
+export {
+  parseStroops,
+  numberToStroops,
+  formatStroops,
+} from './stroops.js';
 
 export { HorizonClient } from './horizon.js';
 export type {
@@ -25,6 +36,7 @@ export type {
   HorizonOp,
   HorizonAccount,
   HorizonClaimant,
+  HorizonPredicate,
   HorizonClaimableBalance,
   FetchLike,
 } from './horizon.js';

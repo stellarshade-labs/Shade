@@ -18,17 +18,27 @@ import {
   Asset,
   Claimant,
   Memo,
+  MuxedAccount,
   BASE_FEE,
 } from '@stellar/stellar-sdk';
 import { randomBytes } from '@noble/hashes/utils';
 import { HorizonClient } from '../horizon.js';
+import type {
+  HorizonOp,
+  HorizonClaimant,
+  HorizonPredicate,
+  HorizonClaimableBalance,
+} from '../horizon.js';
 import { RelayerClient } from '../relayer.js';
 import {
   MinimumAmountError,
   ClaimAmountError,
   InvalidAmountError,
   SponsoredClaimMismatchError,
+  StealthAccountNotFoundError,
+  DestinationTrustlineError,
 } from '../errors.js';
+import { numberToStroops, parseStroops, formatStroops } from '../stroops.js';
 import type {
   StealthKeys,
   SendReceipt,
@@ -64,6 +74,57 @@ function parseAsset(asset: string): Asset {
 /** Render an Asset back to Horizon's "CODE:ISSUER" (or 'native') string form. */
 function assetToString(asset: Asset): string {
   return asset.isNative() ? 'native' : `${asset.getCode()}:${asset.getIssuer()}`;
+}
+
+/**
+ * Normalize a destination to its underlying ed25519 account id. A muxed address
+ * (`M...`) shares one underlying G-account across many virtual sub-accounts; a
+ * send addressed to the muxed form of a stealth address must still match the
+ * derived G-address. Non-muxed inputs (and unparseable ones) pass through
+ * unchanged so a plain `G...` comparison is unaffected.
+ */
+function normalizeDestination(address: string | undefined): string | undefined {
+  if (!address) return address;
+  if (!address.startsWith('M')) return address;
+  try {
+    return MuxedAccount.fromAddress(address, '0').baseAccount().accountId();
+  } catch {
+    return address;
+  }
+}
+
+/**
+ * Evaluate a Horizon claim predicate for a given claimant against the current
+ * ledger time (seconds since epoch). Returns true when the claimant may claim
+ * NOW. A missing predicate is treated as unconditional. `rel_before` cannot be
+ * evaluated without the CB creation time, so it is treated conservatively as
+ * currently satisfiable (never spuriously suppressing income).
+ */
+function isPredicateSatisfiable(
+  predicate: HorizonPredicate | undefined,
+  nowSeconds: number,
+): boolean {
+  if (!predicate) return true;
+  if (predicate.unconditional) return true;
+  if (predicate.not) {
+    return !isPredicateSatisfiable(predicate.not, nowSeconds);
+  }
+  if (predicate.and) {
+    return predicate.and.every((p) => isPredicateSatisfiable(p, nowSeconds));
+  }
+  if (predicate.or) {
+    return predicate.or.some((p) => isPredicateSatisfiable(p, nowSeconds));
+  }
+  if (predicate.abs_before_epoch !== undefined) {
+    return nowSeconds < Number(predicate.abs_before_epoch);
+  }
+  if (predicate.abs_before !== undefined) {
+    const before = Math.floor(Date.parse(predicate.abs_before) / 1000);
+    if (!Number.isNaN(before)) return nowSeconds < before;
+  }
+  // rel_before (or an unrecognized shape): cannot disprove satisfiability here,
+  // so treat as claimable rather than dropping a genuine payment.
+  return true;
 }
 
 /**
@@ -137,7 +198,7 @@ export class AccountAdapter implements DeliveryAdapter {
     );
 
     const memo = Memo.hash(Buffer.from(stealth.ephemeralPubKey));
-    const startingBalance = amount.toFixed(7);
+    const startingBalance = formatStroops(numberToStroops(amount));
 
     const submit = async (useCreate: boolean): Promise<string> => {
       const senderKeypair = Keypair.fromSecret(senderSecret);
@@ -244,7 +305,7 @@ export class AccountAdapter implements DeliveryAdapter {
       .addOperation(
         Operation.createClaimableBalance({
           asset: stellarAsset,
-          amount: amount.toFixed(7),
+          amount: formatStroops(numberToStroops(amount)),
           claimants: [claimant],
         }),
       )
@@ -309,84 +370,47 @@ export class AccountAdapter implements DeliveryAdapter {
         const ops = await this.horizon.getTransactionOperations(tx.hash);
         const ephHex = Buffer.from(ephemeralPubKey).toString('hex');
 
+        // A create_claimable_balance in THIS tx naming the derived address as a
+        // claimant. Destinations are muxed-normalized so a send to the M-form of
+        // the stealth address still matches.
         const cbMatch = ops.find(
           (op) =>
             op.type === 'create_claimable_balance' &&
-            (op.claimants ?? []).some((c) => c.destination === derivedAddress),
+            (op.claimants ?? []).some(
+              (c) => normalizeDestination(c.destination) === derivedAddress,
+            ),
         );
 
+        // Native leg (create_account / payment) landing at the derived address.
         const nativeMatch = ops.find(
           (op) =>
-            (op.type === 'create_account' && op.account === derivedAddress) ||
-            (op.type === 'payment' && op.to === derivedAddress),
+            (op.type === 'create_account' &&
+              normalizeDestination(op.account) === derivedAddress) ||
+            (op.type === 'payment' &&
+              normalizeDestination(op.to) === derivedAddress),
         );
-        // Suppress the native leg ONLY when it is the token funding stub — a
-        // CreateAccount whose starting balance is exactly the token-account
-        // reserve constant (1.5001). Any other native amount (e.g. a genuine
-        // 500 XLM CreateAccount bundled with a token) is real income and is
-        // reported alongside the token payment.
-        const isTokenFundingStub =
-          !!nativeMatch &&
-          nativeMatch.type === 'create_account' &&
-          Number(nativeMatch.starting_balance) ===
-            Number(TOKEN_ACCOUNT_STARTING_BALANCE);
 
-        if (nativeMatch && !isTokenFundingStub) {
-          // The income for THIS tx is the op amount (create_account
-          // starting_balance / payment amount), not the account's aggregate
-          // live balance — two sends to the same derived address, or a partial
-          // spend, must each report their own op amount and txHash.
-          const opAmount =
-            nativeMatch.type === 'create_account'
-              ? Number(nativeMatch.starting_balance ?? 0)
-              : Number(nativeMatch.amount ?? 0);
-
-          // Suppression (null-safe): only probe liveness when the merge flag is
-          // set, to drop a fully-swept account rather than re-surfacing it
-          // forever. A null/absent account or absent native balance is treated
-          // as "unknown, not proven claimed" and falls back to the op amount —
-          // never conflating current spendable balance with income for this tx.
-          let claimed = false;
-          if (suppressClaimedNative) {
-            const live = await this.horizon.getAccount(derivedAddress);
-            if (live) {
-              const nativeBal = live.balances.find(
-                (b) => b.asset_type === 'native',
-              );
-              claimed = nativeBal !== undefined && Number(nativeBal.balance) === 0;
-            }
-          }
-
-          if (!claimed && opAmount > 0) {
-            payments.push({
-              stealthAddress: derivedAddress,
-              ephemeralPubKey: ephHex,
-              token: 'native',
-              amount: opAmount,
-              method: 'account',
-              txHash: tx.hash,
-            });
-          }
+        if (nativeMatch) {
+          const payment = await this.buildNativePayment(
+            nativeMatch,
+            derivedAddress,
+            ephHex,
+            tx.hash,
+            !!cbMatch,
+            suppressClaimedNative,
+          );
+          if (payment) payments.push(payment);
         }
 
         if (cbMatch) {
-          // Only report the claimable balance if it still exists live — an
-          // already-claimed CB is dropped rather than re-surfaced.
-          const cb = (await this.horizon.getClaimableBalances(derivedAddress)).find(
-            (b) => b.claimants.some((c) => c.destination === derivedAddress),
+          const payment = await this.buildTokenPayment(
+            cbMatch,
+            derivedAddress,
+            ephHex,
+            tx.hash,
+            tx.source_account,
           );
-          if (cb) {
-            payments.push({
-              stealthAddress: derivedAddress,
-              ephemeralPubKey: ephHex,
-              token: cbMatch.asset ?? cb.asset ?? 'unknown',
-              asset: cbMatch.asset ?? cb.asset,
-              claimableBalanceId: cb.id,
-              amount: Number(cb.amount),
-              method: 'account',
-              txHash: tx.hash,
-            });
-          }
+          if (payment) payments.push(payment);
         }
       }
 
@@ -395,6 +419,152 @@ export class AccountAdapter implements DeliveryAdapter {
     }
 
     return { payments, cursor: lastToken };
+  }
+
+  /**
+   * Build the native income row for a matched create_account/payment leg, or
+   * `null` to suppress it.
+   *
+   * Suppression is gated on whether the SAME tx also delivered a matching token
+   * claimable balance (`hasTokenLeg`): the token path fronts a fixed reserve via
+   * a create_account stub, which must NOT surface as a native payment — but this
+   * is decided by the presence of the token leg, NOT by any magic starting
+   * balance, so a genuine native send that merely happens to equal the reserve
+   * constant is still discovered.
+   *
+   * On the balance path (`suppressClaimed`) the row reports the account's LIVE
+   * native balance (what remains after any partial claim), and a fully-swept
+   * (0) account is dropped. The discovery path reports the per-tx op amount so
+   * two sends to the same address each surface independently.
+   */
+  private async buildNativePayment(
+    nativeMatch: HorizonOp,
+    derivedAddress: string,
+    ephHex: string,
+    txHash: string,
+    hasTokenLeg: boolean,
+    suppressClaimed: boolean,
+  ): Promise<Payment | null> {
+    if (hasTokenLeg) return null;
+
+    const opAmountStr =
+      nativeMatch.type === 'create_account'
+        ? (nativeMatch.starting_balance ?? '0')
+        : (nativeMatch.amount ?? '0');
+    let stroops = parseStroops(opAmountStr);
+
+    if (suppressClaimed) {
+      // Report what REMAINS live (post partial-claim), dropping a swept account.
+      const live = await this.horizon.getAccount(derivedAddress);
+      if (live) {
+        const nativeBal = live.balances.find((b) => b.asset_type === 'native');
+        if (nativeBal !== undefined) stroops = parseStroops(nativeBal.balance);
+      }
+    }
+
+    if (stroops <= 0n) return null;
+    return {
+      stealthAddress: derivedAddress,
+      ephemeralPubKey: ephHex,
+      token: 'native',
+      amount: Number(formatStroops(stroops)),
+      amountStroops: stroops.toString(),
+      method: 'account',
+      txHash,
+    };
+  }
+
+  /**
+   * Build the token income row for a matched create_claimable_balance leg, or
+   * `null` when no genuine, currently-claimable CB binds to it.
+   *
+   * The candidate CBs (Horizon lists ALL CBs the derived address can claim) are
+   * bound to THIS specific op — not resolved by first-claimant — so an attacker
+   * who creates their own CreateClaimableBalance naming the public stealth
+   * address cannot mask/misattribute the real payment. Binding matches the CB
+   * whose sponsor is the tx source AND whose asset+amount equal this op's, and
+   * whose claim predicate for the derived address is currently satisfiable.
+   */
+  private async buildTokenPayment(
+    cbMatch: HorizonOp,
+    derivedAddress: string,
+    ephHex: string,
+    txHash: string,
+    txSource?: string,
+  ): Promise<Payment | null> {
+    const opAsset = cbMatch.asset;
+    const opAmountStroops = cbMatch.amount
+      ? parseStroops(cbMatch.amount)
+      : undefined;
+
+    const candidates = await this.horizon.getClaimableBalances(derivedAddress);
+    const cb = this.bindClaimableBalance(candidates, derivedAddress, {
+      txSource,
+      opAsset,
+      opAmountStroops,
+    });
+    if (!cb) return null;
+
+    const stroops = parseStroops(cb.amount);
+    return {
+      stealthAddress: derivedAddress,
+      ephemeralPubKey: ephHex,
+      token: opAsset ?? cb.asset ?? 'unknown',
+      asset: opAsset ?? cb.asset,
+      claimableBalanceId: cb.id,
+      amount: Number(formatStroops(stroops)),
+      amountStroops: stroops.toString(),
+      method: 'account',
+      txHash,
+    };
+  }
+
+  /**
+   * Select the live claimable balance that genuinely corresponds to this tx's
+   * create_claimable_balance op. Filters candidates to those whose claimant is
+   * the derived address with a currently-satisfiable predicate, then binds by
+   * sponsor === tx source AND asset === op asset AND amount === op amount. Only
+   * when that precise binding is ambiguous or the tx source is unknown does it
+   * fall back to an asset+amount match — never a bare first-claimant pick, so an
+   * attacker CB cannot shadow the real one.
+   */
+  private bindClaimableBalance(
+    candidates: HorizonClaimableBalance[],
+    derivedAddress: string,
+    expected: {
+      txSource?: string;
+      opAsset?: string;
+      opAmountStroops?: bigint;
+    },
+  ): HorizonClaimableBalance | undefined {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+
+    const claimableNow = candidates.filter((cb) =>
+      (cb.claimants ?? []).some((c: HorizonClaimant) => {
+        if (normalizeDestination(c.destination) !== derivedAddress) return false;
+        return isPredicateSatisfiable(c.predicate, nowSeconds);
+      }),
+    );
+
+    const assetAmountMatches = claimableNow.filter((cb) => {
+      const assetOk =
+        expected.opAsset === undefined || cb.asset === expected.opAsset;
+      const amountOk =
+        expected.opAmountStroops === undefined ||
+        parseStroops(cb.amount) === expected.opAmountStroops;
+      return assetOk && amountOk;
+    });
+
+    if (expected.txSource !== undefined) {
+      const sponsorBound = assetAmountMatches.find(
+        (cb) => cb.sponsor === expected.txSource,
+      );
+      if (sponsorBound) return sponsorBound;
+    }
+
+    // No sponsor-precise bind (unknown tx source, or Horizon omitted sponsor):
+    // fall back to the asset+amount-matched candidate rather than first-claimant.
+    return assetAmountMatches[0];
   }
 
   /**
@@ -429,9 +599,7 @@ export class AccountAdapter implements DeliveryAdapter {
     const stealthAddress = payment.stealthAddress;
     const account = await this.horizon.getAccount(stealthAddress);
     if (!account) {
-      throw new Error(
-        'Stealth account not found on Horizon — has the send confirmed?',
-      );
+      throw new StealthAccountNotFoundError();
     }
 
     const source = new Account(account.id, account.sequence);
@@ -751,7 +919,7 @@ export class AccountAdapter implements DeliveryAdapter {
     if (asset.isNative()) return;
     const dest = await this.horizon.getAccount(destination);
     if (!dest) {
-      throw new Error(
+      throw new DestinationTrustlineError(
         `Destination ${destination} not found on Horizon — fund it and add a ${asset.getCode()} trustline before claiming.`,
       );
     }
@@ -765,7 +933,7 @@ export class AccountAdapter implements DeliveryAdapter {
           issuer,
     );
     if (!trusts) {
-      throw new Error(
+      throw new DestinationTrustlineError(
         `Destination ${destination} does not trust ${assetToString(asset)}. ` +
           `Add the trustline on the destination account before claiming.`,
       );

@@ -16,12 +16,32 @@ export interface HorizonTx {
   memo_type: string;
   memo?: string;
   successful?: boolean;
+  /** The account that submitted (and pays for) the transaction. */
+  source_account?: string;
+}
+
+/**
+ * A CAP-23 claim predicate as Horizon serializes it. A missing/`unconditional`
+ * predicate is always claimable; the time-bounded variants are evaluated
+ * against ledger time so an unsatisfiable CB is not reported as income.
+ */
+export interface HorizonPredicate {
+  unconditional?: boolean;
+  and?: HorizonPredicate[];
+  or?: HorizonPredicate[];
+  not?: HorizonPredicate;
+  /** RFC-3339 timestamp: claimable strictly BEFORE this absolute time. */
+  abs_before?: string;
+  /** Same bound as an epoch-seconds string (Horizon includes both). */
+  abs_before_epoch?: string;
+  /** Seconds since the CB was created after which it becomes claimable. */
+  rel_before?: string;
 }
 
 /** A single claimant on a create_claimable_balance operation. */
 export interface HorizonClaimant {
   destination: string;
-  predicate?: unknown;
+  predicate?: HorizonPredicate;
 }
 
 /** A subset of a Horizon operation record relevant to the account method. */
