@@ -15,17 +15,30 @@ import { formatError, validateMetaAddress } from '../utils/network.js';
 import chalk from 'chalk';
 import { randomBytes } from '@noble/hashes/utils';
 
-/** Direct account-creation XLM send, delegated to the SDK's account adapter. */
+function isNativeAsset(asset?: string): boolean {
+  return !asset || asset === 'native' || asset === 'XLM';
+}
+
+/**
+ * Direct account send, delegated to the SDK's account adapter. Native XLM opens
+ * the stealth account with the sent amount (min > 1 XLM enforced by the SDK).
+ * A non-native `--asset` routes to the token path: the send fronts ~1.5 XLM of
+ * reserves (0.5 of which returns when the recipient claims the claimable
+ * balance) and the token itself lands as a claimable balance — passing `asset`
+ * here is what prevents the silent XLM-instead-of-token fund loss.
+ */
 async function sendViaAccount(
   network: 'local' | 'testnet',
   metaAddress: string,
   amount: number,
   from: string,
   relay: string | undefined,
+  asset: string | undefined,
   verbose: boolean,
 ): Promise<void> {
-  if (amount <= 1) {
-    console.error(chalk.red('Error: account sends require an amount strictly greater than 1 XLM'));
+  const native = isNativeAsset(asset);
+  if (native && amount <= 1) {
+    console.error(chalk.red('Error: native account sends require an amount strictly greater than 1 XLM'));
     process.exit(1);
   }
 
@@ -35,10 +48,21 @@ async function sendViaAccount(
     relayer: relay,
   });
 
-  console.log(chalk.cyan('Sending XLM directly to a one-time stealth account...'));
-  const receipt = await client.send(metaAddress, amount, from, { method: 'account' });
+  if (native) {
+    console.log(chalk.cyan('Sending XLM directly to a one-time stealth account...'));
+  } else {
+    console.log(chalk.cyan(`Sending ${asset} directly via a one-time stealth account...`));
+    console.log(chalk.yellow('  Note: you front ~1.5 XLM of reserves to open the stealth account;'));
+    console.log(chalk.yellow('  0.5 XLM returns to you when the recipient claims the balance.'));
+  }
 
-  console.log(chalk.green(`\u2713 Sent ${amount} XLM to stealth account`));
+  const receipt = await client.send(metaAddress, amount, from, {
+    method: 'account',
+    asset,
+  });
+
+  const label = native ? 'XLM' : asset;
+  console.log(chalk.green(`\u2713 Sent ${amount} ${label} to stealth account`));
   console.log(chalk.gray(`  Tx hash:  ${receipt.txHash}`));
   console.log(chalk.gray(`  Stealth:  ${receipt.stealthAddress}`));
   console.log(chalk.gray('  The transaction memo carries the ephemeral key (MemoHash of R).'));
@@ -148,6 +172,7 @@ export const sendCommand = new Command('send')
           parsedAmount,
           options.from,
           options.relay,
+          options.asset,
           options.verbose,
         );
         return;

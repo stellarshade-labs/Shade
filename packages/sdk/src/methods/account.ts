@@ -604,6 +604,7 @@ export class AccountAdapter implements DeliveryAdapter {
         balanceId,
         destination,
         amount: payoutAmount,
+        fundingAccount: opts.fundingAccount,
       },
     );
     return { txHash, amount, method: 'account' };
@@ -655,7 +656,9 @@ export class AccountAdapter implements DeliveryAdapter {
     const relay = opts.relay ?? this.relayer;
     if (relay) {
       const client = this.relayerClient ?? new RelayerClient(relay);
-      const { txHash } = await client.relay(xdr);
+      const { txHash } = await client.relay(xdr, {
+        fundingAccount: opts.fundingAccount,
+      });
       return txHash;
     }
     const res = await this.horizon.submitTransaction(xdr);

@@ -149,6 +149,13 @@ export interface ClaimOpts {
    * Needed when the stealth account stub is missing / cannot pay reserves.
    */
   sponsored?: boolean;
+  /**
+   * App funding account (G-address) to debit the relayer fee against when the
+   * relayer is credit-gated (`RELAYER_REQUIRE_CREDIT=1`). Threaded into the
+   * relay / sponsor-claim submit calls so a gated relayer does not respond 402
+   * `insufficient_credit`. Ignored by a non-gated relayer.
+   */
+  fundingAccount?: string;
 }
 
 /** Receipt returned after a successful claim. */

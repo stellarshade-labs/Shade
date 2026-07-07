@@ -1,5 +1,11 @@
 import { MethodNotAvailableError } from '../errors.js';
-import type { StealthKeys, Payment, ClaimReceipt, ClaimOpts } from '../types.js';
+import type {
+  StealthKeys,
+  Payment,
+  ClaimReceipt,
+  ClaimOpts,
+  SendReceipt,
+} from '../types.js';
 import type { DeliveryAdapter, AdapterSendParams } from './types.js';
 
 const SPP_MESSAGE =
@@ -18,8 +24,12 @@ const SPP_MESSAGE =
 export class SppAdapter implements DeliveryAdapter {
   readonly method = 'spp' as const;
 
-  /** @throws {MethodNotAvailableError} Always — SPP is not yet implemented. */
-  async send(_params: AdapterSendParams): Promise<never> {
+  /**
+   * @throws {MethodNotAvailableError} Always — SPP is not yet implemented. The
+   * declared return type is {@link SendReceipt} (never actually returned) so the
+   * adapter's surface matches the {@link DeliveryAdapter} interface exactly.
+   */
+  async send(_params: AdapterSendParams): Promise<SendReceipt> {
     throw new MethodNotAvailableError(SPP_MESSAGE);
   }
 

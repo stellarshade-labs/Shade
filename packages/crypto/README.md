@@ -2,6 +2,18 @@
 
 Pure TypeScript implementation of stealth addresses for Stellar using DKSAP (Dual-Key Stealth Address Protocol) on ed25519.
 
+This is the SDK core: the cryptographic primitives that other applications
+`npm install` and build on. It has **zero dependency on `@stellar/stellar-sdk`** —
+all elliptic-curve math runs through [`@noble/curves`](https://github.com/paulmillr/noble-curves)
+and [`@noble/hashes`](https://github.com/paulmillr/noble-hashes), which are the
+same audited primitives used across the Stellar ecosystem. Correctness, a stable
+public API, and a clearly-scoped security model are the priorities here.
+
+> **Security status:** the protocol and this implementation have **not yet
+> undergone external cryptographic audit**. Treat the library as production-track
+> but pre-audit — see [Roadmap & Audit Status](#roadmap--audit-status) before
+> handling mainnet value.
+
 ## Installation
 
 ```bash
@@ -325,7 +337,10 @@ const keys = deriveKeysFromSignature(signature);
   non-deterministic signers.
 - **Wallet compromise EQUALS stealth key compromise.** Anyone who can produce
   this signature can re-derive (and therefore control) the stealth keys. This is
-  the accepted trade-off for keyless, recoverable-from-wallet stealth keys.
+  a deliberate design trade-off: it buys keyless, recoverable-from-wallet stealth
+  keys at the cost of binding stealth-key security to wallet security. Apps that
+  need an independent trust boundary should use `generateMetaAddress()` or the
+  BIP-39 derivation in `hd.ts` and back up the resulting keys separately.
 - **Never sign the derivation message for any other purpose.** Signing it in an
   untrusted context hands over the ability to derive the keys. The `WARNING`
   line in the message makes this explicit to the signer.
@@ -444,6 +459,47 @@ interface StealthAddress {
 - `InvalidScalar` - Scalar not in valid range [0, L-1]
 - `InvalidMetaAddress` - Invalid meta-address format or checksum
 - `PointAtInfinity` - Invalid EC point operation result
+
+## API Stability & Versioning
+
+This package follows [Semantic Versioning](https://semver.org/). The public
+surface is the set of functions and types exported from the package entrypoint
+and documented in the [API Reference](#api-reference) above.
+
+- **Wire and derivation formats are versioned.** The meta-address encoding
+  (`st:stellar:` prefix) and the wallet key-derivation scheme carry explicit
+  version tags (e.g. `KEY_DERIVATION_CONTEXT_V1` / `stellar-stealth-keys-v1`).
+  Any change that would alter derived keys or on-the-wire encodings ships under a
+  new version tag rather than silently mutating the existing one, so previously
+  derived keys and published announcements remain valid.
+- **Breaking changes only on major versions.** Signature or behavioural changes
+  to an exported function are reserved for major releases and called out in the
+  changelog.
+- **Pre-1.0 caveat.** While the package is below `1.0.0`, minor versions may
+  still refine the API. The DKSAP math and the v1 derivation/encoding formats
+  are considered stable; ancillary helpers may evolve.
+
+## Roadmap & Audit Status
+
+The items below are explicit, tracked limitations — not accepted shortcuts. They
+represent the gap between "production-track" and "audited for mainnet value."
+
+- **External cryptographic audit (pending).** The DKSAP construction here follows
+  the well-studied dual-key stealth-address design, but this specific
+  implementation has not been independently audited. An external review of the
+  scalar handling, ECDH, and key-derivation paths is required before we recommend
+  mainnet use. Until then, prefer local/testnet and treat mainnet as out of scope.
+- **Constant-time guarantees.** Secret-dependent operations rely on the
+  constant-time properties of `@noble/curves`. Formalising and testing the
+  end-to-end timing behaviour of the SDK's own code paths is a roadmap item.
+- **Memory hygiene.** Callers are currently responsible for zeroing recovered
+  private keys after use. First-class, opt-in secret-zeroization helpers are
+  planned.
+- **Stellar Private Payments (`spp`).** The ZK-shielded delivery method is a
+  reserved, forward-compatible slot and is not yet implemented.
+
+Where this document notes a limitation, it is a roadmap commitment to close it —
+not a permission to ship it unfixed.
 
 ## Links
 

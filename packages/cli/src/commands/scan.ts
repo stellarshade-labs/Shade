@@ -9,26 +9,36 @@ import {
   loadHorizonCursor,
   saveHorizonCursor,
   clearHorizonCursor,
+  saveHorizonPayments,
+  clearHorizonPayments,
+  type PersistedPayment,
 } from '../utils/config.js';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 
 interface AccountScanRow {
   stealthAddress: string;
+  token: string;
   amount: number;
   txHash?: string;
 }
 
 /**
  * Scan direct account-method sends via Horizon, resuming from (and persisting)
- * the saved cursor. Returns the matching rows for display.
+ * the saved cursor. Discovered payments are ALSO persisted to disk next to the
+ * cursor so `claim` can later resolve them by stealth address — otherwise a
+ * cursor-advanced scan would discard them and the payment would only be
+ * recoverable via --full-rescan. Returns the matching rows for display.
  */
 async function scanAccountMethod(
   network: 'local' | 'testnet',
   keys: StealthKeys,
   fullRescan: boolean,
 ): Promise<AccountScanRow[]> {
-  if (fullRescan) clearHorizonCursor(network);
+  if (fullRescan) {
+    clearHorizonCursor(network);
+    clearHorizonPayments(network);
+  }
   const cursor = loadHorizonCursor(network);
 
   const client = new StealthClient({ network, methods: ['account'] });
@@ -41,8 +51,22 @@ async function scanAccountMethod(
     saveHorizonCursor(network, result.cursor.account);
   }
 
+  const persisted: PersistedPayment[] = result.payments.map((p) => ({
+    stealthAddress: p.stealthAddress,
+    ephemeralPubKey: p.ephemeralPubKey,
+    token: p.token,
+    asset: p.asset,
+    claimableBalanceId: p.claimableBalanceId,
+    amount: p.amount,
+    txHash: p.txHash,
+  }));
+  if (persisted.length > 0) {
+    saveHorizonPayments(network, persisted);
+  }
+
   return result.payments.map((p) => ({
     stealthAddress: p.stealthAddress,
+    token: p.asset ?? p.token,
     amount: p.amount,
     txHash: p.txHash,
   }));
@@ -236,7 +260,7 @@ export const scanCommand = new Command('scan')
       try {
         const accountRows = await scanAccountMethod(network, keys, !!options.fullRescan);
         for (const row of accountRows) {
-          table.push(['account', row.stealthAddress, 'native', row.amount.toFixed(7)]);
+          table.push(['account', row.stealthAddress, row.token, row.amount.toFixed(7)]);
           found++;
         }
       } catch (e: any) {

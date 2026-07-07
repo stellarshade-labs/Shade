@@ -157,6 +157,7 @@ SEND_OUTPUT=$(npx tsx src/index.ts send \
   "$BOB_META_ADDR" \
   100 \
   --from $ALICE_SECRET \
+  --method pool \
   --network local 2>&1)
 
 # Extract stealth address from output
@@ -251,6 +252,7 @@ USDC_SEND=$(npx tsx src/index.ts send \
   200 \
   --from $ALICE_SECRET \
   --asset "USDC:$ISSUER_PUBLIC" \
+  --method pool \
   --network local 2>&1)
 
 USDC_STEALTH=$(echo "$USDC_SEND" | grep "Stealth:" | sed 's/.*Stealth:[ ]*//')
@@ -288,6 +290,126 @@ STEALTH_KEYSTORE=$STEALTH_KEYSTORE npx tsx src/index.ts withdraw \
 cd ../..
 
 echo -e "${GREEN}USDC withdrawal via relayer complete!${NC}"
+echo
+
+# =========================================================================
+#  Direct delivery methods (account path) — lower privacy, no pool contract
+# =========================================================================
+
+# Step 14a: Direct XLM send to a one-time stealth account, then claim+merge
+echo -e "${CYAN}${BOLD}Step 14a: Direct XLM send -> scan -> claim (account method)...${NC}"
+echo "  A fresh recipient receives 5 XLM directly to a one-time stealth account."
+
+# Fresh recipient keystore so the account-method scan cache is clean.
+export DIRECT_KEYSTORE=/tmp/direct-stealth-keys-$$.json
+cd packages/cli
+DIRECT_KEYGEN=$(npx tsx src/index.ts keygen --keystore $DIRECT_KEYSTORE 2>&1)
+DIRECT_META=$(echo "$DIRECT_KEYGEN" | grep "st:stellar:" | head -1 | tr -d '[:space:]')
+
+echo "  Alice sends 5 XLM via --method account..."
+DIRECT_SEND=$(npx tsx src/index.ts send \
+  "$DIRECT_META" \
+  5 \
+  --from $ALICE_SECRET \
+  --method account \
+  --network local 2>&1)
+DIRECT_STEALTH=$(echo "$DIRECT_SEND" | grep "Stealth:" | sed 's/.*Stealth:[ ]*//')
+
+echo "  Recipient scans Horizon and persists the discovered payment..."
+STEALTH_KEYSTORE=$DIRECT_KEYSTORE npx tsx src/index.ts scan --network local 2>&1 | tail -3
+
+echo "  Recipient claims (merge + relayer fee-bump) to Bob's wallet..."
+STEALTH_KEYSTORE=$DIRECT_KEYSTORE npx tsx src/index.ts claim \
+  "$DIRECT_STEALTH" \
+  "$BOB_PUBLIC" \
+  --network local \
+  --merge \
+  --relay http://localhost:3000 2>&1 || true
+cd ../..
+
+echo -e "${GREEN}Direct XLM claim complete!${NC}"
+echo
+
+# Step 14b: Direct token send (claimable balance) -> scan -> claim
+echo -e "${CYAN}${BOLD}Step 14b: Direct USDC send -> scan -> claim (account method)...${NC}"
+echo "  The token lands as a claimable balance; claim adds the trustline + claims it."
+
+# Bob's wallet already trusts USDC (added in Step 11). Send 25 USDC directly.
+cd packages/cli
+echo "  Alice sends 25 USDC via --method account --asset USDC:ISSUER..."
+TOKEN_SEND=$(npx tsx src/index.ts send \
+  "$DIRECT_META" \
+  25 \
+  --from $ALICE_SECRET \
+  --method account \
+  --asset "USDC:$ISSUER_PUBLIC" \
+  --network local 2>&1)
+TOKEN_STEALTH=$(echo "$TOKEN_SEND" | grep "Stealth:" | sed 's/.*Stealth:[ ]*//')
+
+echo "  Recipient scans and persists the discovered token payment..."
+STEALTH_KEYSTORE=$DIRECT_KEYSTORE npx tsx src/index.ts scan --network local 2>&1 | tail -3
+
+echo "  Recipient claims the USDC claimable balance to Bob's wallet..."
+STEALTH_KEYSTORE=$DIRECT_KEYSTORE npx tsx src/index.ts claim \
+  "$TOKEN_STEALTH" \
+  "$BOB_PUBLIC" \
+  --network local \
+  --merge \
+  --relay http://localhost:3000 2>&1 || true
+cd ../..
+
+echo -e "${GREEN}Direct USDC claim complete!${NC}"
+echo
+
+# Step 14c: Reserve relayer — app pre-funds credit, then a sponsor debits it
+echo -e "${CYAN}${BOLD}Step 14c: Reserve relayer credit flow...${NC}"
+echo "  An app account pre-pays the relayer, claims credit, then spends it on a sponsor."
+
+# Start a SECOND relayer instance with credit gating enabled on port 3001.
+CREDIT_RELAYER_URL="http://localhost:3001"
+cd packages/relayer
+RELAYER_SECRET=$RELAYER_SECRET PORT=3001 RELAYER_REQUIRE_CREDIT=1 \
+  npx tsx src/index.ts >/dev/null 2>&1 &
+CREDIT_RELAYER_PID=$!
+cd ../..
+sleep 3
+
+RELAYER_PUBLIC=$(stellar keys address relayer 2>/dev/null)
+
+# App account funds itself via friendbot, then pays the relayer 5 XLM.
+stellar keys generate --network local appfunder --fund 2>/dev/null || true
+APPFUNDER_PUBLIC=$(stellar keys address appfunder 2>/dev/null)
+
+echo "  Credit BEFORE claim:"
+curl -s "$CREDIT_RELAYER_URL/credit/$APPFUNDER_PUBLIC" || echo "    (no credit yet)"
+echo
+
+echo "  App pays 5 XLM to the relayer..."
+PAY_TX=$(stellar tx new payment \
+  --source-account appfunder \
+  --destination "$RELAYER_PUBLIC" \
+  --amount 50000000 \
+  --network local 2>&1 | tail -1)
+
+echo "  App claims the deposit as relayer credit (POST /credit/claim)..."
+curl -s -X POST "$CREDIT_RELAYER_URL/credit/claim" \
+  -H 'Content-Type: application/json' \
+  -d "{\"fundingAccount\":\"$APPFUNDER_PUBLIC\",\"txHash\":\"$PAY_TX\"}" || true
+echo
+
+echo "  A sponsored stealth-account create debits the app's credit ledger..."
+NEW_STEALTH=$(stellar keys generate --network local sponsoree 2>/dev/null; stellar keys address sponsoree 2>/dev/null)
+curl -s -X POST "$CREDIT_RELAYER_URL/sponsor" \
+  -H 'Content-Type: application/json' \
+  -d "{\"address\":\"$NEW_STEALTH\",\"startingBalance\":\"1\",\"fundingAccount\":\"$APPFUNDER_PUBLIC\"}" || true
+echo
+
+echo "  Credit AFTER sponsor (debited by starting balance + fee):"
+curl -s "$CREDIT_RELAYER_URL/credit/$APPFUNDER_PUBLIC" || true
+echo
+
+kill $CREDIT_RELAYER_PID 2>/dev/null || true
+echo -e "${GREEN}Reserve relayer credit flow complete!${NC}"
 echo
 
 # Step 14: Final verification

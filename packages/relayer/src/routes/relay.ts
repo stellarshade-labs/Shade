@@ -111,18 +111,22 @@ export async function handleRelay(req: Request, res: Response) {
       success: true
     });
 
-  } catch (error: any) {
-    console.error('[Relay] Error:', error.message);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('[Relay] Error:', message);
 
-    if (error.response?.data?.extras?.result_codes) {
+    const codes = (
+      error as { response?: { data?: { extras?: { result_codes?: unknown } } } }
+    )?.response?.data?.extras?.result_codes;
+    if (codes) {
       return res.status(400).json({
         error: 'Transaction failed',
-        codes: error.response.data.extras.result_codes
+        codes,
       });
     }
 
     return res.status(500).json({
-      error: error.message || 'Internal server error'
+      error: message || 'Internal server error',
     });
   }
 }

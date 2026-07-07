@@ -190,10 +190,11 @@ export const balanceCommand = new Command('balance')
         const accountPayments = await client.balance(keys);
         for (const p of accountPayments) {
           if (p.amount <= 0) continue;
+          const label = p.token || 'native';
           const stroops = BigInt(Math.round(p.amount * 1e7));
-          const prev = tokenBalances.get('native') || 0n;
-          tokenBalances.set('native', prev + stroops);
-          table.push(['account', p.stealthAddress, 'native', p.amount.toFixed(7)]);
+          const prev = tokenBalances.get(label) || 0n;
+          tokenBalances.set(label, prev + stroops);
+          table.push(['account', p.stealthAddress, label, p.amount.toFixed(7)]);
         }
       } catch (e: any) {
         console.error(chalk.yellow(`Warning: account-method balance scan failed: ${e.message}`));

@@ -19,6 +19,23 @@ function parseAsset(asset: string): Asset {
   return new Asset(code, issuer);
 }
 
+/** True when an unknown error carries an HTTP 404 (Horizon "not found"). */
+function isNotFound(err: unknown): boolean {
+  const e = err as { response?: { status?: number }; status?: number };
+  return e?.response?.status === 404 || e?.status === 404;
+}
+
+/** Extract Horizon `result_codes` from an unknown error, if present. */
+function resultCodes(err: unknown): unknown {
+  return (err as { response?: { data?: { extras?: { result_codes?: unknown } } } })
+    ?.response?.data?.extras?.result_codes;
+}
+
+/** Best-effort message from an unknown error. */
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /** Whether a positive, finite 7-dp amount string. */
 function isValidAmount(amount: unknown): amount is string {
   if (typeof amount !== 'string') return false;
@@ -38,17 +55,18 @@ async function destinationTrustError(
   asset: Asset,
 ): Promise<string | null> {
   if (asset.isNative()) return null;
-  let dest: any;
+  let dest: unknown;
   try {
     dest = await server.loadAccount(destination);
-  } catch (err: any) {
-    if (err?.response?.status === 404 || err?.status === 404) {
+  } catch (err: unknown) {
+    if (isNotFound(err)) {
       return `Destination ${destination} not found — fund it and add a ${asset.getCode()} trustline before claiming.`;
     }
     throw err;
   }
   const balances: Array<{ asset_code?: string; asset_issuer?: string }> =
-    dest?.balances ?? [];
+    (dest as { balances?: Array<{ asset_code?: string; asset_issuer?: string }> })
+      ?.balances ?? [];
   const trusts = balances.some(
     (b) => b.asset_code === asset.getCode() && b.asset_issuer === asset.getIssuer(),
   );
@@ -167,17 +185,17 @@ export async function handleSponsorClaimPrepare(req: Request, res: Response) {
     if (trustErr) {
       return res.status(400).json({ error: trustErr, code: 'destination_no_trust' });
     }
-  } catch (err: any) {
-    return res.status(500).json({ error: err?.message ?? 'trust check failed', code: 'server_error' });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: errMessage(err) || 'trust check failed', code: 'server_error' });
   }
 
   let accountExists = false;
   try {
     await ctx.server.loadAccount(stealthAddress);
     accountExists = true;
-  } catch (err: any) {
-    if (err?.response?.status !== 404 && err?.status !== 404) {
-      return res.status(500).json({ error: err?.message ?? 'load failed', code: 'server_error' });
+  } catch (err: unknown) {
+    if (!isNotFound(err)) {
+      return res.status(500).json({ error: errMessage(err) || 'load failed', code: 'server_error' });
     }
   }
 
@@ -211,11 +229,18 @@ export async function handleSponsorClaimPrepare(req: Request, res: Response) {
       xdr: tx.toEnvelope().toXDR('base64'),
       expiresAt: new Date(Date.now() + PREPARE_TTL_SECONDS * 1000).toISOString(),
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     return res
       .status(500)
-      .json({ error: err?.message ?? 'prepare failed', code: 'server_error' });
+      .json({ error: errMessage(err) || 'prepare failed', code: 'server_error' });
   }
+}
+
+/** Stringify an Asset-like value (line/asset) for comparison. */
+function assetStr(value: unknown): string {
+  return value && typeof (value as { toString?: unknown }).toString === 'function'
+    ? (value as { toString(): string }).toString()
+    : String(value);
 }
 
 /**
@@ -224,16 +249,19 @@ export async function handleSponsorClaimPrepare(req: Request, res: Response) {
  * (createAccount destination + startingBalance, changeTrust asset,
  * beginSponsoring sponsoredId, claimClaimableBalance balanceId). Returns true
  * only when the submitted ops exactly match the ops the relayer would build.
+ *
+ * Operations are typed as `readonly Operation[]`; each branch narrows to the
+ * specific `Operation.<Type>` shape (the SDK union is discriminated on `type`).
  */
 function opsMatch(
-  submitted: readonly any[],
-  expected: readonly any[],
+  submitted: readonly Operation[],
+  expected: readonly Operation[],
   relayer: string,
 ): boolean {
   if (submitted.length !== expected.length) return false;
   for (let i = 0; i < expected.length; i++) {
-    const a = submitted[i];
-    const b = expected[i];
+    const a = submitted[i]!;
+    const b = expected[i]!;
     if (a.type !== b.type) return false;
     // Per-op source: undefined on the built op means "inherit tx source"
     // (the relayer). Normalize both sides before comparing.
@@ -242,34 +270,37 @@ function opsMatch(
     if (aSource !== bSource) return false;
 
     switch (b.type) {
-      case 'beginSponsoringFutureReserves':
-        if (a.sponsoredId !== b.sponsoredId) return false;
-        break;
-      case 'createAccount':
-        if (a.destination !== b.destination) return false;
-        if (a.startingBalance !== b.startingBalance) return false;
-        break;
-      case 'changeTrust': {
-        const aa = a.line ?? a.asset;
-        const bb = b.line ?? b.asset;
-        const aStr = aa && typeof aa.toString === 'function' ? aa.toString() : String(aa);
-        const bStr = bb && typeof bb.toString === 'function' ? bb.toString() : String(bb);
-        if (aStr !== bStr) return false;
+      case 'beginSponsoringFutureReserves': {
+        const av = a as Operation.BeginSponsoringFutureReserves;
+        const bv = b as Operation.BeginSponsoringFutureReserves;
+        if (av.sponsoredId !== bv.sponsoredId) return false;
         break;
       }
-      case 'claimClaimableBalance':
-        if (a.balanceId !== b.balanceId) return false;
+      case 'createAccount': {
+        const av = a as Operation.CreateAccount;
+        const bv = b as Operation.CreateAccount;
+        if (av.destination !== bv.destination) return false;
+        if (av.startingBalance !== bv.startingBalance) return false;
         break;
+      }
+      case 'changeTrust': {
+        const av = a as Operation.ChangeTrust;
+        const bv = b as Operation.ChangeTrust;
+        if (assetStr(av.line) !== assetStr(bv.line)) return false;
+        break;
+      }
+      case 'claimClaimableBalance': {
+        const av = a as Operation.ClaimClaimableBalance;
+        const bv = b as Operation.ClaimClaimableBalance;
+        if (av.balanceId !== bv.balanceId) return false;
+        break;
+      }
       case 'payment': {
-        if (a.destination !== b.destination) return false;
-        if (a.amount !== b.amount) return false;
-        const aAsset = a.asset && typeof a.asset.toString === 'function'
-          ? a.asset.toString()
-          : String(a.asset);
-        const bAsset = b.asset && typeof b.asset.toString === 'function'
-          ? b.asset.toString()
-          : String(b.asset);
-        if (aAsset !== bAsset) return false;
+        const av = a as Operation.Payment;
+        const bv = b as Operation.Payment;
+        if (av.destination !== bv.destination) return false;
+        if (av.amount !== bv.amount) return false;
+        if (assetStr(av.asset) !== assetStr(bv.asset)) return false;
         break;
       }
       case 'endSponsoringFutureReserves':
@@ -348,11 +379,11 @@ export async function handleSponsorClaimSubmit(req: Request, res: Response) {
   try {
     await ctx.server.loadAccount(stealthAddress);
     accountExists = true;
-  } catch (err: any) {
-    if (err?.response?.status !== 404 && err?.status !== 404) {
+  } catch (err: unknown) {
+    if (!isNotFound(err)) {
       return res
         .status(500)
-        .json({ error: err?.message ?? 'load failed', code: 'server_error' });
+        .json({ error: errMessage(err) || 'load failed', code: 'server_error' });
     }
   }
 
@@ -429,15 +460,16 @@ export async function handleSponsorClaimSubmit(req: Request, res: Response) {
     };
 
     return res.json({ txHash: response.hash });
-  } catch (err: any) {
+  } catch (err: unknown) {
     if (reservation) await ctx.ledger.refund(reservation);
-    if (err?.response?.data?.extras?.result_codes) {
+    const codes = resultCodes(err);
+    if (codes) {
       return res.status(400).json({
         error: 'Transaction failed',
         code: 'tx_failed',
-        codes: err.response.data.extras.result_codes,
+        codes,
       });
     }
-    return res.status(500).json({ error: err?.message ?? 'submit failed', code: 'server_error' });
+    return res.status(500).json({ error: errMessage(err) || 'submit failed', code: 'server_error' });
   }
 }
