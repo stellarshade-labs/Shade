@@ -1,8 +1,8 @@
 {
-  "name": "@stealth/relayer",
+  "name": "@shade/relayer",
   "version": "0.1.0",
   "type": "module",
-  "description": "Relayer service for Stellar stealth addresses",
+  "description": "Shade relayer — fee-bumps stealth-withdrawal transactions on Stellar",
   "scripts": {
     "build": "tsc",
     "test": "vitest run",

@@ -25,20 +25,20 @@ echo ""
 
 # Test CLI error messages
 echo "Testing CLI error handling..."
-npx stealth send "invalid:address" 1 --from test 2>&1 | grep -q "Invalid meta-address format" && echo "✓ Invalid meta-address error" || echo "✗ Invalid meta-address error"
+npx shade send "invalid:address" 1 --from test 2>&1 | grep -q "Invalid meta-address format" && echo "✓ Invalid meta-address error" || echo "✗ Invalid meta-address error"
 
 # Test keystore error
-npx stealth scan 2>&1 | grep -q "Run 'stealth keygen' first" && echo "✓ Missing keystore error" || echo "✗ Missing keystore error"
+npx shade scan 2>&1 | grep -q "Run 'shade keygen' first" && echo "✓ Missing keystore error" || echo "✗ Missing keystore error"
 
 # Generate keys
 echo ""
 echo "Generating test keys..."
-npx stealth keygen --force 2>&1 | grep -q "Generated" && echo "✓ Key generation" || echo "✗ Key generation"
+npx shade keygen --force 2>&1 | grep -q "Generated" && echo "✓ Key generation" || echo "✗ Key generation"
 
 # Test verbose mode
 echo ""
 echo "Testing verbose mode..."
-META=$(npx stealth keygen --show 2>/dev/null | head -1)
+META=$(npx shade keygen --show 2>/dev/null | head -1)
 if [ -n "$META" ]; then
     echo "✓ Got meta-address: ${META:0:20}..."
 else

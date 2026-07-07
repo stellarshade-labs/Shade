@@ -9,7 +9,7 @@ export type DeliveryMethod = 'pool' | 'account' | 'spp';
 
 /** Stealth key material. All keys are hex-encoded strings for easy serialization. */
 export interface StealthKeys {
-  /** Meta-address string (st:stellar:...) — share this publicly */
+  /** Meta-address string (shade:stellar:...) — share this publicly */
   metaAddress: string;
   /** Spend public key (hex) */
   spendPubKey: string;

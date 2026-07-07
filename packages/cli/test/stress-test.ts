@@ -90,7 +90,7 @@ class StressTest {
     const start = Date.now();
 
     try {
-      execSync('npx stealth keygen --force', { stdio: 'ignore' });
+      execSync('npx shade keygen --force', { stdio: 'ignore' });
       const duration = Date.now() - start;
       this.results.push({ test, passed: true, duration });
       console.log(chalk.green(`✓ ${test} (${duration}ms)`));
@@ -109,14 +109,14 @@ class StressTest {
       const aliceSecret = process.env.TEST_ALICE_SECRET!;
 
       for (let i = 0; i < 10; i++) {
-        const metaAddress = execSync('npx stealth keygen --show', { encoding: 'utf8' }).trim();
+        const metaAddress = execSync('npx shade keygen --show', { encoding: 'utf8' }).trim();
 
         execSync(
-          `npx stealth send "${metaAddress}" 1 --from ${aliceSecret} --relay ${this.relayerUrl}`,
+          `npx shade send "${metaAddress}" 1 --from ${aliceSecret} --relay ${this.relayerUrl}`,
           { stdio: 'ignore' }
         );
 
-        const scanOutput = execSync('npx stealth scan', { encoding: 'utf8' });
+        const scanOutput = execSync('npx shade scan', { encoding: 'utf8' });
         if (!scanOutput.includes('stealth address')) {
           throw new Error('Scan failed to find stealth address');
         }
@@ -124,7 +124,7 @@ class StressTest {
         const stealthMatch = scanOutput.match(/G[A-Z0-9]+/);
         if (stealthMatch) {
           execSync(
-            `npx stealth withdraw ${stealthMatch[0]} --to ${aliceSecret.substring(0, 56)}`,
+            `npx shade withdraw ${stealthMatch[0]} --to ${aliceSecret.substring(0, 56)}`,
             { stdio: 'ignore' }
           );
         }
@@ -180,7 +180,7 @@ class StressTest {
 
     try {
       try {
-        execSync('npx stealth send invalid:address 1 --from test', { stdio: 'ignore' });
+        execSync('npx shade send invalid:address 1 --from test', { stdio: 'ignore' });
         throw new Error('Should have failed on invalid meta-address');
       } catch (error: any) {
         if (!error.message.includes('Invalid meta-address format')) {
@@ -189,7 +189,7 @@ class StressTest {
       }
 
       try {
-        execSync('npx stealth send valid:valid -5 --from test', { stdio: 'ignore' });
+        execSync('npx shade send valid:valid -5 --from test', { stdio: 'ignore' });
         throw new Error('Should have failed on negative amount');
       } catch (error: any) {
         if (!error.message.includes('Invalid amount')) {
@@ -249,13 +249,13 @@ class StressTest {
 
     try {
       const aliceSecret = process.env.TEST_ALICE_SECRET!;
-      const metaAddress = execSync('npx stealth keygen --show', { encoding: 'utf8' }).trim();
+      const metaAddress = execSync('npx shade keygen --show', { encoding: 'utf8' }).trim();
 
       const promises = [];
       for (let i = 0; i < 5; i++) {
         promises.push(new Promise((resolve, reject) => {
           execSync(
-            `npx stealth send "${metaAddress}" 0.5 --from ${aliceSecret} --relay ${this.relayerUrl}`,
+            `npx shade send "${metaAddress}" 0.5 --from ${aliceSecret} --relay ${this.relayerUrl}`,
             { stdio: 'ignore' },
             (error: any) => {
               if (error) reject(error);
@@ -283,10 +283,10 @@ class StressTest {
 
     try {
       const aliceSecret = process.env.TEST_ALICE_SECRET!;
-      const metaAddress = execSync('npx stealth keygen --show', { encoding: 'utf8' }).trim();
+      const metaAddress = execSync('npx shade keygen --show', { encoding: 'utf8' }).trim();
 
       const output = execSync(
-        `npx stealth send "${metaAddress}" 1 --from ${aliceSecret} --relay ${this.relayerUrl} --verbose`,
+        `npx shade send "${metaAddress}" 1 --from ${aliceSecret} --relay ${this.relayerUrl} --verbose`,
         { encoding: 'utf8' }
       );
 

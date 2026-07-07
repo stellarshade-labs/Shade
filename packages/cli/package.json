@@ -1,10 +1,10 @@
 {
-  "name": "@stealth/cli",
+  "name": "@shade/cli",
   "version": "0.1.0",
   "type": "module",
-  "description": "CLI for Stellar stealth addresses",
+  "description": "Shade CLI — private payments on Stellar via stealth addresses (DKSAP)",
   "bin": {
-    "stealth": "./dist/index.js"
+    "shade": "./dist/index.js"
   },
   "scripts": {
     "build": "tsc",
@@ -15,8 +15,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@stealth/crypto": "*",
-    "@stealth/sdk": "*",
+    "@shade/crypto": "*",
+    "@shade/sdk": "*",
     "@stellar/stellar-sdk": "^15.1.0",
     "@noble/hashes": "^1.6.1",
     "axios": "^1.7.0",

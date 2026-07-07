@@ -1,9 +1,9 @@
 {
-  "name": "stellar-stealth-monorepo",
+  "name": "shade-monorepo",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Stealth address SDK for Stellar — DKSAP on ed25519",
+  "description": "Shade — private payments on Stellar via stealth addresses (DKSAP)",
   "scripts": {
     "test": "npm run test --workspaces --if-present && cd contracts && cargo test --quiet",
     "build": "npm run build --workspaces --if-present",

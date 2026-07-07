@@ -1,12 +1,12 @@
 import { Command } from 'commander';
-import { scanAnnouncements } from '@stealth/crypto';
+import { scanAnnouncements } from '@shade/crypto';
 import {
   StealthClient,
   formatStroops,
   numberToStroops,
   labelForToken,
   type StealthKeys,
-} from '@stealth/sdk';
+} from '@shade/sdk';
 import { StrKey, Networks, Contract, nativeToScVal } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { loadKeystoreInteractive, resolveKeystorePath } from '../utils/keystore.js';
@@ -106,7 +106,7 @@ async function getContractBalance(
 export const balanceCommand = new Command('balance')
   .description('Show total balance across all stealth payments')
   .option('--network <network>', 'Network to use', 'local')
-  .option('--keystore <path>', 'Keystore file path (defaults to $STEALTH_KEYSTORE or ~/.stealth-keys.json)')
+  .option('--keystore <path>', 'Keystore file path (defaults to $SHADE_KEYSTORE or ~/.shade-keys.json)')
   .option('--password <password>', 'Keystore password (prompts on stderr if omitted for an encrypted keystore)')
   .action(async (options) => {
     try {
@@ -114,7 +114,7 @@ export const balanceCommand = new Command('balance')
       const keystorePath = resolveKeystorePath(options.keystore);
       const keystore = await loadKeystoreInteractive(keystorePath, options.password).catch(() => {
         console.error(chalk.red('Error: Missing keystore'));
-        console.error(chalk.gray("  Run 'stealth keygen' first to create keys"));
+        console.error(chalk.gray("  Run 'shade keygen' first to create keys"));
         process.exit(1);
       });
 

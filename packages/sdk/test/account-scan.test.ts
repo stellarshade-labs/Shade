@@ -4,7 +4,7 @@ import {
   generateMetaAddress,
   encodeMetaAddress,
   deriveStealthAddressWithSecret,
-} from '@stealth/crypto';
+} from '@shade/crypto';
 import { Networks } from '@stellar/stellar-sdk';
 import { AccountAdapter } from '../src/methods/account.js';
 import { HorizonClient, type FetchLike } from '../src/horizon.js';

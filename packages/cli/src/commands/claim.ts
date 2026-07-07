@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { StealthClient, type StealthKeys, type Payment } from '@stealth/sdk';
+import { StealthClient, type StealthKeys, type Payment } from '@shade/sdk';
 import { StrKey } from '@stellar/stellar-sdk';
 import {
   loadKeystoreInteractive,
@@ -51,14 +51,14 @@ export const claimCommand = new Command('claim')
   .argument('<stealth-address>', 'Stealth address holding the funds')
   .argument('<destination>', 'Destination Stellar address (G...)')
   .option('--network <network>', 'Network to use', 'local')
-  .option('--keystore <path>', 'Keystore file path (defaults to $STEALTH_KEYSTORE or ~/.stealth-keys.json)')
+  .option('--keystore <path>', 'Keystore file path (defaults to $SHADE_KEYSTORE or ~/.shade-keys.json)')
   .option('--password <password>', 'Keystore password (prompts on stderr if omitted for an encrypted keystore)')
   .option('--merge', 'Sweep the whole account via AccountMerge (account method)')
   .option('--no-merge', 'Leave the stealth account open (partial payout)')
   .option('--relay <url>', 'Relayer URL for fee-bumped submission')
   .option('--sponsored', 'Use the relayer sponsor-claim pair (token claimable-balance claims)')
   .option('--funding-account <address>', 'App account to debit a credit-gated relayer fee against')
-  .option('--fee-payer <secret>', 'Secret key paying the pool-withdraw Soroban fee (or set STEALTH_FEE_PAYER / prompt; flags leak into shell history)')
+  .option('--fee-payer <secret>', 'Secret key paying the pool-withdraw Soroban fee (or set SHADE_FEE_PAYER / prompt; flags leak into shell history)')
   .option('--asset <asset>', 'Asset to claim (pool method): native or CODE:ISSUER')
   .option('--amount <amount>', 'Partial claim amount (account method, with --no-merge)')
   .option('--verbose', 'Show detailed output')
@@ -84,7 +84,7 @@ export const claimCommand = new Command('claim')
       if (!cached) {
         console.log(
           chalk.gray(
-            `No scanned payment for ${stealthAddress} — run 'stealth scan' first ` +
+            `No scanned payment for ${stealthAddress} — run 'shade scan' first ` +
               '(or it may be a pool deposit). Delegating to the pool withdraw path...',
           ),
         );
@@ -92,7 +92,7 @@ export const claimCommand = new Command('claim')
         // delegated withdraw does not re-prompt, and so env/prompt work too.
         const feePayer = await resolveSecret(
           options.feePayer,
-          'STEALTH_FEE_PAYER',
+          'SHADE_FEE_PAYER',
           chalk.white('Enter fee-payer secret (S...): '),
         );
         await claimViaPool(stealthAddress, destination, {
@@ -109,7 +109,7 @@ export const claimCommand = new Command('claim')
 
       const keystore = await loadKeystoreInteractive(keystorePath, options.password).catch(() => {
         console.error(chalk.red('Error: Missing keystore'));
-        console.error(chalk.gray("  Run 'stealth keygen' first to create keys"));
+        console.error(chalk.gray("  Run 'shade keygen' first to create keys"));
         process.exit(1);
       });
 

@@ -7,7 +7,7 @@ import {
   mnemonicToStealthKeys,
   buildKeyDerivationMessage,
   deriveKeysFromSignature,
-} from '@stealth/crypto';
+} from '@shade/crypto';
 import { Keypair } from '@stellar/stellar-sdk';
 import { sha256 } from '@noble/hashes/sha256';
 import { saveKeystore, resolveKeystorePath, promptPassword } from '../utils/keystore.js';
@@ -53,7 +53,7 @@ function promptLine(question: string): Promise<string> {
 
 export const keygenCommand = new Command('keygen')
   .description('Generate a new stealth meta-address')
-  .option('--keystore <path>', 'Keystore file path (defaults to $STEALTH_KEYSTORE or ~/.stealth-keys.json)')
+  .option('--keystore <path>', 'Keystore file path (defaults to $SHADE_KEYSTORE or ~/.shade-keys.json)')
   .option('--password [password]', 'Encrypt the keystore with AES-256-GCM (prompts on stderr if the flag is given without a value)')
   .option('--mnemonic', 'Generate keys from a new BIP-39 mnemonic (enables recovery)')
   .option('--recover', 'Recover keys from an existing 12-word mnemonic')
@@ -112,7 +112,7 @@ export const keygenCommand = new Command('keygen')
 
         console.log(chalk.yellow('\nMnemonic (write this down — it is your only backup):'));
         console.log(chalk.white(`  ${mnemonic}`));
-        console.log(chalk.gray('You can recover your keys later with: stealth keygen --recover'));
+        console.log(chalk.gray('You can recover your keys later with: shade keygen --recover'));
 
       } else {
         console.log(chalk.cyan('Generating stealth keys...'));

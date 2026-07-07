@@ -3,7 +3,7 @@ import {
   encodeMetaAddress,
   generateMnemonic,
   mnemonicToStealthKeys,
-} from '@stealth/crypto';
+} from '@shade/crypto';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { getNetworkConfig } from './soroban.js';
 import { HorizonClient } from './horizon.js';
@@ -188,7 +188,7 @@ export class StealthClient {
    * A method is REQUIRED on every call (`opts.method`). Pass `'auto'` to let the
    * client resolve one; there is deliberately no implicit default.
    *
-   * @param metaAddress - Recipient's meta-address (st:stellar:... format)
+   * @param metaAddress - Recipient's meta-address (shade:stellar:... format)
    * @param amount - Amount in whole units (e.g. 100 = 100 XLM)
    * @param senderSecret - Sender's Stellar secret key
    * @param opts - Delivery method (required) and optional asset

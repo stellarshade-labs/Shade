@@ -14,7 +14,7 @@ const { version } = packageJson;
 const program = new Command();
 
 program
-  .name('stealth')
+  .name('shade')
   .description('CLI for Stellar stealth addresses using DKSAP')
   .version(version);
 

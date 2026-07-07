@@ -1,4 +1,4 @@
-# Stellar Stealth SDK
+# @shade/crypto
 
 Pure TypeScript implementation of stealth addresses for Stellar using DKSAP (Dual-Key Stealth Address Protocol) on ed25519.
 
@@ -36,7 +36,7 @@ import {
 const receiver = generateMetaAddress();
 const encodedMeta = encodeMetaAddress(receiver.metaAddress);
 console.log('Share this meta-address:', encodedMeta);
-// Output: st:stellar:abc123...def456
+// Output: shade:stellar:abc123...def456
 
 // 2. Derive a stealth address (sender)
 const stealth = deriveStealthAddress(receiver.metaAddress);
@@ -141,14 +141,14 @@ Encode a stealth meta-address to a shareable string format with checksum.
 **Parameters:**
 - `meta`: Stealth meta-address containing spend and view public keys
 
-**Returns:** Encoded string in format `st:stellar:<hex><checksum>`
+**Returns:** Encoded string in format `shade:stellar:<hex><checksum>`
 
 **Throws:** `InvalidMetaAddress` if keys are invalid or not on curve
 
 **Example:**
 ```typescript
 const encoded = encodeMetaAddress(keys.metaAddress);
-// "st:stellar:abc123...def456"
+// "shade:stellar:abc123...def456"
 ```
 
 #### `decodeMetaAddress(encoded: string): StealthMetaAddress`
@@ -164,7 +164,7 @@ Decode a string-encoded stealth meta-address with checksum validation.
 
 **Example:**
 ```typescript
-const meta = decodeMetaAddress("st:stellar:abc123...def456");
+const meta = decodeMetaAddress("shade:stellar:abc123...def456");
 ```
 
 ### Stealth Address Derivation
@@ -294,20 +294,20 @@ keys. Pure string builder, no `@stellar/stellar-sdk` dependency.
 **Exact message format** (`\n`-joined, no trailing newline):
 
 ```
-stellar-stealth-keys-v1
+stellar-shade-keys-v1
 network:<network>
 app:<appId>
 WARNING: Signing this message derives your stealth keys. Only sign it in apps you trust.
 ```
 
 The first line is the `KEY_DERIVATION_CONTEXT_V1` domain-separation constant
-(`stellar-stealth-keys-v1`) and is guaranteed stable for the v1 scheme.
+(`stellar-shade-keys-v1`) and is guaranteed stable for the v1 scheme.
 
 #### `deriveKeysFromSignature(signature: Uint8Array): StealthKeys`
 
 Derive stealth spend and view keys from a wallet's 64-byte ed25519 signature
-over the derivation message. Uses domain-separated SHA-256 (`stealth-spend` /
-`stealth-view` tags) to produce two independent scalars, mirroring the BIP-39
+over the derivation message. Uses domain-separated SHA-256 (`shade-spend` /
+`shade-view` tags) to produce two independent scalars, mirroring the BIP-39
 derivation in `hd.ts`.
 
 **Parameters:**
@@ -479,8 +479,8 @@ surface is the set of functions and types exported from the package entrypoint
 and documented in the [API Reference](#api-reference) above.
 
 - **Wire and derivation formats are versioned.** The meta-address encoding
-  (`st:stellar:` prefix) and the wallet key-derivation scheme carry explicit
-  version tags (e.g. `KEY_DERIVATION_CONTEXT_V1` / `stellar-stealth-keys-v1`).
+  (`shade:stellar:` prefix) and the wallet key-derivation scheme carry explicit
+  version tags (e.g. `KEY_DERIVATION_CONTEXT_V1` / `stellar-shade-keys-v1`).
   Any change that would alter derived keys or on-the-wire encodings ships under a
   new version tag rather than silently mutating the existing one, so previously
   derived keys and published announcements remain valid.

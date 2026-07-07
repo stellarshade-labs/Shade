@@ -4,7 +4,7 @@ import {
   generateMetaAddress,
   encodeMetaAddress,
   deriveStealthAddressWithSecret,
-} from '@stealth/crypto';
+} from '@shade/crypto';
 import { StealthClient } from '../src/client.js';
 import type { StealthKeys } from '../src/types.js';
 

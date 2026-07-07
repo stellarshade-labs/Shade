@@ -21,7 +21,7 @@ describe('buildKeyDerivationMessage', () => {
     const message = buildKeyDerivationMessage();
     expect(message).toBe(
       [
-        'stellar-stealth-keys-v1',
+        'stellar-shade-keys-v1',
         'network:any',
         'app:default',
         'WARNING: Signing this message derives your stealth keys. Only sign it in apps you trust.',
@@ -33,7 +33,7 @@ describe('buildKeyDerivationMessage', () => {
     const message = buildKeyDerivationMessage({ network: 'testnet', appId: 'my-app' });
     expect(message).toBe(
       [
-        'stellar-stealth-keys-v1',
+        'stellar-shade-keys-v1',
         'network:testnet',
         'app:my-app',
         'WARNING: Signing this message derives your stealth keys. Only sign it in apps you trust.',
@@ -42,7 +42,7 @@ describe('buildKeyDerivationMessage', () => {
   });
 
   it('should start with the v1 context constant', () => {
-    expect(KEY_DERIVATION_CONTEXT_V1).toBe('stellar-stealth-keys-v1');
+    expect(KEY_DERIVATION_CONTEXT_V1).toBe('stellar-shade-keys-v1');
     expect(buildKeyDerivationMessage().startsWith(KEY_DERIVATION_CONTEXT_V1)).toBe(true);
   });
 });
@@ -132,10 +132,10 @@ describe('deriveKeysFromSignature', () => {
     const keys = deriveKeysFromSignature(hexToBytes(signatureHex));
 
     expect(bytesToHex(keys.metaAddress.spendPubKey)).toBe(
-      '3048c9a5cd80345a35e1a8fa05279d90ca355de5889b5c35163278a263a8330b',
+      '07c0ae61f878ac7a057128287b2a48f5cd55d18e52da4bbe94f66c7f7b61071e',
     );
     expect(bytesToHex(keys.metaAddress.viewPubKey)).toBe(
-      'ef3792561bf35026b50659e5aae53d9fe3786f2fae4f25bc1d02f5602c9ba2ed',
+      '304ba3fc98cb71ac755ac3e3abfa7dad04dcae9754f7cdc3f19b53642fcf5ce6',
     );
   });
 });

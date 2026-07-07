@@ -1,7 +1,7 @@
 {
-  "name": "@stealth/sdk",
+  "name": "@shade/sdk",
   "version": "0.0.1",
-  "description": "High-level SDK for stealth payments on Stellar",
+  "description": "Shade — high-level SDK for private payments on Stellar via stealth addresses (DKSAP)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
@@ -24,7 +24,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@stealth/crypto": "*",
+    "@shade/crypto": "*",
     "@stellar/stellar-sdk": "^15.1.0",
     "@noble/hashes": "^1.6.1"
   },

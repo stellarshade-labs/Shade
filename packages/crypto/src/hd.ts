@@ -33,8 +33,8 @@ export function mnemonicToStealthKeys(mnemonic: string, passphrase?: string): St
 
   const seed = mnemonicToSeedSync(mnemonic, passphrase || '');
 
-  const spendTag = textEncoder.encode('stealth-spend');
-  const viewTag = textEncoder.encode('stealth-view');
+  const spendTag = textEncoder.encode('shade-spend');
+  const viewTag = textEncoder.encode('shade-view');
 
   const spendInput = new Uint8Array(spendTag.length + seed.length);
   spendInput.set(spendTag, 0);

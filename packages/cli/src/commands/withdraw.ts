@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { recoverStealthPrivateKey, scanAnnouncements, signWithStealthKey } from '@stealth/crypto';
+import { recoverStealthPrivateKey, scanAnnouncements, signWithStealthKey } from '@shade/crypto';
 import {
   Keypair,
   Networks,
@@ -11,7 +11,7 @@ import {
 } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { sha256 } from '@noble/hashes/sha256';
-import { parseStroops, formatStroops } from '@stealth/sdk';
+import { parseStroops, formatStroops } from '@shade/sdk';
 import {
   loadKeystoreInteractive,
   resolveKeystorePath,
@@ -224,11 +224,11 @@ export const withdrawCommand = new Command('withdraw')
   .argument('<stealth-address>', 'Stealth address to withdraw from')
   .argument('<destination>', 'Destination Stellar address')
   .option('--network <network>', 'Network to use', 'local')
-  .option('--keystore <path>', 'Keystore file path (defaults to $STEALTH_KEYSTORE or ~/.stealth-keys.json)')
+  .option('--keystore <path>', 'Keystore file path (defaults to $SHADE_KEYSTORE or ~/.shade-keys.json)')
   .option('--password <password>', 'Keystore password (prompts on stderr if omitted for an encrypted keystore)')
   .option('--amount <amount>', 'Amount to withdraw (default: full balance)')
   .option('--asset <asset>', 'Asset to withdraw (default: native XLM, or CODE:ISSUER)')
-  .option('--fee-payer <secret>', 'Secret key of account paying the Soroban fee (or set STEALTH_FEE_PAYER / prompt; flags leak into shell history)')
+  .option('--fee-payer <secret>', 'Secret key of account paying the Soroban fee (or set SHADE_FEE_PAYER / prompt; flags leak into shell history)')
   .option('--relay <url>', 'Relay URL for fee-bumped submission')
   .option('--verbose', 'Show detailed output')
   .action(async (stealthAddress: string, destination: string, options) => {
@@ -237,7 +237,7 @@ export const withdrawCommand = new Command('withdraw')
       const keystorePath = resolveKeystorePath(options.keystore);
       const keystore = await loadKeystoreInteractive(keystorePath, options.password).catch(() => {
         console.error(chalk.red('Error: Missing keystore'));
-        console.error(chalk.gray("  Run 'stealth keygen' first to create keys"));
+        console.error(chalk.gray("  Run 'shade keygen' first to create keys"));
         process.exit(1);
       });
 
@@ -258,13 +258,13 @@ export const withdrawCommand = new Command('withdraw')
 
       const feePayer = await resolveSecret(
         options.feePayer,
-        'STEALTH_FEE_PAYER',
+        'SHADE_FEE_PAYER',
         chalk.white('Enter fee-payer secret (S...): '),
       );
       if (!feePayer) {
         console.error(chalk.red('Error: a fee-payer secret is required'));
         console.error(chalk.gray('  A funded account must pay the Soroban invocation fee'));
-        console.error(chalk.gray('  Provide it via --fee-payer, the STEALTH_FEE_PAYER env var, or the prompt'));
+        console.error(chalk.gray('  Provide it via --fee-payer, the SHADE_FEE_PAYER env var, or the prompt'));
         console.error(chalk.gray('  Optionally add --relay <url> for the relayer to fee-bump'));
         process.exit(1);
       }

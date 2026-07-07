@@ -128,7 +128,7 @@ export function challengeMessage(
   nonce: string,
   amount: string,
 ): string {
-  return `stealth-relayer:v1:${endpoint}:${fundingAccount}:${nonce}:${amount}`;
+  return `shade-relayer:v1:${endpoint}:${fundingAccount}:${nonce}:${amount}`;
 }
 
 /** Decode a signature provided as base64 or hex into raw bytes. */

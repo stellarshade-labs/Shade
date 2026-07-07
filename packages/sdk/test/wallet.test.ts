@@ -4,15 +4,15 @@ import { keysFromWalletSignature } from '../src/wallet.js';
 const hexToBytes = (hex: string): Uint8Array =>
   new Uint8Array(hex.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
 
-// The same pinned signature vector locked in @stealth/crypto's derive-signature test.
+// The same pinned signature vector locked in @shade/crypto's derive-signature test.
 const VECTOR_SIG_HEX =
   '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' +
   '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
 const EXPECTED_SPEND_PUB =
-  '3048c9a5cd80345a35e1a8fa05279d90ca355de5889b5c35163278a263a8330b';
+  '07c0ae61f878ac7a057128287b2a48f5cd55d18e52da4bbe94f66c7f7b61071e';
 const EXPECTED_VIEW_PUB =
-  'ef3792561bf35026b50659e5aae53d9fe3786f2fae4f25bc1d02f5602c9ba2ed';
+  '304ba3fc98cb71ac755ac3e3abfa7dad04dcae9754f7cdc3f19b53642fcf5ce6';
 
 describe('keysFromWalletSignature', () => {
   it('derives the pinned vector public keys from a raw-bytes signer', async () => {
@@ -101,7 +101,7 @@ describe('keysFromWalletSignature', () => {
       { verifyDeterminism: false },
     );
     expect(calls).toBe(1);
-    expect(keys.metaAddress.startsWith('st:stellar:')).toBe(true);
+    expect(keys.metaAddress.startsWith('shade:stellar:')).toBe(true);
   });
 
   it('signs the message TWICE by default for a deterministic signer', async () => {
@@ -117,7 +117,7 @@ describe('keysFromWalletSignature', () => {
     const keys = await keysFromWalletSignature(
       async () => hexToBytes(VECTOR_SIG_HEX),
     );
-    expect(keys.metaAddress.startsWith('st:stellar:')).toBe(true);
+    expect(keys.metaAddress.startsWith('shade:stellar:')).toBe(true);
     expect(keys.spendPrivKey).toHaveLength(64);
     expect(keys.viewPrivKey).toHaveLength(64);
   });

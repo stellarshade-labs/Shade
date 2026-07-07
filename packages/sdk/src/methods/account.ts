@@ -8,7 +8,7 @@ import {
   pointAdd,
   hashToScalar,
   encodePublicKey,
-} from '@stealth/crypto';
+} from '@shade/crypto';
 import {
   Account,
   Keypair,

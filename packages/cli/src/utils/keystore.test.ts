@@ -138,34 +138,34 @@ describe('keystore', () => {
 });
 
 describe('resolveKeystorePath', () => {
-  const original = process.env.STEALTH_KEYSTORE;
+  const original = process.env.SHADE_KEYSTORE;
 
   afterEach(() => {
-    if (original === undefined) delete process.env.STEALTH_KEYSTORE;
-    else process.env.STEALTH_KEYSTORE = original;
+    if (original === undefined) delete process.env.SHADE_KEYSTORE;
+    else process.env.SHADE_KEYSTORE = original;
   });
 
   it('prefers an explicit flag over the env var', async () => {
-    process.env.STEALTH_KEYSTORE = '/env/path.json';
+    process.env.SHADE_KEYSTORE = '/env/path.json';
     expect(await resolveKeystorePath('/flag/path.json')).toBe('/flag/path.json');
   });
 
-  it('falls back to STEALTH_KEYSTORE when no flag is given', async () => {
-    process.env.STEALTH_KEYSTORE = '/env/path.json';
+  it('falls back to SHADE_KEYSTORE when no flag is given', async () => {
+    process.env.SHADE_KEYSTORE = '/env/path.json';
     expect(await resolveKeystorePath(undefined)).toBe('/env/path.json');
   });
 
   it('falls back to the home default when neither is set', async () => {
-    delete process.env.STEALTH_KEYSTORE;
+    delete process.env.SHADE_KEYSTORE;
     const resolved = await resolveKeystorePath(undefined);
-    expect(resolved).toContain('.stealth-keys.json');
+    expect(resolved).toContain('.shade-keys.json');
   });
 
   it('keygen writes and a read command reads the SAME env-var path', async () => {
-    // Simulates the fixed BLOCKING #1 flow: with STEALTH_KEYSTORE set and no
+    // Simulates the fixed BLOCKING #1 flow: with SHADE_KEYSTORE set and no
     // flag, both writer and reader resolve to the same file.
     const envPath = path.join(os.tmpdir(), 'test-keystore-temp', 'env-keystore.json');
-    process.env.STEALTH_KEYSTORE = envPath;
+    process.env.SHADE_KEYSTORE = envPath;
 
     const writePath = await resolveKeystorePath(undefined);
     const keystore = {

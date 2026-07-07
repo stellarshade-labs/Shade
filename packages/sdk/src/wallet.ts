@@ -2,7 +2,7 @@ import {
   buildKeyDerivationMessage,
   deriveKeysFromSignature,
   encodeMetaAddress,
-} from '@stealth/crypto';
+} from '@shade/crypto';
 import type { StealthKeys } from './types.js';
 
 /**

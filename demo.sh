@@ -136,10 +136,10 @@ echo -e "${CYAN}${BOLD}Step 6: Generating Bob's stealth meta-address...${NC}"
 echo "  This creates Bob's viewing and spending keys..."
 
 # Create temp keystore for Bob
-export STEALTH_KEYSTORE=/tmp/bob-stealth-keys-$$.json
+export SHADE_KEYSTORE=/tmp/bob-stealth-keys-$$.json
 cd packages/cli
-KEYGEN_OUTPUT=$(npx tsx src/index.ts keygen --keystore $STEALTH_KEYSTORE 2>&1)
-BOB_META_ADDR=$(echo "$KEYGEN_OUTPUT" | grep "st:stellar:" | head -1 | tr -d '[:space:]')
+KEYGEN_OUTPUT=$(npx tsx src/index.ts keygen --keystore $SHADE_KEYSTORE 2>&1)
+BOB_META_ADDR=$(echo "$KEYGEN_OUTPUT" | grep "shade:stellar:" | head -1 | tr -d '[:space:]')
 cd ../..
 
 echo -e "${GREEN}Bob's stealth keys generated${NC}"
@@ -176,7 +176,7 @@ echo -e "${CYAN}${BOLD}Step 8: Bob scanning for received deposits...${NC}"
 echo "  Using view key to detect stealth transactions..."
 
 cd packages/cli
-SCAN_OUTPUT=$(STEALTH_KEYSTORE=$STEALTH_KEYSTORE npx tsx src/index.ts scan \
+SCAN_OUTPUT=$(SHADE_KEYSTORE=$SHADE_KEYSTORE npx tsx src/index.ts scan \
   --network local 2>&1)
 echo "$SCAN_OUTPUT" | tail -5
 cd ../..
@@ -188,7 +188,7 @@ echo
 echo -e "${CYAN}${BOLD}Step 9: Checking stealth pool balance...${NC}"
 
 cd packages/cli
-BALANCE_OUTPUT=$(STEALTH_KEYSTORE=$STEALTH_KEYSTORE npx tsx src/index.ts balance \
+BALANCE_OUTPUT=$(SHADE_KEYSTORE=$SHADE_KEYSTORE npx tsx src/index.ts balance \
   --network local 2>&1)
 echo "$BALANCE_OUTPUT" | tail -5
 cd ../..
@@ -212,7 +212,7 @@ FEEPAYER_SECRET=$(stellar keys show feepayer 2>/dev/null)
 
 echo "  Executing withdrawal with ed25519 signature auth..."
 cd packages/cli
-STEALTH_KEYSTORE=$STEALTH_KEYSTORE npx tsx src/index.ts withdraw \
+SHADE_KEYSTORE=$SHADE_KEYSTORE npx tsx src/index.ts withdraw \
   "$STEALTH_ADDR" \
   "$BOB_PUBLIC" \
   --network local \
@@ -267,7 +267,7 @@ echo
 echo -e "${CYAN}${BOLD}Step 12: Checking USDC balance in pool...${NC}"
 
 cd packages/cli
-MULTI_BALANCE=$(STEALTH_KEYSTORE=$STEALTH_KEYSTORE npx tsx src/index.ts balance \
+MULTI_BALANCE=$(SHADE_KEYSTORE=$SHADE_KEYSTORE npx tsx src/index.ts balance \
   --network local 2>&1)
 echo "$MULTI_BALANCE" | tail -8
 cd ../..
@@ -280,7 +280,7 @@ echo -e "${CYAN}${BOLD}Step 13: Withdrawing USDC via relayer (fee-bump)...${NC}"
 echo "  Relayer wraps the withdrawal in a fee-bump transaction..."
 
 cd packages/cli
-STEALTH_KEYSTORE=$STEALTH_KEYSTORE npx tsx src/index.ts withdraw \
+SHADE_KEYSTORE=$SHADE_KEYSTORE npx tsx src/index.ts withdraw \
   "$USDC_STEALTH" \
   "$BOB_PUBLIC" \
   --network local \
@@ -304,7 +304,7 @@ echo "  A fresh recipient receives 5 XLM directly to a one-time stealth account.
 export DIRECT_KEYSTORE=/tmp/direct-stealth-keys-$$.json
 cd packages/cli
 DIRECT_KEYGEN=$(npx tsx src/index.ts keygen --keystore $DIRECT_KEYSTORE 2>&1)
-DIRECT_META=$(echo "$DIRECT_KEYGEN" | grep "st:stellar:" | head -1 | tr -d '[:space:]')
+DIRECT_META=$(echo "$DIRECT_KEYGEN" | grep "shade:stellar:" | head -1 | tr -d '[:space:]')
 
 echo "  Alice sends 5 XLM via --method account..."
 DIRECT_SEND=$(npx tsx src/index.ts send \
@@ -316,10 +316,10 @@ DIRECT_SEND=$(npx tsx src/index.ts send \
 DIRECT_STEALTH=$(echo "$DIRECT_SEND" | grep "Stealth:" | sed 's/.*Stealth:[ ]*//')
 
 echo "  Recipient scans Horizon and persists the discovered payment..."
-STEALTH_KEYSTORE=$DIRECT_KEYSTORE npx tsx src/index.ts scan --network local 2>&1 | tail -3
+SHADE_KEYSTORE=$DIRECT_KEYSTORE npx tsx src/index.ts scan --network local 2>&1 | tail -3
 
 echo "  Recipient claims (merge + relayer fee-bump) to Bob's wallet..."
-STEALTH_KEYSTORE=$DIRECT_KEYSTORE npx tsx src/index.ts claim \
+SHADE_KEYSTORE=$DIRECT_KEYSTORE npx tsx src/index.ts claim \
   "$DIRECT_STEALTH" \
   "$BOB_PUBLIC" \
   --network local \
@@ -347,10 +347,10 @@ TOKEN_SEND=$(npx tsx src/index.ts send \
 TOKEN_STEALTH=$(echo "$TOKEN_SEND" | grep "Stealth:" | sed 's/.*Stealth:[ ]*//')
 
 echo "  Recipient scans and persists the discovered token payment..."
-STEALTH_KEYSTORE=$DIRECT_KEYSTORE npx tsx src/index.ts scan --network local 2>&1 | tail -3
+SHADE_KEYSTORE=$DIRECT_KEYSTORE npx tsx src/index.ts scan --network local 2>&1 | tail -3
 
 echo "  Recipient claims the USDC claimable balance to Bob's wallet..."
-STEALTH_KEYSTORE=$DIRECT_KEYSTORE npx tsx src/index.ts claim \
+SHADE_KEYSTORE=$DIRECT_KEYSTORE npx tsx src/index.ts claim \
   "$TOKEN_STEALTH" \
   "$BOB_PUBLIC" \
   --network local \
@@ -416,7 +416,7 @@ echo
 echo -e "${CYAN}${BOLD}Step 14: Verifying privacy preserved...${NC}"
 
 cd packages/cli
-FINAL_OUTPUT=$(STEALTH_KEYSTORE=$STEALTH_KEYSTORE npx tsx src/index.ts balance \
+FINAL_OUTPUT=$(SHADE_KEYSTORE=$SHADE_KEYSTORE npx tsx src/index.ts balance \
   --network local 2>&1)
 cd ../..
 
@@ -433,7 +433,7 @@ echo
 # Cleanup
 echo -e "${CYAN}Cleaning up...${NC}"
 kill $RELAYER_PID 2>/dev/null || true
-rm -f $STEALTH_KEYSTORE
+rm -f $SHADE_KEYSTORE
 rm -f /tmp/bob-stealth-keys-*.json
 
 # Calculate runtime

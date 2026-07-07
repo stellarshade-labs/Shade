@@ -9,7 +9,7 @@ import type {
 
 /** Parameters passed to a delivery adapter's `send`. */
 export interface AdapterSendParams {
-  /** Recipient meta-address (st:stellar:... or spend:view hex) */
+  /** Recipient meta-address (shade:stellar:... or spend:view hex) */
   metaAddress: string;
   /** Amount in whole units */
   amount: number;

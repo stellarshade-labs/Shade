@@ -1,4 +1,4 @@
-# Stellar Stealth Accounts SDK
+# Shade — Private Payments on Stellar
 
 **Privacy-preserving payments on Stellar using DKSAP (Dual-Key Stealth Address Protocol)**
 
@@ -83,7 +83,7 @@ The demo will:
 ## SDK Usage
 
 ```typescript
-import { StealthClient } from '@stealth/sdk';
+import { StealthClient } from '@shade/sdk';
 
 // `contractId` is required whenever the pool method is enabled (mandatory on testnet).
 const client = new StealthClient({
@@ -94,7 +94,7 @@ const client = new StealthClient({
 
 // Generate keys (no network needed)
 const bobKeys = StealthClient.keygen();
-// bobKeys.metaAddress → "st:stellar:..." (share publicly)
+// bobKeys.metaAddress → "shade:stellar:..." (share publicly)
 
 // Alice sends 100 XLM to Bob's stealth address. A delivery method is REQUIRED —
 // 'pool' (private), 'account' (direct classic tx), or 'auto' (picks one). There
@@ -124,29 +124,29 @@ That's it. No DKSAP math, no Soroban transactions, no message serialization.
 
 ```bash
 # Generate stealth keys (keygen prints the meta-address; the keystore path is
-# --keystore <path> or $STEALTH_KEYSTORE, honored by every command).
-stealth keygen                              # Random keys (BIP-39 mnemonic under the hood)
-stealth keygen --mnemonic                   # New BIP-39 mnemonic (enables recovery)
-stealth keygen --recover                    # Recover from an existing 12-word mnemonic
-stealth keygen --password                   # Encrypt the keystore (AES-256-GCM; prompts on stderr)
+# --keystore <path> or $SHADE_KEYSTORE, honored by every command).
+shade keygen                              # Random keys (BIP-39 mnemonic under the hood)
+shade keygen --mnemonic                   # New BIP-39 mnemonic (enables recovery)
+shade keygen --recover                    # Recover from an existing 12-word mnemonic
+shade keygen --password                   # Encrypt the keystore (AES-256-GCM; prompts on stderr)
 
 # Send — a delivery method is REQUIRED (pool = private, account = direct, auto = pick).
-# Supply the secret via $STEALTH_FROM_SECRET or the prompt so it never hits shell history.
-stealth send <meta-address> 100 --method auto --network local
-stealth send <meta-address> 100 --method pool --from SXXX
-stealth send <meta-address> 200 --method account --asset USDC:GISSUER
+# Supply the secret via $SHADE_FROM_SECRET or the prompt so it never hits shell history.
+shade send <meta-address> 100 --method auto --network local
+shade send <meta-address> 100 --method pool --from SXXX
+shade send <meta-address> 200 --method account --asset USDC:GISSUER
 
 # Scan + balance (pool AND account); balance shows the asset label (e.g. XLM, not the SAC C-address)
-stealth scan --network local
-stealth balance --network local
+shade scan --network local
+shade balance --network local
 
 # Claim a discovered payment to your real address (unified pool + account path)
-stealth claim <stealth-addr> <destination> --relay http://localhost:3000        # account sweep
-stealth claim <stealth-addr> <destination> --fee-payer SXXX                      # pool withdraw
-stealth claim <stealth-addr> <destination> --sponsored --funding-account G...    # token, no reserves
+shade claim <stealth-addr> <destination> --relay http://localhost:3000        # account sweep
+shade claim <stealth-addr> <destination> --fee-payer SXXX                      # pool withdraw
+shade claim <stealth-addr> <destination> --sponsored --funding-account G...    # token, no reserves
 
 # (Legacy) direct pool withdraw — `claim` is the preferred unified command
-stealth withdraw <stealth-addr> <destination> --fee-payer SXXX --asset USDC:GISSUER
+shade withdraw <stealth-addr> <destination> --fee-payer SXXX --asset USDC:GISSUER
 ```
 
 ## Soroban Pool Contract

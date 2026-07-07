@@ -1,7 +1,7 @@
 {
-  "name": "@stealth/crypto",
+  "name": "@shade/crypto",
   "version": "0.0.1",
-  "description": "Stealth address cryptography for Stellar",
+  "description": "Shade — stealth-address (DKSAP) cryptography for Stellar",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",

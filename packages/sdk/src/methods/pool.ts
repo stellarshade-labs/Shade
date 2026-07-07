@@ -4,7 +4,7 @@ import {
   scanAnnouncements,
   recoverStealthPrivateKey,
   signWithStealthKey,
-} from '@stealth/crypto';
+} from '@shade/crypto';
 import {
   Keypair,
   TransactionBuilder,

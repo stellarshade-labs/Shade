@@ -16,7 +16,7 @@ describe('meta-address encoding with checksum', () => {
     const encoded = encodeMetaAddress(keys.metaAddress);
 
     // Should have correct format
-    expect(encoded).toMatch(/^st:stellar:[0-9a-f]{136}$/);
+    expect(encoded).toMatch(/^shade:stellar:[0-9a-f]{136}$/);
 
     // Should decode correctly
     const decoded = decodeMetaAddress(encoded);
@@ -32,18 +32,18 @@ describe('meta-address encoding with checksum', () => {
 
   it('should reject invalid length', () => {
     // Too short
-    const tooShort = 'st:stellar:' + '0'.repeat(134);
+    const tooShort = 'shade:stellar:' + '0'.repeat(134);
     expect(() => decodeMetaAddress(tooShort)).toThrow(InvalidMetaAddress);
     expect(() => decodeMetaAddress(tooShort)).toThrow('Invalid meta-address length');
 
     // Too long
-    const tooLong = 'st:stellar:' + '0'.repeat(138);
+    const tooLong = 'shade:stellar:' + '0'.repeat(138);
     expect(() => decodeMetaAddress(tooLong)).toThrow(InvalidMetaAddress);
     expect(() => decodeMetaAddress(tooLong)).toThrow('Invalid meta-address length');
   });
 
   it('should reject invalid hex encoding', () => {
-    const invalidHex = 'st:stellar:' + 'g'.repeat(136); // 'g' is not valid hex
+    const invalidHex = 'shade:stellar:' + 'g'.repeat(136); // 'g' is not valid hex
     expect(() => decodeMetaAddress(invalidHex)).toThrow(InvalidMetaAddress);
     expect(() => decodeMetaAddress(invalidHex)).toThrow('Invalid hex encoding');
   });
@@ -111,7 +111,7 @@ describe('meta-address encoding with checksum', () => {
       .map((b) => b.toString(16).padStart(2, '0'))
       .join('');
 
-    const encoded = `st:stellar:${hex}`;
+    const encoded = `shade:stellar:${hex}`;
 
     // This should either work (if identity is allowed) or throw
     // The important thing is it validates the keys

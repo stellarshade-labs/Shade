@@ -10,7 +10,7 @@ const textEncoder = new TextEncoder();
  * key-derivation scheme. Embedded as the first line of the message a wallet
  * signs to derive stealth keys.
  */
-export const KEY_DERIVATION_CONTEXT_V1 = 'stellar-stealth-keys-v1';
+export const KEY_DERIVATION_CONTEXT_V1 = 'stellar-shade-keys-v1';
 
 /**
  * Build the canonical message a wallet signs to derive its stealth keys.
@@ -101,8 +101,8 @@ export function deriveKeysFromSignature(signature: Uint8Array): StealthKeys {
     throw new InvalidScalar('Signature must not be all zeros');
   }
 
-  const spendTag = textEncoder.encode('stealth-spend');
-  const viewTag = textEncoder.encode('stealth-view');
+  const spendTag = textEncoder.encode('shade-spend');
+  const viewTag = textEncoder.encode('shade-view');
 
   const spendInput = new Uint8Array(spendTag.length + signature.length);
   spendInput.set(spendTag, 0);

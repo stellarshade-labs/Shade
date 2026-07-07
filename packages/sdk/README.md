@@ -1,18 +1,18 @@
-# @stealth/sdk
+# @shade/sdk
 
 High-level client for **stealth payments on Stellar** (DKSAP on ed25519). Wraps the
-`@stealth/crypto` math and all Horizon/Soroban I/O behind a small `StealthClient`
+`@shade/crypto` math and all Horizon/Soroban I/O behind a small `StealthClient`
 with pluggable **delivery methods**. You never touch DKSAP math or transaction
 serialization directly.
 
 ```bash
-npm install @stealth/sdk
+npm install @shade/sdk
 ```
 
 ## Quickstart
 
 ```typescript
-import { StealthClient } from '@stealth/sdk';
+import { StealthClient } from '@shade/sdk';
 
 // `contractId` is REQUIRED whenever the pool method is enabled (mandatory on testnet
 // — the constructor throws ContractIdRequiredError otherwise).
@@ -72,7 +72,7 @@ Public failures throw named subclasses of `Error` (all exported) so apps can bra
 import { MethodRequiredError, ContractIdRequiredError, NoBalanceError,
          AnnouncementNotFoundError, StealthAccountNotFoundError,
          DestinationTrustlineError, FeePayerRequiredError,
-         SponsoredClaimMismatchError } from '@stealth/sdk';
+         SponsoredClaimMismatchError } from '@shade/sdk';
 
 try {
   await client.claim(payment, dest, { keys });

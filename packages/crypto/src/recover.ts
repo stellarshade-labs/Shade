@@ -29,7 +29,7 @@ import { hashToScalar } from './hash.js';
  *
  * @example
  * ```typescript
- * import { recoverStealthPrivateKey, signWithStealthKey } from '@stealth/crypto';
+ * import { recoverStealthPrivateKey, signWithStealthKey } from '@shade/crypto';
  *
  * // Recover the raw stealth scalar to withdraw funds
  * const stealthPrivKey = recoverStealthPrivateKey(

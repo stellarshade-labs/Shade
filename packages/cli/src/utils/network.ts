@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import { decodeMetaAddress } from '@stealth/crypto';
+import { decodeMetaAddress } from '@shade/crypto';
 
 export interface RetryOptions {
   maxAttempts?: number;
@@ -91,8 +91,8 @@ export function formatError(error: any): string {
 }
 
 export function validateMetaAddress(metaAddress: string): { spendPubKey: Buffer; viewPubKey: Buffer } | null {
-  // Try st:stellar: encoded format first
-  if (metaAddress.startsWith('st:stellar:')) {
+  // Try shade:stellar: encoded format first
+  if (metaAddress.startsWith('shade:stellar:')) {
     try {
       const decoded = decodeMetaAddress(metaAddress);
       return {

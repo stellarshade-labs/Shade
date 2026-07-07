@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { deriveStealthAddressWithSecret } from '@stealth/crypto';
+import { deriveStealthAddressWithSecret } from '@shade/crypto';
 import {
   Keypair,
   Networks,
@@ -9,7 +9,7 @@ import {
   nativeToScVal,
 } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { StealthClient, parseStroops } from '@stealth/sdk';
+import { StealthClient, parseStroops } from '@shade/sdk';
 import { getContractAddress } from '../utils/config.js';
 import { formatError, validateMetaAddress } from '../utils/network.js';
 import { resolveSecret } from '../utils/secrets.js';
@@ -112,11 +112,11 @@ async function waitForTransaction(
 
 export const sendCommand = new Command('send')
   .description('Send tokens to a stealth address (pool deposit or direct account send)')
-  .argument('<meta-address>', 'Recipient meta-address (st:stellar:... or spend:view hex)')
+  .argument('<meta-address>', 'Recipient meta-address (shade:stellar:... or spend:view hex)')
   .argument('<amount>', 'Amount to send (in whole units, e.g. 100 for 100 XLM)')
   .option('--method <method>', 'Delivery method: pool | account | auto (you must choose)')
   .option('--network <network>', 'Network to use', 'local')
-  .option('--from <secret>', 'Sender secret key (or set STEALTH_FROM_SECRET / prompt; flags leak into shell history)')
+  .option('--from <secret>', 'Sender secret key (or set SHADE_FROM_SECRET / prompt; flags leak into shell history)')
   .option('--asset <asset>', 'Asset to send (default: native XLM, or CODE:ISSUER)')
   .option('--relay <url>', 'Relayer URL (account method fee-bump)')
   .option('--verbose', 'Show detailed output')
@@ -162,12 +162,12 @@ export const sendCommand = new Command('send')
 
       const fromSecret = await resolveSecret(
         options.from,
-        'STEALTH_FROM_SECRET',
+        'SHADE_FROM_SECRET',
         chalk.white('Enter sender secret (S...): '),
       );
       if (!fromSecret) {
         console.error(chalk.red('Error: a sender secret is required'));
-        console.error(chalk.gray('  Provide it via --from, the STEALTH_FROM_SECRET env var, or the prompt'));
+        console.error(chalk.gray('  Provide it via --from, the SHADE_FROM_SECRET env var, or the prompt'));
         process.exit(1);
       }
       const senderKeypair = Keypair.fromSecret(fromSecret);

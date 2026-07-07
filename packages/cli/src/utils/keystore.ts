@@ -23,20 +23,20 @@ interface EncryptedKeystore {
 }
 
 /** The home-directory default keystore location. */
-export const DEFAULT_KEYSTORE_PATH = path.join(os.homedir(), '.stealth-keys.json');
+export const DEFAULT_KEYSTORE_PATH = path.join(os.homedir(), '.shade-keys.json');
 
 /**
  * Resolve the keystore path from a single source of truth so `keygen` (writes)
  * and the read commands (scan/balance/claim/withdraw) always agree.
  *
- * Precedence: an explicit `--keystore` flag wins, then the `STEALTH_KEYSTORE`
+ * Precedence: an explicit `--keystore` flag wins, then the `SHADE_KEYSTORE`
  * environment variable, then the home-directory default. Previously `keygen`
- * ignored `STEALTH_KEYSTORE` while the read commands honored it, so a keystore
+ * ignored `SHADE_KEYSTORE` while the read commands honored it, so a keystore
  * written by `keygen` could not be found by a scan pointed at the env var.
  */
 export function resolveKeystorePath(flagValue?: string): string {
   if (flagValue) return flagValue;
-  if (process.env.STEALTH_KEYSTORE) return process.env.STEALTH_KEYSTORE;
+  if (process.env.SHADE_KEYSTORE) return process.env.SHADE_KEYSTORE;
   return DEFAULT_KEYSTORE_PATH;
 }
 
@@ -228,7 +228,7 @@ export async function loadKeystore(
     }
   } catch (error: any) {
     if (error.code === 'ENOENT') {
-      throw new Error(`Keystore not found at ${filepath}. Run 'stealth keygen' first.`);
+      throw new Error(`Keystore not found at ${filepath}. Run 'shade keygen' first.`);
     }
     throw error;
   }
