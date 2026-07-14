@@ -5,6 +5,7 @@ import {
   Account,
   Asset,
   Transaction,
+  type OperationRecord,
 } from '@stellar/stellar-sdk';
 import { getContext } from '../context.js';
 import type { Reservation } from '../ledger.js';
@@ -258,12 +259,13 @@ function assetStr(value: unknown): string {
  * beginSponsoring sponsoredId, claimClaimableBalance balanceId). Returns true
  * only when the submitted ops exactly match the ops the relayer would build.
  *
- * Operations are typed as `readonly Operation[]`; each branch narrows to the
- * specific `Operation.<Type>` shape (the SDK union is discriminated on `type`).
+ * Operations are typed as `readonly OperationRecord[]`; each branch narrows to
+ * the specific `Operation.<Type>` shape (the SDK union is discriminated on
+ * `type`). `OperationRecord` is the element type of `Transaction.operations`.
  */
 function opsMatch(
-  submitted: readonly Operation[],
-  expected: readonly Operation[],
+  submitted: readonly OperationRecord[],
+  expected: readonly OperationRecord[],
   relayer: string,
 ): boolean {
   if (submitted.length !== expected.length) return false;

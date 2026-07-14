@@ -1,6 +1,7 @@
 {
   "name": "@shade/relayer",
   "version": "0.1.0",
+  "private": true,
   "type": "module",
   "description": "Shade relayer — fee-bumps stealth-withdrawal transactions on Stellar",
   "scripts": {
@@ -12,7 +13,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@stellar/stellar-sdk": "^15.1.0",
+    "@stellar/stellar-sdk": "^16.0.0",
     "@types/cors": "^2.8.19",
     "cors": "^2.8.6",
     "dotenv": "^16.4.0",

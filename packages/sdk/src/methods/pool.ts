@@ -22,7 +22,7 @@ import {
   queryBalance,
   queryNonce,
   buildWithdrawMessage,
-  waitForTransaction,
+  resolveSendResult,
   type RawAnnouncement,
 } from '../soroban.js';
 import type {
@@ -112,17 +112,11 @@ export class PoolAdapter implements DeliveryAdapter {
       signTransaction,
     );
     const result = await this.server.sendTransaction(signed);
-
-    if (result.status === 'ERROR') {
-      throw new Error('Transaction submission failed');
-    }
-    if (result.status === 'PENDING') {
-      await waitForTransaction(this.server, result.hash);
-    }
+    const txHash = await resolveSendResult(this.server, result);
 
     return {
       stealthAddress: stealth.stealthAddress,
-      txHash: result.hash,
+      txHash,
     };
   }
 
@@ -433,12 +427,7 @@ export class PoolAdapter implements DeliveryAdapter {
         return data.txHash;
       }
       const result = await this.server.sendTransaction(signed);
-      if (result.status === 'ERROR')
-        throw new Error('Transaction submission failed');
-      if (result.status === 'PENDING') {
-        await waitForTransaction(this.server, result.hash);
-      }
-      return result.hash;
+      return resolveSendResult(this.server, result);
     };
 
     // Restore an archived Balance/Nonce footprint before assembling the withdraw

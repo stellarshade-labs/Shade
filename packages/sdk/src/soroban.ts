@@ -8,6 +8,7 @@ import {
 } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { sha256 } from '@noble/hashes/sha256';
+import { TransactionRetryableError } from './errors.js';
 
 /** Network configuration resolved from a network name. */
 export interface NetworkConfig {
@@ -131,6 +132,37 @@ export async function waitForTransaction(
     attempts++;
   }
   throw new Error('Transaction confirmation timed out');
+}
+
+/**
+ * Interpret a `sendTransaction` result and resolve to a landed transaction hash,
+ * or throw. Only `SUCCESS` (already landed) and `PENDING` (queued — then polled
+ * to completion) count as landed. Every other status means nothing entered the
+ * ledger and must NOT return a success receipt (SDK-01):
+ * - `ERROR`   -> a hard submission failure (throw).
+ * - `TRY_AGAIN_LATER` (and any other non-terminal status) -> the node dropped
+ *   the tx without queueing; throw a retryable error so the caller resubmits.
+ * - `DUPLICATE` -> the exact tx is already in flight; poll its hash rather than
+ *   assuming success.
+ */
+export async function resolveSendResult(
+  server: StellarSdk.rpc.Server,
+  result: { status: string; hash: string },
+): Promise<string> {
+  switch (result.status) {
+    case 'SUCCESS':
+      return result.hash;
+    case 'PENDING':
+      await waitForTransaction(server, result.hash);
+      return result.hash;
+    case 'DUPLICATE':
+      await waitForTransaction(server, result.hash);
+      return result.hash;
+    case 'ERROR':
+      throw new Error('Transaction submission failed');
+    default:
+      throw new TransactionRetryableError(result.status);
+  }
 }
 
 /** Fetch announcements from the stealth pool contract (paged by start/limit). */

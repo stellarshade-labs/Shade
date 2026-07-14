@@ -20,6 +20,7 @@ import {
   Memo,
   MuxedAccount,
   BASE_FEE,
+  type OperationRecord,
 } from '@stellar/stellar-sdk';
 import { randomBytes } from '@noble/hashes/utils';
 import { HorizonClient } from '../horizon.js';
@@ -879,7 +880,7 @@ export class AccountAdapter implements DeliveryAdapter {
     // exactly, so String(Number(value)) would be wrong here (SDK-PREC-1).
     const amt = (value: string): string => parseStroops(value).toString();
 
-    const opStr = (op: Operation): string => {
+    const opStr = (op: OperationRecord): string => {
       const src = op.source ?? relayer;
       switch (op.type) {
         case 'beginSponsoringFutureReserves':

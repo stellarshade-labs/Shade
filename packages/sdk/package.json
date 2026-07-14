@@ -24,8 +24,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@shade/crypto": "*",
-    "@stellar/stellar-sdk": "^15.1.0",
+    "@shade/crypto": "0.0.1",
+    "@stellar/stellar-sdk": "^16.0.0",
     "@noble/hashes": "^1.6.1"
   },
   "devDependencies": {

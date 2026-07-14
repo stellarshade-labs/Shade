@@ -26,6 +26,7 @@ export {
   FeePayerAddressRequiredError,
   EntryArchivedRestoringError,
   ContractIdRequiredError,
+  TransactionRetryableError,
 } from './errors.js';
 
 export {

@@ -74,7 +74,7 @@ async function scanAccountMethod(
   }));
 }
 
-interface Announcement {
+export interface Announcement {
   ephemeralPubKey: Uint8Array;
   viewTag: number;
   stealthPubKey: Uint8Array;
@@ -97,46 +97,100 @@ function createSimulationTx(
     .build();
 }
 
-async function fetchAnnouncements(
+const ANNOUNCEMENT_PAGE_SIZE = 200;
+
+async function fetchAnnouncementCount(
+  contractId: string,
+  server: StellarSdk.rpc.Server,
+  networkPassphrase: string
+): Promise<number> {
+  const contract = new Contract(contractId);
+  const op = contract.call('get_announcement_count');
+  const sim = await server.simulateTransaction(
+    createSimulationTx(op, networkPassphrase)
+  );
+  if (StellarSdk.rpc.Api.isSimulationSuccess(sim) && sim.result?.retval) {
+    return Number(StellarSdk.scValToNative(sim.result.retval));
+  }
+  return 0;
+}
+
+async function fetchAnnouncementPage(
+  contractId: string,
+  server: StellarSdk.rpc.Server,
+  networkPassphrase: string,
+  start: number,
+  limit: number,
+  sinceLedger: number | undefined,
+  out: Announcement[]
+): Promise<number> {
+  const contract = new Contract(contractId);
+  const op = contract.call(
+    'get_announcements',
+    nativeToScVal(start, { type: 'u64' }),
+    nativeToScVal(limit, { type: 'u64' })
+  );
+  const sim = await server.simulateTransaction(
+    createSimulationTx(op, networkPassphrase)
+  );
+
+  if (!StellarSdk.rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) {
+    return 0;
+  }
+  const decoded = StellarSdk.scValToNative(sim.result.retval) as any[];
+  for (const ann of decoded) {
+    const ledger = Number(ann.sequence || 0);
+    if (sinceLedger && ledger < sinceLedger) continue;
+
+    const stealthPk = new Uint8Array(ann.stealth_pk);
+    const stealthAddress = StrKey.encodeEd25519PublicKey(Buffer.from(stealthPk));
+    out.push({
+      ephemeralPubKey: new Uint8Array(ann.ephemeral_pk),
+      viewTag: ann.view_tag,
+      stealthPubKey: stealthPk,
+      stealthAddress,
+      token: ann.token?.toString?.() || 'unknown',
+      amount: BigInt(ann.amount || 0),
+      ledger,
+    });
+  }
+  return decoded.length;
+}
+
+/**
+ * Fetch ALL pool announcements, paging over the full set rather than a single
+ * capped read. A cheap `get_announcement_count` bounds the loop; pages of
+ * `ANNOUNCEMENT_PAGE_SIZE` are accumulated until the offset reaches the total,
+ * so announcements at index >= a single page are no longer silently dropped
+ * (PAGE-1). Mirrors the SDK's `PoolAdapter.scan` paging.
+ */
+export async function fetchAnnouncements(
   contractId: string,
   server: StellarSdk.rpc.Server,
   networkPassphrase: string,
   sinceLedger?: number
 ): Promise<Announcement[]> {
-  const contract = new Contract(contractId);
   const announcements: Announcement[] = [];
 
   try {
-    const op = contract.call(
-      'get_announcements',
-      nativeToScVal(0, { type: 'u64' }),
-      nativeToScVal(1000, { type: 'u64' })
+    const total = await fetchAnnouncementCount(
+      contractId,
+      server,
+      networkPassphrase
     );
-    const sim = await server.simulateTransaction(
-      createSimulationTx(op, networkPassphrase)
-    );
-
-    if (StellarSdk.rpc.Api.isSimulationSuccess(sim)) {
-      const result = sim.result?.retval;
-      if (result) {
-        const decoded = StellarSdk.scValToNative(result) as any[];
-        for (const ann of decoded) {
-          const ledger = Number(ann.sequence || 0);
-          if (sinceLedger && ledger < sinceLedger) continue;
-
-          const stealthPk = new Uint8Array(ann.stealth_pk);
-          const stealthAddress = StrKey.encodeEd25519PublicKey(Buffer.from(stealthPk));
-          announcements.push({
-            ephemeralPubKey: new Uint8Array(ann.ephemeral_pk),
-            viewTag: ann.view_tag,
-            stealthPubKey: stealthPk,
-            stealthAddress,
-            token: ann.token?.toString?.() || 'unknown',
-            amount: BigInt(ann.amount || 0),
-            ledger,
-          });
-        }
-      }
+    let offset = 0;
+    while (offset < total) {
+      const returned = await fetchAnnouncementPage(
+        contractId,
+        server,
+        networkPassphrase,
+        offset,
+        ANNOUNCEMENT_PAGE_SIZE,
+        sinceLedger,
+        announcements
+      );
+      if (returned === 0) break;
+      offset += returned;
     }
   } catch (error) {
     console.error(chalk.yellow('Warning: Could not fetch announcements from contract'));

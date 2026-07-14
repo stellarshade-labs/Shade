@@ -231,6 +231,26 @@ export class EntryArchivedRestoringError extends Error {
 }
 
 /**
+ * Thrown when the RPC `sendTransaction` returns a non-terminal status that means
+ * the transaction did NOT land — `TRY_AGAIN_LATER` (the node dropped it without
+ * queueing) or any other non-`PENDING`/`SUCCESS` status. Nothing was submitted,
+ * so the caller may safely retry with a fresh submission. Treating this as a
+ * (retryable) failure prevents returning a success receipt for a tx that never
+ * entered the ledger (SDK-01).
+ */
+export class TransactionRetryableError extends Error {
+  /** Marks this error as safe to retry (the tx never entered the ledger). */
+  readonly retryable = true as const;
+  constructor(status: string) {
+    super(
+      `Transaction was not submitted (RPC status: ${status}). Nothing landed on-chain — ` +
+        'retry the submission with a fresh transaction.',
+    );
+    this.name = 'TransactionRetryableError';
+  }
+}
+
+/**
  * Thrown by the {@link StealthClient} constructor when a pool-capable method is
  * enabled but no contract id could be resolved for the target network (there is
  * no built-in default outside `local`). Failing here — rather than deep inside a
