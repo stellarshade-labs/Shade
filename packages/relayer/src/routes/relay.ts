@@ -15,6 +15,30 @@ let relayLedger: CreditLedger | null = null;
 let relayRequireCredit = false;
 let relayChallenges: ChallengeStore | null = null;
 
+/** Max operations allowed in an inner tx submitted to /relay. */
+function maxRelayOps(): number {
+  const n = Number(process.env.MAX_RELAY_OPS);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 5;
+}
+
+/** Ceiling (stroops) clamped onto the fetched base fee before building. */
+function maxBaseFee(): number {
+  const n = Number(process.env.MAX_BASE_FEE);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 10_000;
+}
+
+/** Absolute cap (XLM) on the built outer fee-bump fee. */
+function maxRelayFeeXlm(): number {
+  const n = Number(process.env.MAX_RELAY_FEE_XLM);
+  return Number.isFinite(n) && n > 0 ? n : 0.1;
+}
+
+/** Max future window (seconds) an inner tx maxTime may be from now. */
+function maxRelayTimeboundsSeconds(): number {
+  const n = Number(process.env.MAX_RELAY_TIMEBOUNDS_SECONDS);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 600;
+}
+
 export function initRelayRoute(
   keypair: Keypair,
   opts?: {
@@ -61,10 +85,41 @@ export async function handleRelay(req: Request, res: Response) {
       return res.status(400).json({ error: 'Invalid transaction XDR' });
     }
 
+    // Abuse guards applied on EVERY path (including the free/default path,
+    // where nothing is charged and only the rate limiter stands between an
+    // unauthenticated caller and the relayer hot wallet). Mirror the caps in
+    // sponsorClaim: bound op-count, base fee, outer fee, timebounds, and memo.
+    const ops = innerTx.operations ?? [];
+    if (ops.length > maxRelayOps()) {
+      return res.status(400).json({
+        error: `Too many operations (max ${maxRelayOps()})`,
+        code: 'too_many_ops',
+      });
+    }
+
+    // Require present, non-expired, bounded timebounds so the relayer cannot be
+    // handed a tx that lingers or replays far in the future.
+    const nowSec = Math.floor(Date.now() / 1000);
+    const maxTime = Number(innerTx.timeBounds?.maxTime ?? 0);
+    if (!maxTime || maxTime > nowSec + maxRelayTimeboundsSeconds()) {
+      return res.status(400).json({
+        error: 'Inner tx must set bounded, near-future timebounds',
+        code: 'invalid_timebounds',
+      });
+    }
+
+    // Forbid memos: a relayed withdrawal has no legitimate memo and one could
+    // leak/link metadata or tag an exchange deposit.
+    if (innerTx.memo && innerTx.memo.type !== 'none') {
+      return res.status(400).json({ error: 'Memo not allowed', code: 'memo_not_allowed' });
+    }
+
     console.log(`[Relay] Wrapping transaction in fee bump...`);
 
     await server.loadAccount(relayerKeypair.publicKey());
-    const baseFee = await server.fetchBaseFee();
+    // Clamp the fetched base fee so a poisoned/spiking base-fee reading cannot
+    // inflate what the relayer signs.
+    const baseFee = Math.min(await server.fetchBaseFee(), maxBaseFee());
     const bumpFee = (baseFee * 2).toString();
 
     // Build the fee-bump FIRST so we can debit the actual total outer fee
@@ -79,6 +134,15 @@ export async function handleRelay(req: Request, res: Response) {
 
     // Optional credit gating: reserve the actual built total fee BEFORE submit.
     const feeXlm = (Number(feeBumpTx.fee) / 1e7).toFixed(7);
+
+    // Absolute outer-fee ceiling: even a well-formed multi-op tx cannot make the
+    // relayer sign an outer fee above the configured cap.
+    if (Number(feeXlm) > maxRelayFeeXlm()) {
+      return res.status(400).json({
+        error: `Fee exceeds cap (${maxRelayFeeXlm()} XLM)`,
+        code: 'fee_exceeds_cap',
+      });
+    }
     let reservation: Reservation | null = null;
     if (relayRequireCredit && relayLedger) {
       // Fail-closed: a credit-gated relayer MUST have a challenge store to prove
@@ -97,12 +161,16 @@ export async function handleRelay(req: Request, res: Response) {
           .json({ error: 'Funding account required', code: 'insufficient_credit' });
       }
       // Proof-of-control: the fundingAccount must sign a fresh challenge nonce
-      // binding this endpoint + account + the authorized fee. Without it anyone
-      // could name a victim's account and spend its credit.
+      // binding this endpoint + account + the authorized fee AND the specific
+      // inner transaction (network-scoped hash). Binding the inner-tx hash stops
+      // an intercepted {nonce, signature} from being paired with a different
+      // attacker-signed inner XDR of the same op count / amount.
+      const innerTxHash = innerTx.hash().toString('hex');
       const authErr = relayChallenges.verify(
         'relay',
         { fundingAccount, nonce, signature },
         feeXlm,
+        innerTxHash,
       );
       if (authErr) {
         return res.status(401).json({ error: 'Unauthorized', code: authErr });

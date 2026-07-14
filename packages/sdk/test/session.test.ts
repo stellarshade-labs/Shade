@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { StealthClient } from '../src/client.js';
 import { StealthSession, type KVStorage } from '../src/session.js';
-import { WrongPasswordError } from '../src/errors.js';
+import { WrongPasswordError, SessionIntegrityError } from '../src/errors.js';
 import type { Payment } from '../src/types.js';
 
 /** In-memory KVStorage satisfying the session's storage contract. */
@@ -113,6 +113,48 @@ describe('StealthSession', () => {
     await s.clear();
     expect(await s.hasKeys()).toBe(false);
     expect(Object.keys(storage.dump())).toHaveLength(0);
+  });
+
+  it('unlock THROWS SessionIntegrityError when the cleartext spendPublicKey is tampered (SDK-02)', async () => {
+    const keys = StealthClient.keygen();
+    const storage = memoryStorage();
+    const a = new StealthSession({ storage });
+    await a.saveKeys(keys, 'pw');
+
+    // A storage-WRITE attacker (no password) swaps the cleartext spend pubkey
+    // for a wrong-but-valid one; the private material is still AES-GCM intact.
+    const envelope = JSON.parse(storage.dump()['stealth:keys']!);
+    const wrongPub = StealthClient.keygen().spendPubKey;
+    expect(wrongPub).not.toBe(envelope.spendPublicKey);
+    envelope.spendPublicKey = wrongPub;
+    await storage.setItem('stealth:keys', JSON.stringify(envelope));
+
+    const b = new StealthSession({ storage });
+    await expect(b.unlock('pw')).rejects.toBeInstanceOf(SessionIntegrityError);
+  });
+
+  it('unlock THROWS SessionIntegrityError when the cleartext viewPublicKey is tampered (SDK-02)', async () => {
+    const keys = StealthClient.keygen();
+    const storage = memoryStorage();
+    const a = new StealthSession({ storage });
+    await a.saveKeys(keys, 'pw');
+
+    const envelope = JSON.parse(storage.dump()['stealth:keys']!);
+    envelope.viewPublicKey = StealthClient.keygen().viewPubKey;
+    await storage.setItem('stealth:keys', JSON.stringify(envelope));
+
+    const b = new StealthSession({ storage });
+    await expect(b.unlock('pw')).rejects.toBeInstanceOf(SessionIntegrityError);
+  });
+
+  it('an untampered session unlocks normally (integrity check passes)', async () => {
+    const keys = StealthClient.keygen();
+    const storage = memoryStorage();
+    const a = new StealthSession({ storage });
+    await a.saveKeys(keys, 'pw');
+
+    const b = new StealthSession({ storage });
+    await expect(b.unlock('pw')).resolves.toEqual(keys);
   });
 
   it('respects a custom namespace', async () => {

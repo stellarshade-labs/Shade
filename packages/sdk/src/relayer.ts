@@ -1,3 +1,4 @@
+import { Transaction } from '@stellar/stellar-sdk';
 import type { FetchLike } from './horizon.js';
 
 /**
@@ -19,15 +20,20 @@ export interface CreditChallenge {
 
 /**
  * Canonical single-line message the funding account signs to authorize a spend.
- * MUST match the relayer's `challengeMessage` byte-for-byte.
+ * MUST match the relayer's `challengeMessage` byte-for-byte. When `bind` is
+ * supplied (e.g. the inner-tx hash on the `/relay` path) it is appended so the
+ * signature is pinned to that specific transaction and cannot be paired with a
+ * different attacker-signed inner XDR of the same amount.
  */
 export function challengeMessage(
   endpoint: string,
   fundingAccount: string,
   nonce: string,
   amount: string,
+  bind?: string,
 ): string {
-  return `shade-relayer:v1:${endpoint}:${fundingAccount}:${nonce}:${amount}`;
+  const base = `shade-relayer:v1:${endpoint}:${fundingAccount}:${nonce}:${amount}`;
+  return bind ? `${base}:${bind}` : base;
 }
 
 /** Relayer `/health` response. */
@@ -49,6 +55,13 @@ export interface RelayOpts {
    * MUST equal the fee the relayer will charge, or the relayer rejects with 401.
    */
   authAmount?: string;
+  /**
+   * Network passphrase used to compute the inner-tx hash bound into the
+   * proof-of-control signature. MUST match the passphrase the relayer verifies
+   * under, or a credit-gated relayer rejects with 401. Required to bind the
+   * inner tx on a credit-gated `/relay`; omit for the free/default path.
+   */
+  networkPassphrase?: string;
 }
 
 /** Options for {@link RelayerClient.sponsor}. */
@@ -141,6 +154,7 @@ export class RelayerClient {
     fundingAccount: string | undefined,
     signer: FundingSigner | undefined,
     amount: string | undefined,
+    bind?: string,
   ): Promise<{ nonce: string; signature: string } | undefined> {
     const account = fundingAccount ?? this.fundingAccount;
     const fundingSigner = signer ?? this.fundingSigner;
@@ -149,7 +163,7 @@ export class RelayerClient {
     const { nonce } = await this.get<CreditChallenge>(
       `/credit/challenge?account=${encodeURIComponent(account)}`,
     );
-    const message = challengeMessage(endpoint, account, nonce, authAmount);
+    const message = challengeMessage(endpoint, account, nonce, authAmount, bind);
     const raw = await fundingSigner(message);
     const signature =
       typeof raw === 'string' ? raw : Buffer.from(raw).toString('base64');
@@ -196,11 +210,19 @@ export class RelayerClient {
    */
   async relay(xdr: string, opts?: RelayOpts): Promise<{ txHash: string }> {
     const fundingAccount = opts?.fundingAccount ?? this.fundingAccount;
+    // Bind the inner-tx hash into the proof-of-control signature so a captured
+    // {nonce, signature} cannot be paired with a different inner XDR (REL-01
+    // tx-binding). MUST use the same network passphrase the relayer verifies
+    // under; only computable when a passphrase is supplied.
+    const innerTxHash = opts?.networkPassphrase
+      ? new Transaction(xdr, opts.networkPassphrase).hash().toString('hex')
+      : undefined;
     const auth = await this.signedAuth(
       'relay',
       fundingAccount,
       opts?.fundingSigner,
       opts?.authAmount,
+      innerTxHash,
     );
     return this.post<{ txHash: string }>('/relay', {
       xdr,

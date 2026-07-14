@@ -17,6 +17,7 @@ export {
   InvalidAmountError,
   SponsoredClaimMismatchError,
   WrongPasswordError,
+  SessionIntegrityError,
   NoBalanceError,
   AnnouncementNotFoundError,
   StealthAccountNotFoundError,

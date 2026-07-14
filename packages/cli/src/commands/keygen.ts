@@ -51,10 +51,18 @@ function promptLine(question: string): Promise<string> {
   });
 }
 
-export const keygenCommand = new Command('keygen')
+/**
+ * Build a fresh `keygen` Command. A factory (rather than a shared singleton) so
+ * tests can parse it repeatedly without commander option state leaking between
+ * invocations.
+ */
+export function createKeygenCommand(): Command {
+  return new Command('keygen')
   .description('Generate a new stealth meta-address')
   .option('--keystore <path>', 'Keystore file path (defaults to $SHADE_KEYSTORE or ~/.shade-keys.json)')
   .option('--password [password]', 'Encrypt the keystore with AES-256-GCM (prompts on stderr if the flag is given without a value)')
+  .option('--plaintext', 'Write an UNENCRYPTED keystore (opt out of default encryption)')
+  .option('--no-encrypt', 'Alias for --plaintext: write an UNENCRYPTED keystore')
   .option('--mnemonic', 'Generate keys from a new BIP-39 mnemonic (enables recovery)')
   .option('--recover', 'Recover keys from an existing 12-word mnemonic')
   .option('--from-stellar-secret [secret]', 'Derive keys deterministically from a Stellar secret (SEP-53)')
@@ -127,10 +135,21 @@ export const keygenCommand = new Command('keygen')
 
       const keystorePath = resolveKeystorePath(options.keystore);
 
-      // --password (encrypt): a bare `--password` (boolean true) prompts on
-      // stderr so the secret never lands in shell history; `--password X` uses X.
+      // Encryption is the DEFAULT (CLI-02). A plaintext keystore is written only
+      // when explicitly opted out via --plaintext (or its --no-encrypt alias).
+      // Otherwise: use --password X, or prompt on stderr when no source is given
+      // so the secret never lands in shell history. An empty password is rejected.
+      const wantsPlaintext = options.plaintext === true || options.encrypt === false;
       let password: string | undefined;
-      if (options.password !== undefined) {
+      if (wantsPlaintext) {
+        if (options.password !== undefined) {
+          console.error(
+            chalk.red('Error: --plaintext cannot be combined with --password'),
+          );
+          process.exit(1);
+        }
+        password = undefined;
+      } else {
         password =
           typeof options.password === 'string' && options.password.length > 0
             ? options.password
@@ -159,7 +178,7 @@ export const keygenCommand = new Command('keygen')
       if (password) {
         console.log(chalk.gray('Keystore is encrypted (AES-256-GCM). You will be prompted for the password on read.'));
       } else {
-        console.log(chalk.yellow('Warning: keystore is UNENCRYPTED plaintext. Re-run with --password to encrypt.'));
+        console.log(chalk.yellow('Warning: keystore is UNENCRYPTED plaintext (--plaintext). Re-run without it to encrypt.'));
       }
       console.log(chalk.gray('Keep this file safe — it contains your private keys!'));
 
@@ -168,3 +187,7 @@ export const keygenCommand = new Command('keygen')
       process.exit(1);
     }
   });
+}
+
+/** Shared `keygen` command instance wired into the CLI program. */
+export const keygenCommand = createKeygenCommand();

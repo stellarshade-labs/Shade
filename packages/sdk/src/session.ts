@@ -1,4 +1,5 @@
-import { WrongPasswordError } from './errors.js';
+import { scalarMultBase } from '@shade/crypto';
+import { WrongPasswordError, SessionIntegrityError } from './errors.js';
 import type { StealthKeys, Payment, ScanCursor } from './types.js';
 
 /**
@@ -61,6 +62,46 @@ function fromBase64(b64: string): Uint8Array {
   const out = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
   return out;
+}
+
+/** Decode a lowercase/uppercase hex string into bytes (returns null if malformed). */
+function fromHex(hex: string): Uint8Array | null {
+  if (typeof hex !== 'string' || hex.length % 2 !== 0 || /[^0-9a-fA-F]/.test(hex)) {
+    return null;
+  }
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+/** Constant-time-ish byte-equality (length + per-byte, no early length leak concern here). */
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
+  return diff === 0;
+}
+
+/**
+ * Verify a stored (cleartext) public key against the public key derived from the
+ * decrypted private scalar. Throws {@link SessionIntegrityError} on any mismatch
+ * or malformed material so a tampered pubkey cannot silently break scanning.
+ */
+function assertPubKeyMatchesPriv(
+  which: 'spend' | 'view',
+  storedPubHex: string,
+  privHex: string,
+): void {
+  const priv = fromHex(privHex);
+  const storedPub = fromHex(storedPubHex);
+  if (!priv || !storedPub) throw new SessionIntegrityError(which);
+  let derived: Uint8Array;
+  try {
+    derived = scalarMultBase(priv);
+  } catch {
+    throw new SessionIntegrityError(which);
+  }
+  if (!bytesEqual(derived, storedPub)) throw new SessionIntegrityError(which);
 }
 
 const subtle = (): SubtleCrypto => {
@@ -218,6 +259,13 @@ export class StealthSession {
       spendPrivKey: string;
       viewPrivKey: string;
     }>(envelope.encrypted, password, envelope.iterations);
+
+    // Integrity: the private scalars are AES-GCM protected, but the cleartext
+    // public keys are not. Re-derive both public keys from the decrypted scalars
+    // and assert they match the stored pubkeys, so a storage-write attacker
+    // cannot swap in a wrong pubkey and silently break scanning.
+    assertPubKeyMatchesPriv('spend', envelope.spendPublicKey, secret.spendPrivKey);
+    assertPubKeyMatchesPriv('view', envelope.viewPublicKey, secret.viewPrivKey);
 
     const keys: StealthKeys = {
       metaAddress: secret.metaAddress,

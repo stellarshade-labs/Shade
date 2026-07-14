@@ -304,6 +304,52 @@ describe('account claim: token self-funded', () => {
     ]);
   });
 
+  it('pays the EXACT stroops from amountStroops, not the lossy number (SDK-PREC-1)', async () => {
+    const { keys, stealthAddress, ephemeralPubKeyHex } = makeFixture();
+    const submitted: string[] = [];
+    const destTrusts = {
+      id: DEST,
+      sequence: '1',
+      balances: [
+        {
+          asset_type: 'credit_alphanum4',
+          asset_code: 'USDC',
+          asset_issuer: ISSUER,
+          balance: '0.0000000',
+        },
+      ],
+    };
+    const horizon = makeCapturingHorizon({
+      accountsByAddress: {
+        [stealthAddress]: accountRecord(stealthAddress, '1.5001000'),
+        [DEST]: destTrusts,
+      },
+      submitted,
+    });
+    const adapter = new AccountAdapter(NET, horizon);
+
+    // 2e9 units + 1 stroop. The exact stroop count is 20000000000000001, which a
+    // JS double cannot represent (2000000000.0000001 rounds to ...0000000).
+    const EXACT = '2000000000.0000001';
+    const payment: Payment = {
+      stealthAddress,
+      ephemeralPubKey: ephemeralPubKeyHex,
+      token: ASSET,
+      asset: ASSET,
+      claimableBalanceId: CB_ID,
+      amount: Number(EXACT), // lossy — proves the code does NOT use this
+      amountStroops: '20000000000000001',
+      method: 'account',
+    };
+
+    await adapter.claim(payment, DEST, { keys, merge: true });
+
+    const ops = parseTx(submitted[0]!).operations;
+    const payOp = ops.find((o) => o.type === 'payment') as { amount: string };
+    expect(payOp.amount).toBe(EXACT);
+    expect(payOp.amount).not.toBe('2000000000.0000000');
+  });
+
   it('rejects when the destination has no trustline', async () => {
     const { keys, stealthAddress, ephemeralPubKeyHex } = makeFixture();
     const submitted: string[] = [];

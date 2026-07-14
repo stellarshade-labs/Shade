@@ -14,8 +14,17 @@ const { mockServerInstance, MockTransaction } = vi.hoisted(() => {
     submitTransaction: vi.fn(),
     fetchBaseFee: vi.fn()
   };
+  // A parsed inner tx that PASSES the abuse guards by default: 1 op, near-future
+  // timebounds, no memo, and a stable network-scoped hash. Individual tests
+  // override fields to exercise the op-count / timebounds / memo rejections.
   const MockTransaction = vi.fn().mockImplementation(function() {
-    return { toXDR: vi.fn().mockReturnValue('mock-xdr') };
+    return {
+      toXDR: vi.fn().mockReturnValue('mock-xdr'),
+      operations: [{ type: 'payment' }],
+      timeBounds: { maxTime: String(Math.floor(Date.now() / 1000) + 120) },
+      memo: { type: 'none' },
+      hash: vi.fn().mockReturnValue(Buffer.from('innertxhash')),
+    };
   });
   return { mockServerInstance, MockTransaction };
 });
@@ -222,10 +231,14 @@ describe('handleRelay credit gating', () => {
     } as any;
   }
 
+  // Hex of the mock inner-tx hash (Buffer.from('innertxhash')), bound into the
+  // /relay challenge so a signature is pinned to the specific inner tx.
+  const INNER_TX_HASH = Buffer.from('innertxhash').toString('hex');
+
   /** Produce a valid proof-of-control {nonce, signature} for the funder. */
   function auth(amount: string): { nonce: string; signature: string } {
     const nonce = challenges.issue(fundingAccount);
-    const msg = challengeMessage('relay', fundingAccount, nonce, amount);
+    const msg = challengeMessage('relay', fundingAccount, nonce, amount, INNER_TX_HASH);
     const signature = funder.sign(Buffer.from(msg, 'utf8')).toString('base64');
     return { nonce, signature };
   }
@@ -341,9 +354,11 @@ describe('handleRelay proof-of-control auth (credit-gated)', () => {
     } as any;
   }
 
+  const INNER_TX_HASH = Buffer.from('innertxhash').toString('hex');
+
   function auth(endpoint: string, signer: Keypair, amount: string, forNonceOf?: string) {
     const nonce = challenges.issue(forNonceOf ?? funder.publicKey());
-    const msg = challengeMessage(endpoint, funder.publicKey(), nonce, amount);
+    const msg = challengeMessage(endpoint, funder.publicKey(), nonce, amount, INNER_TX_HASH);
     const signature = signer.sign(Buffer.from(msg, 'utf8')).toString('base64');
     return { nonce, signature };
   }
@@ -424,10 +439,221 @@ describe('handleRelay proof-of-control auth (credit-gated)', () => {
       challenges: expiring,
     });
     const nonce = expiring.issue(funder.publicKey());
-    const msg = challengeMessage('relay', funder.publicKey(), nonce, FEE_XLM);
+    const msg = challengeMessage('relay', funder.publicKey(), nonce, FEE_XLM, INNER_TX_HASH);
     const signature = funder.sign(Buffer.from(msg, 'utf8')).toString('base64');
     await callWith({ nonce, signature });
     expect(mockRes.status).toHaveBeenCalledWith(401);
     expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleRelay abuse guards (default free path)', () => {
+  let mockReq: Partial<Request>;
+  let mockRes: Partial<Response>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    // Default config: NO credit gating, NO challenge store — only the abuse
+    // guards protect the hot wallet here.
+    initRelayRoute(Keypair.random());
+    mockReq = { body: { xdr: 'anything' } };
+    mockRes = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockReturnThis(),
+    };
+    mockServerInstance.loadAccount.mockResolvedValue({});
+    mockServerInstance.fetchBaseFee.mockResolvedValue(100);
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
+    (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue({
+      fee: '600',
+      sign: vi.fn(),
+      hash: vi.fn().mockReturnValue(Buffer.from('feebumphash')),
+    });
+  });
+
+  afterEach(() => {
+    initRelayRoute(Keypair.random());
+  });
+
+  const future = () => String(Math.floor(Date.now() / 1000) + 120);
+
+  it('rejects an inner tx with too many operations', async () => {
+    MockTransaction.mockImplementationOnce(function () {
+      return {
+        operations: new Array(100).fill({ type: 'payment' }),
+        timeBounds: { maxTime: future() },
+        memo: { type: 'none' },
+        hash: vi.fn().mockReturnValue(Buffer.from('h')),
+      };
+    });
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    expect(mockRes.status).toHaveBeenCalledWith(400);
+    expect(mockRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'too_many_ops' }),
+    );
+    expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects an inner tx with absent timebounds', async () => {
+    MockTransaction.mockImplementationOnce(function () {
+      return {
+        operations: [{ type: 'payment' }],
+        timeBounds: undefined,
+        memo: { type: 'none' },
+        hash: vi.fn().mockReturnValue(Buffer.from('h')),
+      };
+    });
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    expect(mockRes.status).toHaveBeenCalledWith(400);
+    expect(mockRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'invalid_timebounds' }),
+    );
+    expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects an inner tx with far-future timebounds', async () => {
+    MockTransaction.mockImplementationOnce(function () {
+      return {
+        operations: [{ type: 'payment' }],
+        timeBounds: { maxTime: String(Math.floor(Date.now() / 1000) + 86_400) },
+        memo: { type: 'none' },
+        hash: vi.fn().mockReturnValue(Buffer.from('h')),
+      };
+    });
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    expect(mockRes.status).toHaveBeenCalledWith(400);
+    expect(mockRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'invalid_timebounds' }),
+    );
+    expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects an inner tx carrying a memo', async () => {
+    MockTransaction.mockImplementationOnce(function () {
+      return {
+        operations: [{ type: 'payment' }],
+        timeBounds: { maxTime: future() },
+        memo: { type: 'text', value: 'hi' },
+        hash: vi.fn().mockReturnValue(Buffer.from('h')),
+      };
+    });
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    expect(mockRes.status).toHaveBeenCalledWith(400);
+    expect(mockRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'memo_not_allowed' }),
+    );
+    expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects an outer fee above the XLM cap', async () => {
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
+    // 2_000_000 stroops = 0.2 XLM, above the 0.1 default cap.
+    (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue({
+      fee: '2000000',
+      sign: vi.fn(),
+      hash: vi.fn().mockReturnValue(Buffer.from('feebumphash')),
+    });
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    expect(mockRes.status).toHaveBeenCalledWith(400);
+    expect(mockRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'fee_exceeds_cap' }),
+    );
+    expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('accepts a well-formed inner tx on the free path', async () => {
+    mockServerInstance.submitTransaction.mockResolvedValue({
+      hash: 'FREE_OK',
+      successful: true,
+    });
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    expect(mockRes.json).toHaveBeenCalledWith({ success: true, txHash: 'FREE_OK' });
+  });
+});
+
+describe('handleRelay inner-tx binding (credit-gated)', () => {
+  let dir: string;
+  let ledger: CreditLedger;
+  let relayer: Keypair;
+  let funder: Keypair;
+  let challenges: ChallengeStore;
+  let mockRes: Partial<Response>;
+
+  const FEE_XLM = '0.0000600';
+  const HASH_A = Buffer.from('innertxhash').toString('hex'); // what the mock returns
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-bind-'));
+    ledger = new CreditLedger(path.join(dir, 'ledger.json'));
+    relayer = Keypair.random();
+    funder = Keypair.random();
+    ledger.credit(funder.publicKey(), '10', 'DEP1');
+    challenges = new ChallengeStore();
+    initRelayRoute(relayer, { ledger, requireCredit: true, challenges });
+    mockRes = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockReturnThis(),
+    };
+    mockServerInstance.loadAccount.mockResolvedValue({});
+    mockServerInstance.fetchBaseFee.mockResolvedValue(100);
+    mockServerInstance.submitTransaction.mockResolvedValue({
+      hash: 'OK',
+      successful: true,
+    });
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
+    (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue({
+      fee: '600',
+      sign: vi.fn(),
+      hash: vi.fn().mockReturnValue(Buffer.from('feebumphash')),
+    });
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    initRelayRoute(Keypair.random());
+  });
+
+  it('rejects a signature issued for inner tx A submitted with inner tx B', async () => {
+    // Sign for a DIFFERENT inner-tx hash (tx "B") than the one the mock parses
+    // (tx "A"). The binding must reject the mismatch.
+    const HASH_B = Buffer.from('other-inner-tx').toString('hex');
+    expect(HASH_B).not.toBe(HASH_A);
+    const nonce = challenges.issue(funder.publicKey());
+    const msg = challengeMessage('relay', funder.publicKey(), nonce, FEE_XLM, HASH_B);
+    const signature = funder.sign(Buffer.from(msg, 'utf8')).toString('base64');
+
+    await handleRelay(
+      { body: { xdr: 'anything', fundingAccount: funder.publicKey(), nonce, signature } } as Request,
+      mockRes as Response,
+    );
+
+    expect(mockRes.status).toHaveBeenCalledWith(401);
+    expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('accepts a signature bound to the actual inner tx hash', async () => {
+    const nonce = challenges.issue(funder.publicKey());
+    const msg = challengeMessage('relay', funder.publicKey(), nonce, FEE_XLM, HASH_A);
+    const signature = funder.sign(Buffer.from(msg, 'utf8')).toString('base64');
+
+    await handleRelay(
+      { body: { xdr: 'anything', fundingAccount: funder.publicKey(), nonce, signature } } as Request,
+      mockRes as Response,
+    );
+
+    expect(mockRes.json).toHaveBeenCalledWith({ success: true, txHash: 'OK' });
   });
 });

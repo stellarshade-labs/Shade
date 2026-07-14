@@ -114,6 +114,25 @@ export class WrongPasswordError extends Error {
 }
 
 /**
+ * Thrown by {@link StealthSession.unlock} when the public keys stored in the
+ * clear on the envelope do NOT match the public keys re-derived from the
+ * decrypted private scalars. The private material is protected by AES-GCM, but
+ * the cleartext `spendPublicKey`/`viewPublicKey` are not — a storage-WRITE
+ * attacker (no password) could otherwise substitute a wrong pubkey and silently
+ * break scanning (denial of discovery). Re-deriving and asserting equality on
+ * unlock turns that silent mis-scan into a loud, diagnosable failure.
+ */
+export class SessionIntegrityError extends Error {
+  constructor(which: 'spend' | 'view') {
+    super(
+      `Session integrity check failed: the stored ${which} public key does not ` +
+        'match the decrypted private key. The stored session may have been tampered with.',
+    );
+    this.name = 'SessionIntegrityError';
+  }
+}
+
+/**
  * Thrown by the pool withdraw path when the resolved stealth address holds no
  * balance in the pool contract for the requested asset — there is nothing to
  * withdraw. Recoverable: the caller may have already withdrawn, or is querying

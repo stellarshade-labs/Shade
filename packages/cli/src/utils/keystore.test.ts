@@ -133,7 +133,60 @@ describe('keystore', () => {
     expect(parsed.encrypted).toHaveProperty('salt');
     expect(parsed.encrypted).toHaveProperty('iv');
     expect(parsed).toHaveProperty('version');
-    expect(parsed.version).toBe(1);
+    expect(parsed.version).toBe(2);
+  });
+
+  it('stores hardened KDF params and round-trips them (CLI-01)', async () => {
+    const keystore = {
+      spendPrivateKey: Buffer.from(randomBytes(32)).toString('hex'),
+      viewPrivateKey: Buffer.from(randomBytes(32)).toString('hex'),
+      spendPublicKey: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      viewPublicKey: 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'
+    };
+
+    await saveKeystore(keystorePath, keystore, password);
+
+    const parsed = JSON.parse(await fs.readFile(keystorePath, 'utf-8'));
+    expect(parsed.encrypted.kdf).toEqual({ N: 131072, r: 8, p: 1 });
+
+    const loaded = await loadKeystore(keystorePath, password);
+    expect(loaded.spendPrivateKey).toEqual(keystore.spendPrivateKey);
+    expect(loaded.viewPrivateKey).toEqual(keystore.viewPrivateKey);
+  });
+
+  it('decrypts a legacy envelope with no KDF params (N=16384 default)', async () => {
+    // Simulate a pre-existing (version 1, no kdf) envelope by encrypting with
+    // Node's scrypt defaults and the v1 shape, then confirm loadKeystore reads it.
+    const { createCipheriv, randomBytes: nodeRandom, scryptSync } = await import('crypto');
+    const priv = {
+      spendPrivateKey: Buffer.from(randomBytes(32)).toString('hex'),
+      viewPrivateKey: Buffer.from(randomBytes(32)).toString('hex'),
+    };
+    const salt = nodeRandom(32);
+    const iv = nodeRandom(16);
+    const key = scryptSync(password, salt, 32); // Node defaults => N=16384
+    const cipher = createCipheriv('aes-256-gcm', key, iv);
+    const enc = Buffer.concat([
+      cipher.update(JSON.stringify(priv), 'utf8'),
+      cipher.final(),
+    ]);
+    const tag = cipher.getAuthTag();
+    const legacy = {
+      version: 1,
+      spendPublicKey: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      viewPublicKey: 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
+      encrypted: {
+        data: Buffer.concat([enc, tag]).toString('base64'),
+        salt: salt.toString('base64'),
+        iv: iv.toString('base64'),
+        // NOTE: no `kdf` field — mirrors a pre-hardening keystore.
+      },
+    };
+    await fs.writeFile(keystorePath, JSON.stringify(legacy, null, 2));
+
+    const loaded = await loadKeystore(keystorePath, password);
+    expect(loaded.spendPrivateKey).toEqual(priv.spendPrivateKey);
+    expect(loaded.viewPrivateKey).toEqual(priv.viewPrivateKey);
   });
 });
 

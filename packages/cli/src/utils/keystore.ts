@@ -11,6 +11,13 @@ export interface Keystore {
   viewPrivateKey: string;
 }
 
+/** scrypt KDF parameters persisted in the envelope so hardening can evolve. */
+interface KdfParams {
+  N: number;
+  r: number;
+  p: number;
+}
+
 interface EncryptedKeystore {
   version: number;
   spendPublicKey: string;
@@ -19,7 +26,35 @@ interface EncryptedKeystore {
     data: string;
     salt: string;
     iv: string;
+    /** Present from envelope v2 onward; absent envelopes use LEGACY_KDF. */
+    kdf?: KdfParams;
   };
+}
+
+/**
+ * Hardened scrypt work factor for NEW keystores (~0.15s/guess). `maxmem` MUST be
+ * raised above Node's 32 MB default or scrypt throws for these parameters.
+ */
+const HARDENED_KDF: KdfParams = { N: 131072, r: 8, p: 1 };
+const SCRYPT_MAXMEM = 256 * 1024 * 1024;
+
+/**
+ * Node's scrypt defaults, used to decrypt pre-existing envelopes that were
+ * written before KDF params were stored (version 1, no `kdf` field).
+ */
+const LEGACY_KDF: KdfParams = { N: 16384, r: 8, p: 1 };
+
+/** Envelope version written by the current hardened save path. */
+const KEYSTORE_VERSION = 2;
+
+/** Derive the AES key from a password using the given (stored) KDF params. */
+function deriveKey(password: string, salt: Buffer, kdf: KdfParams): Buffer {
+  return scryptSync(password, salt, 32, {
+    N: kdf.N,
+    r: kdf.r,
+    p: kdf.p,
+    maxmem: SCRYPT_MAXMEM,
+  });
 }
 
 /** The home-directory default keystore location. */
@@ -153,7 +188,8 @@ export async function saveKeystore(
   if (password) {
     const salt = randomBytes(32);
     const iv = randomBytes(16);
-    const key = scryptSync(password, salt, 32);
+    const kdf = HARDENED_KDF;
+    const key = deriveKey(password, salt, kdf);
 
     const cipher = createCipheriv('aes-256-gcm', key, iv);
     const privateData = JSON.stringify({
@@ -169,13 +205,14 @@ export async function saveKeystore(
     const authTag = cipher.getAuthTag();
 
     const encryptedKeystore: EncryptedKeystore = {
-      version: 1,
+      version: KEYSTORE_VERSION,
       spendPublicKey: keystore.spendPublicKey,
       viewPublicKey: keystore.viewPublicKey,
       encrypted: {
         data: Buffer.concat([encrypted, authTag]).toString('base64'),
         salt: salt.toString('base64'),
-        iv: iv.toString('base64')
+        iv: iv.toString('base64'),
+        kdf
       }
     };
 
@@ -202,7 +239,11 @@ export async function loadKeystore(
       const iv = Buffer.from(parsed.encrypted.iv, 'base64');
       const encryptedData = Buffer.from(parsed.encrypted.data, 'base64');
 
-      const key = scryptSync(password, salt, 32);
+      // Read the KDF params from the envelope so hardened keystores decrypt with
+      // their stored work factor; pre-existing envelopes with no params fall back
+      // to Node's scrypt defaults (N=16384) so they still decrypt.
+      const kdf: KdfParams = parsed.encrypted.kdf ?? LEGACY_KDF;
+      const key = deriveKey(password, salt, kdf);
 
       const authTag = encryptedData.slice(-16);
       const ciphertext = encryptedData.slice(0, -16);

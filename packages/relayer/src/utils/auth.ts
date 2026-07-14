@@ -73,6 +73,9 @@ export class ChallengeStore {
    * @param endpoint - Canonical endpoint name (e.g. `'relay'`, `'sponsor'`).
    * @param auth - The `{ fundingAccount, nonce, signature }` the client sent.
    * @param amount - The fee/amount (7-dp XLM string) the signature authorizes.
+   * @param bind - Optional extra binding (e.g. the inner tx hash) appended to
+   *   the signed message so a `{nonce, signature}` cannot be paired with a
+   *   different transaction of the same amount.
    */
   verify(
     endpoint: string,
@@ -82,6 +85,7 @@ export class ChallengeStore {
       signature?: unknown;
     },
     amount: string,
+    bind?: string,
   ): string | null {
     const fundingAccount = auth?.fundingAccount;
     const nonce = auth?.nonce;
@@ -100,7 +104,7 @@ export class ChallengeStore {
       return 'invalid_nonce';
     }
 
-    const message = challengeMessage(endpoint, fundingAccount, nonce, amount);
+    const message = challengeMessage(endpoint, fundingAccount, nonce, amount, bind);
     let ok = false;
     try {
       const kp = Keypair.fromPublicKey(fundingAccount);
@@ -120,15 +124,19 @@ export class ChallengeStore {
 /**
  * Canonical single-line message the funding account signs to authorize a spend.
  * Binds the endpoint, funding account, nonce, and authorized amount so a
- * signature for one endpoint/amount/nonce cannot be replayed for another.
+ * signature for one endpoint/amount/nonce cannot be replayed for another. When
+ * `bind` is supplied (e.g. the inner-tx hash) it is appended so the signature is
+ * also pinned to that specific transaction and cannot be paired with another.
  */
 export function challengeMessage(
   endpoint: string,
   fundingAccount: string,
   nonce: string,
   amount: string,
+  bind?: string,
 ): string {
-  return `shade-relayer:v1:${endpoint}:${fundingAccount}:${nonce}:${amount}`;
+  const base = `shade-relayer:v1:${endpoint}:${fundingAccount}:${nonce}:${amount}`;
+  return bind ? `${base}:${bind}` : base;
 }
 
 /** Decode a signature provided as base64 or hex into raw bytes. */

@@ -692,6 +692,13 @@ export class AccountAdapter implements DeliveryAdapter {
     const asset = payment.asset ?? payment.token;
     const stellarAsset = parseAsset(asset);
     const amount = payment.amount;
+    // Exact 7-dp payout string derived from the precise stroop count, NOT the
+    // lossy `payment.amount` double: above 2^53 stroops a number cannot represent
+    // every stroop, so `amount.toFixed(7)` could pay one short (SDK-PREC-1).
+    // When the exact stroop count is unavailable we fall back to the lossy
+    // amount WITHOUT an extra Horizon round-trip (the caller already has the
+    // amount in hand from the scan).
+    const payoutAmount = this.resolveExactPayout(payment);
 
     await this.assertDestinationTrusts(destination, stellarAsset);
 
@@ -705,7 +712,14 @@ export class AccountAdapter implements DeliveryAdapter {
           'Sponsored token claim requires a relayer URL (opts.relay or client relayer).',
         );
       }
-      return this.claimTokenSponsored(payment, opts, relay, amount, destination);
+      return this.claimTokenSponsored(
+        payment,
+        opts,
+        relay,
+        amount,
+        destination,
+        payoutAmount,
+      );
     }
 
     const stealthPrivKey = this.recoverKey(payment, opts);
@@ -729,7 +743,7 @@ export class AccountAdapter implements DeliveryAdapter {
           Operation.payment({
             destination,
             asset: stellarAsset,
-            amount: amount.toFixed(7),
+            amount: payoutAmount,
           }),
         )
         .addOperation(Operation.changeTrust({ asset: stellarAsset, limit: '0' }))
@@ -758,6 +772,7 @@ export class AccountAdapter implements DeliveryAdapter {
     relay: string,
     amount: number,
     destination: string,
+    payoutAmount: string,
   ): Promise<ClaimReceipt> {
     const client = this.relayerClient ?? new RelayerClient(relay);
     const asset = payment.asset ?? payment.token;
@@ -767,7 +782,6 @@ export class AccountAdapter implements DeliveryAdapter {
       throw new Error('Sponsored token claim requires a claimableBalanceId');
     }
 
-    const payoutAmount = amount.toFixed(7);
     const { xdr } = await client.sponsorClaimPrepare({
       stealthAddress: payment.stealthAddress,
       asset,
@@ -859,9 +873,11 @@ export class AccountAdapter implements DeliveryAdapter {
     // is optional (only when the stealth account did not already exist), so we
     // build both a with-create and without-create expectation and require the
     // submitted ops to match one of them positionally.
-    // Normalize a decimal amount string so '0' and '0.0000000' (and '100' vs
-    // '100.0000000') compare equal regardless of how the SDK re-serialized it.
-    const amt = (value: string): string => String(Number(value));
+    // Normalize a decimal amount string via its EXACT stroop count so '0' and
+    // '0.0000000' (and '100' vs '100.0000000') compare equal WITHOUT laundering
+    // through a lossy float — an amount above 2^53 stroops must still compare
+    // exactly, so String(Number(value)) would be wrong here (SDK-PREC-1).
+    const amt = (value: string): string => parseStroops(value).toString();
 
     const opStr = (op: Operation): string => {
       const src = op.source ?? relayer;
@@ -912,6 +928,22 @@ export class AccountAdapter implements DeliveryAdapter {
     }
 
     return tx;
+  }
+
+  /**
+   * Resolve the EXACT 7-dp payout string for a token claim from the precise
+   * stroop count, never the lossy `payment.amount` double. Prefers the exact
+   * `payment.amountStroops` string; when it is absent, falls back to the 7-dp
+   * `payment.amount` double with NO extra Horizon read (the amount is already in
+   * hand from the scan). Above 2^53 stroops the double in `payment.amount`
+   * cannot represent every stroop, so an exact stroop count should always be
+   * threaded through when available (SDK-PREC-1).
+   */
+  private resolveExactPayout(payment: Payment): string {
+    if (payment.amountStroops) {
+      return formatStroops(BigInt(payment.amountStroops));
+    }
+    return payment.amount.toFixed(7);
   }
 
   /** Recover the raw stealth scalar for signing from the payment's ephemeral R. */
