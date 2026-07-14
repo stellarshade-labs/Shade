@@ -23,6 +23,7 @@ export {
   DestinationTrustlineError,
   FeePayerRequiredError,
   FeePayerAddressRequiredError,
+  EntryArchivedRestoringError,
   ContractIdRequiredError,
 } from './errors.js';
 
@@ -59,6 +60,14 @@ export type {
 
 export { StealthSession } from './session.js';
 export type { KVStorage, StealthSessionOpts, ScanState } from './session.js';
+
+export { prepareWithRestore } from './methods/restore.js';
+export type {
+  RestoreSigner,
+  RestoreSubmit,
+  RestoreNotify,
+  RebuildInvocation,
+} from './methods/restore.js';
 
 export type { DeliveryAdapter, AdapterSendParams } from './methods/types.js';
 export { PoolAdapter } from './methods/pool.js';

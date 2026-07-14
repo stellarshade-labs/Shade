@@ -66,6 +66,7 @@ export {
   scalarMultBase,
   scalarMult,
   scalarAdd,
+  generateRandomScalar,
 } from './ed25519.js';
 
 export {

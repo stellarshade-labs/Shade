@@ -42,6 +42,7 @@ import {
 } from '../errors.js';
 import { numberToStroops, formatStroops } from '../stroops.js';
 import { signTx } from './sign.js';
+import { prepareWithRestore } from './restore.js';
 
 const POOL_PAGE_SIZE = 200;
 
@@ -374,54 +375,85 @@ export class PoolAdapter implements DeliveryAdapter {
     const contract = new Contract(this.contractId);
     const feePayerAccount = await this.server.getAccount(feePayerPublicKey);
 
-    const withdrawTx = new TransactionBuilder(feePayerAccount, {
-      fee: '100',
-      networkPassphrase: this.networkPassphrase,
-    })
-      .addOperation(
-        contract.call(
-          'withdraw',
-          nativeToScVal(Buffer.from(matchedAnn.stealthPubKey)),
-          new StellarSdk.Address(tokenAddress).toScVal(),
-          nativeToScVal(withdrawAmount, { type: 'i128' }),
-          new StellarSdk.Address(destination).toScVal(),
-          nativeToScVal(nonce, { type: 'u64' }),
-          nativeToScVal(Buffer.from(signature)),
-        ),
-      )
-      .setTimeout(30)
-      .build();
+    // Build the withdraw invocation from a given source account. Reused so the
+    // restore branch can rebuild on a fresh sequence after the RestoreFootprint
+    // consumes the fee payer's next seq (otherwise the withdraw collides →
+    // txBAD_SEQ). The non-archived path builds it exactly once.
+    const buildWithdrawTx = (
+      source: StellarSdk.Account,
+    ): StellarSdk.Transaction =>
+      new TransactionBuilder(source, {
+        fee: '100',
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(
+          contract.call(
+            'withdraw',
+            nativeToScVal(Buffer.from(matchedAnn.stealthPubKey)),
+            new StellarSdk.Address(tokenAddress).toScVal(),
+            nativeToScVal(withdrawAmount, { type: 'i128' }),
+            new StellarSdk.Address(destination).toScVal(),
+            nativeToScVal(nonce, { type: 'u64' }),
+            nativeToScVal(Buffer.from(signature)),
+          ),
+        )
+        .setTimeout(30)
+        .build();
 
-    const prepared = await this.server.prepareTransaction(withdrawTx);
-    const signedWithdraw = await signTx(
-      prepared,
-      opts.signTransaction ? feePayerPublicKey : opts.feePayer,
-      this.networkPassphrase,
-      opts.signTransaction,
-    );
+    const withdrawTx = buildWithdrawTx(feePayerAccount);
 
-    let txHash: string;
-    if (opts.relay) {
-      const url = opts.relay.endsWith('/relay') ? opts.relay : `${opts.relay}/relay`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ xdr: signedWithdraw.toEnvelope().toXDR('base64') }),
-      });
-      if (!res.ok) {
-        const err = (await res.json()) as { error?: string };
-        throw new Error(`Relay error: ${err.error || 'unknown'}`);
+    // Sign the fee-payer leg of any Soroban tx (withdraw or restore).
+    const signLeg = (tx: StellarSdk.Transaction): Promise<StellarSdk.Transaction> =>
+      signTx(
+        tx,
+        opts.signTransaction ? feePayerPublicKey : opts.feePayer,
+        this.networkPassphrase,
+        opts.signTransaction,
+      );
+
+    // Submit a signed tx, fee-bumped through the relayer when one is configured,
+    // otherwise directly to the RPC. Returns the transaction hash.
+    const submit = async (
+      signed: StellarSdk.Transaction,
+    ): Promise<string> => {
+      if (opts.relay) {
+        const url = opts.relay.endsWith('/relay')
+          ? opts.relay
+          : `${opts.relay}/relay`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ xdr: signed.toEnvelope().toXDR('base64') }),
+        });
+        if (!res.ok) {
+          const err = (await res.json()) as { error?: string };
+          throw new Error(`Relay error: ${err.error || 'unknown'}`);
+        }
+        const data = (await res.json()) as { txHash: string };
+        return data.txHash;
       }
-      const data = (await res.json()) as { txHash: string };
-      txHash = data.txHash;
-    } else {
-      const result = await this.server.sendTransaction(signedWithdraw);
-      if (result.status === 'ERROR') throw new Error('Transaction submission failed');
+      const result = await this.server.sendTransaction(signed);
+      if (result.status === 'ERROR')
+        throw new Error('Transaction submission failed');
       if (result.status === 'PENDING') {
         await waitForTransaction(this.server, result.hash);
       }
-      txHash = result.hash;
-    }
+      return result.hash;
+    };
+
+    // Restore an archived Balance/Nonce footprint before assembling the withdraw
+    // (prepareTransaction alone ignores sim.restorePreamble — see restore.ts).
+    const prepared = await prepareWithRestore(
+      withdrawTx,
+      buildWithdrawTx,
+      this.server,
+      this.networkPassphrase,
+      signLeg,
+      submit,
+    );
+
+    const signedWithdraw = await signLeg(prepared);
+    const txHash = await submit(signedWithdraw);
 
     return { txHash, amount: Number(withdrawAmount) / 1e7 };
   }

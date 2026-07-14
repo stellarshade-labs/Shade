@@ -1,7 +1,5 @@
-import { randomBytes } from '@noble/hashes/utils';
-import { bytesToNumberLE, numberToBytesLE } from '@noble/curves/abstract/utils';
 import type { StealthMetaAddress } from './types.js';
-import { L, scalarMultBase, scalarMult, pointAdd, validatePoint } from './ed25519.js';
+import { scalarMultBase, scalarMult, pointAdd, validatePoint, generateRandomScalar } from './ed25519.js';
 import { hashToScalar, viewTag } from './hash.js';
 import { encodePublicKey } from './stellar-keys.js';
 import { InvalidPublicKey } from './errors.js';
@@ -121,14 +119,4 @@ export function computeStealthAddress(
   viewPubKey: Uint8Array
 ): StealthDerivation {
   return deriveStealthAddress({ spendPubKey, viewPubKey });
-}
-
-/**
- * Generate a random scalar reduced modulo L.
- * @returns 32-byte scalar (little-endian, reduced mod L)
- */
-function generateRandomScalar(): Uint8Array {
-  const bytes = randomBytes(32);
-  const scalar = bytesToNumberLE(bytes) % L;
-  return numberToBytesLE(scalar, 32);
 }

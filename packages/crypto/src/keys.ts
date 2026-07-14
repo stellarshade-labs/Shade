@@ -1,8 +1,6 @@
-import { randomBytes } from '@noble/hashes/utils';
-import { bytesToNumberLE, numberToBytesLE } from '@noble/curves/abstract/utils';
 import { sha256 } from '@noble/hashes/sha256';
 import type { StealthKeys, StealthMetaAddress } from './types.js';
-import { L, scalarMultBase, validatePoint } from './ed25519.js';
+import { scalarMultBase, validatePoint, generateRandomScalar } from './ed25519.js';
 import { InvalidMetaAddress, InvalidPublicKey } from './errors.js';
 
 /**
@@ -45,16 +43,6 @@ export function generateMetaAddress(): StealthKeys {
       viewPubKey,
     },
   };
-}
-
-/**
- * Generate a random scalar reduced modulo L.
- * @returns 32-byte scalar (little-endian, reduced mod L)
- */
-function generateRandomScalar(): Uint8Array {
-  const bytes = randomBytes(32);
-  const scalar = bytesToNumberLE(bytes) % L;
-  return numberToBytesLE(scalar, 32);
 }
 
 /**

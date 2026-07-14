@@ -20,6 +20,7 @@ import {
   nativeToScVal,
   xdr,
   rpc,
+  SorobanDataBuilder,
 } from '@stellar/stellar-sdk';
 import { AccountAdapter } from '../src/methods/account.js';
 import { PoolAdapter } from '../src/methods/pool.js';
@@ -103,15 +104,25 @@ function makePoolServer(opts: {
   const server = {
     async simulateTransaction(tx: Transaction): Promise<unknown> {
       const fn = invokedFunctionName(tx);
+      // The withdraw invoke now flows through prepareWithRestore ->
+      // rpc.assembleTransaction, which needs a parsed success simulation
+      // (a real SorobanDataBuilder + result.auth), and NO restorePreamble so the
+      // non-archived path assembles directly. The read-only queries only need a
+      // retval.
+      if (fn === 'withdraw') {
+        return {
+          _parsed: true,
+          transactionData: new SorobanDataBuilder(),
+          minResourceFee: '100',
+          result: { retval: xdr.ScVal.scvVoid(), auth: [] },
+          events: [],
+          latestLedger: 1,
+        };
+      }
       return { transactionData: {}, result: { retval: simRetval(fn) } };
     },
     async getAccount(address: string): Promise<Account> {
       return new Account(address, '100');
-    },
-    async prepareTransaction(tx: Transaction): Promise<Transaction> {
-      // In production this attaches the Soroban footprint/auth. The stub returns
-      // the tx unchanged; the signer round-trip through XDR must still preserve it.
-      return tx;
     },
     async sendTransaction(tx: Transaction): Promise<{ status: string; hash: string }> {
       opts.submitted.push(tx);

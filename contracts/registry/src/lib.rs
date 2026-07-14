@@ -37,8 +37,14 @@ pub enum DataKey {
 }
 
 /// TTL constants for persistent storage.
+///
+/// `TTL_EXTEND_TO` is deliberately large (~1 year) to support a cold-savings
+/// custody pattern: a recipient may receive a deposit and stay idle for a long
+/// time. Combined with read-path TTL extension in `get_balance`/`get_nonce`
+/// (each read bumps the entry back up to this floor), a passively-scanning
+/// recipient keeps their Balance and Nonce entries live and never archives.
 const TTL_THRESHOLD: u32 = 518_400; // ~30 days
-const TTL_EXTEND_TO: u32 = 1_555_200; // ~90 days
+const TTL_EXTEND_TO: u32 = 6_312_000; // ~365 days
 
 #[contract]
 pub struct StealthPoolContract;
@@ -228,18 +234,42 @@ impl StealthPoolContract {
 
     /// Get balance for a stealth key + token pair.
     ///
-    /// Note: Balance/Nonce are persistent entries. A long-idle entry whose TTL has
-    /// lapsed to the archived state may require a `RestoreFootprint` operation before
-    /// a subsequent `withdraw` can read/write it (client-side restore is roadmap).
+    /// Reading a live Balance entry EXTENDS its persistent-entry TTL back up to
+    /// `TTL_EXTEND_TO`. Because a passive recipient polls `get_balance` while
+    /// scanning, this read path keeps their funds from ever archiving, so a
+    /// later `withdraw` never fails on an archived entry. If an entry has already
+    /// lapsed to the archived state (e.g. it was never read within the TTL
+    /// window), a client-side `RestoreFootprint` operation restores it before the
+    /// next read/write — the SDK performs this automatically.
     pub fn get_balance(env: Env, stealth_pk: BytesN<32>, token_addr: Address) -> i128 {
         let bal_key = DataKey::Balance(stealth_pk, token_addr);
-        env.storage().persistent().get(&bal_key).unwrap_or(0)
+        let balance = env.storage().persistent().get(&bal_key).unwrap_or(0);
+        // Extend TTL only for entries that actually exist; unwrap_or(0) above
+        // returns 0 for a missing entry, and extending a nonexistent key is a
+        // no-op we skip to avoid needless host calls.
+        if env.storage().persistent().has(&bal_key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&bal_key, TTL_THRESHOLD, TTL_EXTEND_TO);
+        }
+        balance
     }
 
     /// Get the current nonce for a stealth key (for constructing withdraw messages).
+    ///
+    /// Like `get_balance`, reading a live Nonce entry EXTENDS its TTL back up to
+    /// `TTL_EXTEND_TO`. Scan/withdraw preparation reads the nonce, so this keeps
+    /// the replay-protection entry live for a passive recipient and prevents it
+    /// from archiving out from under a later `withdraw`.
     pub fn get_nonce(env: Env, stealth_pk: BytesN<32>) -> u64 {
         let nonce_key = DataKey::Nonce(stealth_pk);
-        env.storage().persistent().get(&nonce_key).unwrap_or(0)
+        let nonce = env.storage().persistent().get(&nonce_key).unwrap_or(0);
+        if env.storage().persistent().has(&nonce_key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&nonce_key, TTL_THRESHOLD, TTL_EXTEND_TO);
+        }
+        nonce
     }
 
     /// Get announcements with pagination.
@@ -301,7 +331,10 @@ impl StealthPoolContract {
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
-    use soroban_sdk::{testutils::Address as _, Address, Env};
+    use soroban_sdk::{
+        testutils::{storage::Persistent as _, Address as _, Ledger as _},
+        Address, Env,
+    };
 
     fn setup_token(env: &Env) -> (Address, Address, token::StellarAssetClient<'_>) {
         let admin = Address::generate(env);
@@ -791,6 +824,166 @@ mod tests {
         // start=1, limit=u64::MAX -> tail window [1, 3) without overflow panic.
         let tail = client.get_announcements(&1, &u64::MAX);
         assert_eq!(tail.len(), 2);
+    }
+
+    #[test]
+    fn test_get_balance_read_extends_ttl() {
+        // A passive recipient who only reads (never writes) must keep their
+        // Balance/Nonce persistent entries live. Reading via get_balance and
+        // get_nonce must EXTEND the entry TTL (live-until ledger increases),
+        // so the entry never archives before a later withdraw.
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(StealthPoolContract, ());
+        let client = StealthPoolContractClient::new(&env, &contract_id);
+
+        let (token_id, _admin, sac) = setup_token(&env);
+        let sender = Address::generate(&env);
+        sac.mint(&sender, &1000);
+
+        let stealth_pk = BytesN::from_array(&env, &[7u8; 32]);
+        let ephemeral_pk = BytesN::from_array(&env, &[2u8; 32]);
+        client.deposit(&sender, &token_id, &100, &stealth_pk, &ephemeral_pk, &42);
+
+        let bal_key = DataKey::Balance(stealth_pk.clone(), token_id.clone());
+
+        // Advance the ledger far enough that the deposit's remaining TTL drops
+        // below TTL_THRESHOLD, so the read-path extend_ttl actually fires.
+        // get_ttl returns the *remaining* ledgers before archival, which shrinks
+        // as ledgers pass; extend_ttl only bumps entries whose remaining TTL has
+        // fallen below the threshold.
+        env.ledger().with_mut(|li| {
+            li.sequence_number += TTL_EXTEND_TO - TTL_THRESHOLD + 100;
+        });
+
+        // Remaining TTL just before the read (decayed below the threshold).
+        let ttl_before_read = env.as_contract(&contract_id, || {
+            env.storage().persistent().get_ttl(&bal_key)
+        });
+        assert!(
+            ttl_before_read < TTL_THRESHOLD,
+            "precondition: TTL must have decayed below threshold, got {}",
+            ttl_before_read
+        );
+
+        // Reading the balance must extend (restore) the remaining TTL.
+        assert_eq!(client.get_balance(&stealth_pk, &token_id), 100);
+        let ttl_after_read = env.as_contract(&contract_id, || {
+            env.storage().persistent().get_ttl(&bal_key)
+        });
+        assert!(
+            ttl_after_read > ttl_before_read,
+            "get_balance must extend Balance TTL: {} !> {}",
+            ttl_after_read,
+            ttl_before_read
+        );
+    }
+
+    #[test]
+    fn test_get_nonce_read_extends_ttl() {
+        // get_nonce on an existing Nonce entry must extend its TTL so the
+        // replay-protection entry stays live for a passive recipient.
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(StealthPoolContract, ());
+        let client = StealthPoolContractClient::new(&env, &contract_id);
+
+        let (token_id, _admin, sac) = setup_token(&env);
+        let sender = Address::generate(&env);
+        let destination = Address::generate(&env);
+        sac.mint(&sender, &1000);
+
+        // Establish a real Nonce entry via a valid withdraw.
+        let signing_key = SigningKey::from_bytes(&[71u8; 32]);
+        let pub_bytes = signing_key.verifying_key().to_bytes();
+        let stealth_pk = BytesN::from_array(&env, &pub_bytes);
+        let ephemeral_pk = BytesN::from_array(&env, &[2u8; 32]);
+        client.deposit(&sender, &token_id, &100, &stealth_pk, &ephemeral_pk, &42);
+
+        let message = env.as_contract(&contract_id, || {
+            StealthPoolContract::build_withdraw_message(
+                &env, &stealth_pk, &token_id, 50, &destination, 1,
+            )
+        });
+        let mut msg_raw = [0u8; 32];
+        message.copy_into_slice(&mut msg_raw);
+        let sig = signing_key.sign(&msg_raw);
+        let signature = BytesN::from_array(&env, &sig.to_bytes());
+        client.withdraw(&stealth_pk, &token_id, &50, &destination, &1, &signature);
+
+        let nonce_key = DataKey::Nonce(stealth_pk.clone());
+
+        // Advance the ledger far enough that the withdraw's remaining TTL drops
+        // below TTL_THRESHOLD, so the read-path extend_ttl actually fires.
+        env.ledger().with_mut(|li| {
+            li.sequence_number += TTL_EXTEND_TO - TTL_THRESHOLD + 100;
+        });
+
+        let ttl_before_read = env.as_contract(&contract_id, || {
+            env.storage().persistent().get_ttl(&nonce_key)
+        });
+        assert!(
+            ttl_before_read < TTL_THRESHOLD,
+            "precondition: TTL must have decayed below threshold, got {}",
+            ttl_before_read
+        );
+
+        assert_eq!(client.get_nonce(&stealth_pk), 1);
+        let ttl_after_read = env.as_contract(&contract_id, || {
+            env.storage().persistent().get_ttl(&nonce_key)
+        });
+        assert!(
+            ttl_after_read > ttl_before_read,
+            "get_nonce must extend Nonce TTL: {} !> {}",
+            ttl_after_read,
+            ttl_before_read
+        );
+    }
+
+    #[test]
+    fn test_deposit_withdraw_still_pass_after_read_ttl_change() {
+        // Sanity: read-path TTL extension must not break the deposit/withdraw
+        // flow. A full deposit -> get_balance -> get_nonce -> withdraw succeeds.
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(StealthPoolContract, ());
+        let client = StealthPoolContractClient::new(&env, &contract_id);
+
+        let (token_id, _admin, sac) = setup_token(&env);
+        let sender = Address::generate(&env);
+        let destination = Address::generate(&env);
+        sac.mint(&sender, &1000);
+
+        let signing_key = SigningKey::from_bytes(&[72u8; 32]);
+        let pub_bytes = signing_key.verifying_key().to_bytes();
+        let stealth_pk = BytesN::from_array(&env, &pub_bytes);
+        let ephemeral_pk = BytesN::from_array(&env, &[2u8; 32]);
+
+        client.deposit(&sender, &token_id, &100, &stealth_pk, &ephemeral_pk, &42);
+
+        // Reads happen during scan/withdraw preparation.
+        assert_eq!(client.get_balance(&stealth_pk, &token_id), 100);
+        let nonce = client.get_nonce(&stealth_pk);
+        assert_eq!(nonce, 0);
+
+        let message = env.as_contract(&contract_id, || {
+            StealthPoolContract::build_withdraw_message(
+                &env, &stealth_pk, &token_id, 100, &destination, nonce + 1,
+            )
+        });
+        let mut msg_raw = [0u8; 32];
+        message.copy_into_slice(&mut msg_raw);
+        let sig = signing_key.sign(&msg_raw);
+        let signature = BytesN::from_array(&env, &sig.to_bytes());
+        client.withdraw(&stealth_pk, &token_id, &100, &destination, &(nonce + 1), &signature);
+
+        assert_eq!(client.get_balance(&stealth_pk, &token_id), 0);
+        assert_eq!(client.get_nonce(&stealth_pk), 1);
+        let token_client = token::Client::new(&env, &token_id);
+        assert_eq!(token_client.balance(&destination), 100);
     }
 
     #[test]

@@ -190,6 +190,28 @@ export class FeePayerAddressRequiredError extends Error {
 }
 
 /**
+ * Thrown by the pool withdraw path when the recipient's persistent Balance/Nonce
+ * ledger entry has been archived (Soroban state expiration) and the automatic
+ * RestoreFootprint transaction that must precede the withdraw could not be
+ * completed. Withdrawing over an archived footprint fails on-chain even though
+ * `get_balance`/`scan` still report the funds, so the SDK restores the entry
+ * first; if that restore itself fails the funds are recoverable but the withdraw
+ * cannot proceed until the entry is restored. The message carries the underlying
+ * cause so the operator can diagnose (e.g. an unfunded fee payer or a relayer
+ * rejection).
+ */
+export class EntryArchivedRestoringError extends Error {
+  constructor(cause: string) {
+    super(
+      `Stealth entry is archived and the automatic restore failed (${cause}). ` +
+        'The funds are safe but the withdraw cannot proceed until the Balance/Nonce ' +
+        'entry is restored — retry, or restore the footprint manually.',
+    );
+    this.name = 'EntryArchivedRestoringError';
+  }
+}
+
+/**
  * Thrown by the {@link StealthClient} constructor when a pool-capable method is
  * enabled but no contract id could be resolved for the target network (there is
  * no built-in default outside `local`). Failing here — rather than deep inside a

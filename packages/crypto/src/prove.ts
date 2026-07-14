@@ -46,6 +46,10 @@ export function signWithStealthKey(message: Uint8Array, privateScalar: Uint8Arra
   challengeInput.set(message, 64);
   const k = bytesToNumberLE(sha512(challengeInput)) % L;
 
+  // challengeInput holds only public data (R, pubKey, message); zeroing it is
+  // uniform zeroization hygiene, not a secrecy requirement.
+  challengeInput.fill(0);
+
   // Response: S = (r + k * a) mod L
   const S = (r + k * a) % L;
 

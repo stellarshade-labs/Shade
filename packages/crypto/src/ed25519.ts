@@ -1,4 +1,5 @@
 import { ed25519 } from '@noble/curves/ed25519';
+import { randomBytes } from '@noble/hashes/utils';
 import { bytesToNumberLE, numberToBytesLE } from '@noble/curves/abstract/utils';
 import { PointAtInfinity, InvalidPublicKey, InvalidScalar } from './errors.js';
 
@@ -6,6 +7,20 @@ import { PointAtInfinity, InvalidPublicKey, InvalidScalar } from './errors.js';
  * Curve order L for ed25519
  */
 export const L = 2n ** 252n + 27742317777372353535851937790883648493n;
+
+/**
+ * Generate a random scalar reduced modulo L.
+ *
+ * Draws 32 cryptographically secure random bytes, interprets them as a
+ * little-endian integer, and reduces modulo the curve order L.
+ *
+ * @returns 32-byte scalar (little-endian, reduced mod L)
+ */
+export function generateRandomScalar(): Uint8Array {
+  const bytes = randomBytes(32);
+  const scalar = bytesToNumberLE(bytes) % L;
+  return numberToBytesLE(scalar, 32);
+}
 
 /**
  * Validate that a point is a valid ed25519 public key.
