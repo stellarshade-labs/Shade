@@ -521,4 +521,4 @@ not a permission to ship it unfixed.
 
 ## License
 
-MIT
+Apache License 2.0 — see the repository root [LICENSE](../../LICENSE).

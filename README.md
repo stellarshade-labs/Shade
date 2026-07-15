@@ -236,4 +236,4 @@ Stealth addresses hide the **identity** of the recipient, not the **flow** of fu
 
 ## License
 
-MIT
+Apache License 2.0 — see [LICENSE](LICENSE).
