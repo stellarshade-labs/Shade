@@ -36,7 +36,7 @@ export function hashToScalar(data: Uint8Array): Uint8Array {
  * Extract view tag from shared secret.
  *
  * The view tag is the first byte of SHA256(shared_secret) and enables
- * ~25x faster scanning by filtering announcements before expensive EC operations.
+ * ~2x faster scanning by filtering announcements before expensive EC operations.
  *
  * @param sharedSecret - 32-byte shared secret from ECDH
  * @returns Single byte view tag (0-255)

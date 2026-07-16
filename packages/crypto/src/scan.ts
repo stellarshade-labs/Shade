@@ -59,7 +59,7 @@ export function checkViewTag(
  * - Pass 1: Filter by view tag (cheap byte comparison)
  * - Pass 2: Full EC math (scalarMult + pointAdd) only on tag matches
  *
- * This optimization provides ~25x speedup for large announcement sets
+ * This optimization provides ~2x speedup for large announcement sets
  * by avoiding expensive EC operations on non-matching announcements.
  *
  * @param viewPrivKey - Receiver's 32-byte view private key

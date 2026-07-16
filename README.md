@@ -125,10 +125,11 @@ That's it. No DKSAP math, no Soroban transactions, no message serialization.
 ```bash
 # Generate stealth keys (keygen prints the meta-address; the keystore path is
 # --keystore <path> or $SHADE_KEYSTORE, honored by every command).
-shade keygen                              # Random keys (BIP-39 mnemonic under the hood)
+shade keygen                              # Random keys; keystore ENCRYPTED by default (AES-256-GCM)
 shade keygen --mnemonic                   # New BIP-39 mnemonic (enables recovery)
 shade keygen --recover                    # Recover from an existing 12-word mnemonic
-shade keygen --password                   # Encrypt the keystore (AES-256-GCM; prompts on stderr)
+shade keygen --password                   # Set the encryption password explicitly (else prompts on stderr)
+shade keygen --plaintext                  # Opt OUT of encryption (writes an UNENCRYPTED keystore)
 
 # Send — a delivery method is REQUIRED (pool = private, account = direct, auto = pick).
 # Supply the secret via $SHADE_FROM_SECRET or the prompt so it never hits shell history.
@@ -187,7 +188,7 @@ POST /relay           # Submit XDR for fee-bump + broadcast
 
 - **Meta-address:** `(K_spend, K_view)` - two ed25519 public keys, shared publicly
 - **Send:** pick random `r`, compute `R = r*G`, shared secret `S = r*K_view`, derive `P_stealth = K_spend + SHA256(S)*G`
-- **View tag:** `SHA256(S)[0]` - first byte for fast scanning (~25x speedup)
+- **View tag:** `SHA256(S)[0]` - first byte for fast scanning (~2x speedup)
 - **Scan:** compute `S = k_view*R`, check view tag, verify stealth address
 - **Recover:** `p_stealth = k_spend + SHA256(S) mod L`
 
@@ -220,8 +221,8 @@ Stealth addresses hide the **identity** of the recipient, not the **flow** of fu
 
 ## Known Limitations
 
-- **Announcement storage:** Single `Vec` in contract hits ~500 entries before Soroban 64KB limit. Fine for demo, needs pagination/archival for production.
-- **Local network only:** All development and testing uses Docker local network. Never tested on testnet/mainnet.
+- **Announcement reads must be paged:** Each announcement is its own keyed entry (`DataKey::Announcement(u64)`), so `deposit` is O(1) and storage has no `Vec` size ceiling. A single `get_announcements(start, limit)` response is still bounded by Soroban's return-size limit, so clients must page — the SDK pages at 200/request. The CLI's `balance`/`withdraw` currently read one capped window (limit 1000) instead of paging, so a payment past index 1000 is invisible to them; use `scan`, which pages fully.
+- **Local network only:** All development and testing uses the Docker local network. `testnet` is a supported configuration and the relayer ships a Railway/testnet deploy guide, but the project has never actually been deployed to or tested on testnet or mainnet.
 - **No BIP-32/44:** HD derivation uses domain-separated SHA-256, not standard BIP-32 paths (those use secp256k1).
 - **No view key rotation:** Shared view keys cannot be revoked. Generate new keys to stop a viewer from seeing future payments.
 - **Destination account must exist:** The withdrawal destination needs an active Stellar account (1 XLM MBR). Fund it via exchange withdrawal for best privacy.
@@ -231,7 +232,7 @@ Stealth addresses hide the **identity** of the recipient, not the **flow** of fu
 - Spend private keys never leave the client
 - View keys enable scan-only access (safe to delegate)
 - Stealth private keys exist only in memory during withdraw
-- Keystore encrypted with AES-256-GCM
+- Keystore encrypted with AES-256-GCM by default (opt out with `--plaintext`)
 - All randomness from `crypto.getRandomValues()`
 
 ## License

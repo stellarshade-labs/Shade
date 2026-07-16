@@ -199,7 +199,7 @@ const stealth = deriveStealthAddress(receiverMeta);
 Scan announcements to find stealth addresses belonging to the receiver.
 
 Uses optimized two-pass algorithm:
-- Pass 1: Filter by view tag (25x faster)
+- Pass 1: Filter by view tag (2x faster)
 - Pass 2: Full verification only on matches
 
 **Parameters:**

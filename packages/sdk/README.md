@@ -57,7 +57,7 @@ meta-address; they differ in where funds sit, discovery, and claim.
 | **Amount** | On-chain per announcement | On-chain (starting balance / CB amount) | Hidden (planned) |
 | **Minimum** | any `> 0` | native strictly `> 1 XLM`; token sender fronts ~1.5 XLM reserves (0.5 returns on claim) | N/A |
 | **Assets** | any SAC token | native XLM or any SAC/classic asset | N/A |
-| **Discovery** | contract announcements + view tag (~25x fast-scan) | `MemoHash(R)` on the funding tx via Horizon paging; destination match IS the verification | reserved |
+| **Discovery** | contract announcements + view tag (~2x fast-scan) | `MemoHash(R)` on the funding tx via Horizon paging; destination match IS the verification | reserved |
 | **Relayer** | optional fee-bump so the recipient needs no funded account | optional fee-bump / sponsored claim | N/A |
 
 Rule of thumb: **`pool`** for best privacy + multi-token; **`account`** for the
