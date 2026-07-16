@@ -145,6 +145,13 @@ export interface WithdrawOpts {
   asset?: string;
   /** Amount to withdraw. Default: full balance */
   amount?: number;
+  /**
+   * App funding account (G-address) to debit the relayer fee against when the
+   * relayer is credit-gated. Threaded into the `/relay` call so a gated relayer
+   * does not respond 402 `insufficient_credit`. Ignored by a non-gated relayer.
+   * See {@link ClaimOpts.fundingAccount}.
+   */
+  fundingAccount?: string;
 }
 
 /** Per-method scan cursors, so each adapter can resume where it left off. */

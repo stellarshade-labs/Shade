@@ -333,6 +333,7 @@ export class StealthClient {
       relay: opts.relay ?? this.relayer,
       asset: opts.asset,
       amount: opts.amount,
+      fundingAccount: opts.fundingAccount,
     });
     return { txHash: result.txHash, amount: result.amount };
   }

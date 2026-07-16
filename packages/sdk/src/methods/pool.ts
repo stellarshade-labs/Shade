@@ -41,6 +41,7 @@ import {
   FeePayerAddressRequiredError,
 } from '../errors.js';
 import { numberToStroops, formatStroops } from '../stroops.js';
+import { RelayerClient } from '../relayer.js';
 import { signTx } from './sign.js';
 import { prepareWithRestore } from './restore.js';
 
@@ -235,6 +236,7 @@ export class PoolAdapter implements DeliveryAdapter {
       amount: opts.amount,
       signTransaction: opts.signTransaction,
       feePayerAddress: opts.feePayerAddress,
+      fundingAccount: opts.fundingAccount,
     });
     return { txHash: receipt.txHash, amount: receipt.amount, method: 'pool' };
   }
@@ -254,6 +256,8 @@ export class PoolAdapter implements DeliveryAdapter {
       amount?: number;
       signTransaction?: TransactionSigner;
       feePayerAddress?: string;
+      /** App funding account to debit against (credit-gated relayers). */
+      fundingAccount?: string;
     },
   ): Promise<{ txHash: string; amount: number }> {
     if (!StrKey.isValidEd25519PublicKey(stealthAddress)) {
@@ -407,24 +411,26 @@ export class PoolAdapter implements DeliveryAdapter {
 
     // Submit a signed tx, fee-bumped through the relayer when one is configured,
     // otherwise directly to the RPC. Returns the transaction hash.
+    //
+    // The relayed path goes through the SDK's RelayerClient — exactly like the
+    // account method — so `fundingAccount` (and the signed-challenge auth, when
+    // a signer is configured on the client) threads into the `/relay` request.
+    // A hand-rolled bare `{xdr}` POST would make a credit-gated relayer reject
+    // every pool withdrawal with 402 insufficient_credit. The RelayerClient
+    // accepts both a service-root URL and a bare `.../relay` URL (back-compat).
+    const relayerClient = opts.relay ? new RelayerClient(opts.relay) : undefined;
     const submit = async (
       signed: StellarSdk.Transaction,
     ): Promise<string> => {
-      if (opts.relay) {
-        const url = opts.relay.endsWith('/relay')
-          ? opts.relay
-          : `${opts.relay}/relay`;
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ xdr: signed.toEnvelope().toXDR('base64') }),
-        });
-        if (!res.ok) {
-          const err = (await res.json()) as { error?: string };
-          throw new Error(`Relay error: ${err.error || 'unknown'}`);
-        }
-        const data = (await res.json()) as { txHash: string };
-        return data.txHash;
+      if (relayerClient) {
+        const { txHash } = await relayerClient.relay(
+          signed.toEnvelope().toXDR('base64'),
+          {
+            fundingAccount: opts.fundingAccount,
+            networkPassphrase: this.networkPassphrase,
+          },
+        );
+        return txHash;
       }
       const result = await this.server.sendTransaction(signed);
       return resolveSendResult(this.server, result);

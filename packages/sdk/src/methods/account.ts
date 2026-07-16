@@ -59,6 +59,12 @@ const HORIZON_PAGE_SIZE = 200;
  */
 const TOKEN_ACCOUNT_STARTING_BALANCE = '1.5001';
 
+/**
+ * The minimum native balance (in stroops) a live stealth account must retain on
+ * a partial claim: 2x the base reserve = 1.0 XLM.
+ */
+const ACCOUNT_RESERVE_STROOPS = 10_000_000n;
+
 function isNativeAsset(asset?: string): boolean {
   return !asset || asset === 'native' || asset === 'XLM';
 }
@@ -621,9 +627,14 @@ export class AccountAdapter implements DeliveryAdapter {
     const source = new Account(account.id, account.sequence);
     const merge = opts.merge !== false;
     const relayed = !!(opts.relay ?? this.relayer);
-    const feeXlm = Number(BASE_FEE) / 1e7;
+    // All fee/balance/max-claimable arithmetic is done in EXACT bigint stroops
+    // (never floats): above 2^53 stroops a double cannot represent every stroop,
+    // so float math could move the wrong amount on-chain or mis-evaluate the
+    // pre-check (SDK-FLOAT). Only the receipt's display `amount` (a public
+    // `number` field) is rendered back through a float at the very edge.
+    const feeStroops = BigInt(BASE_FEE);
     const nativeBal = account.balances.find((b) => b.asset_type === 'native');
-    const nativeBalance = nativeBal ? Number(nativeBal.balance) : 0;
+    const balanceStroops = nativeBal ? parseStroops(nativeBal.balance) : 0n;
 
     const builder = new TransactionBuilder(source, {
       fee: BASE_FEE,
@@ -637,24 +648,33 @@ export class AccountAdapter implements DeliveryAdapter {
       // account self-pays the fee (not relayed), the destination receives the
       // balance minus that fee — subtract it so the receipt does not overstate
       // what actually arrives.
-      amount = relayed ? nativeBalance : nativeBalance - feeXlm;
+      const delivered = relayed ? balanceStroops : balanceStroops - feeStroops;
+      amount = Number(formatStroops(delivered));
     } else {
       if (opts.amount === undefined) {
         throw new Error('Partial account claim requires opts.amount');
       }
+      // The exact stroop count actually paid out. `numberToStroops` rejects
+      // amounts a stroop cannot represent (sub-stroop precision, negatives)
+      // instead of silently rounding them.
+      const requestedStroops = numberToStroops(opts.amount);
       // The account must retain 2x the base reserve (1.0 XLM) and cover the fee
       // (self-paid when not relayed). Reject an over-large partial before
       // building so it fails with a typed error, not an on-chain op_underfunded
       // after the fee is burned.
-      const maxClaimable = nativeBalance - 1.0 - feeXlm;
-      if (opts.amount > maxClaimable) {
-        throw new ClaimAmountError(opts.amount, maxClaimable);
+      const maxClaimableStroops =
+        balanceStroops - ACCOUNT_RESERVE_STROOPS - feeStroops;
+      if (requestedStroops > maxClaimableStroops) {
+        throw new ClaimAmountError(
+          opts.amount,
+          Number(formatStroops(maxClaimableStroops)),
+        );
       }
       builder.addOperation(
         Operation.payment({
           destination,
           asset: Asset.native(),
-          amount: opts.amount.toFixed(7),
+          amount: formatStroops(requestedStroops),
         }),
       );
       amount = opts.amount;

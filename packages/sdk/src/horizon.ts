@@ -72,6 +72,8 @@ export interface HorizonClaimableBalance {
   amount: string;
   sponsor?: string;
   claimants: HorizonClaimant[];
+  /** Horizon paging token — used to resume the next page of a listing. */
+  paging_token?: string;
 }
 
 /** Horizon account record subset (used to probe existence + sequence). */
@@ -92,8 +94,22 @@ export type FetchLike = (
 }>;
 
 interface HorizonPage<T> {
+  _links?: { next?: { href?: string } };
   _embedded?: { records?: T[] };
 }
+
+/** Horizon's maximum (and our fixed) page size for claimable-balance listings. */
+const CLAIMABLE_BALANCE_PAGE_LIMIT = 200;
+
+/**
+ * Defensive upper bound on claimable-balance pages fetched per listing
+ * (50 pages x 200 records = 10,000 balances). Listing MUST page through every
+ * record — an attacker can cheaply create claimable balances naming a stealth
+ * address to push the genuine payment past page 1 — but the loop still needs a
+ * hard stop so a misbehaving Horizon (or an extreme spam flood) cannot spin the
+ * scanner forever.
+ */
+const MAX_CLAIMABLE_BALANCE_PAGES = 50;
 
 /** A thin, injectable-fetch Horizon REST client. */
 export class HorizonClient {
@@ -162,21 +178,63 @@ export class HorizonClient {
   }
 
   /**
-   * List claimable balances for which the given address is a claimant.
+   * List ALL claimable balances for which the given address is a claimant,
+   * paging through every Horizon page (not just the first).
    *
    * Used by the token account method: a direct token send lands as a
    * CreateClaimableBalance to the derived stealth address, which the recipient
    * later claims. Returns an empty array when the account has none.
+   *
+   * Paging matters for correctness, not just completeness: anyone can create a
+   * claimable balance naming a (public, on-chain) stealth address as claimant,
+   * so an attacker could spam cheap balances to push the genuine payment past
+   * the first page and make the scanner silently miss it. Each page is resumed
+   * via the last record's `paging_token` (falling back to the `cursor` in
+   * `_links.next.href`), stopping on a short page, a non-advancing cursor, or
+   * the defensive {@link MAX_CLAIMABLE_BALANCE_PAGES} bound.
    *
    * @param claimant - Stellar G-address to filter claimable balances by.
    */
   async getClaimableBalances(
     claimant: string,
   ): Promise<HorizonClaimableBalance[]> {
-    const page = await this.getJson<HorizonPage<HorizonClaimableBalance>>(
-      `/claimable_balances?claimant=${claimant}&limit=200`,
-    );
-    return page._embedded?.records ?? [];
+    const all: HorizonClaimableBalance[] = [];
+    let cursor: string | undefined;
+
+    for (let i = 0; i < MAX_CLAIMABLE_BALANCE_PAGES; i++) {
+      const cursorParam = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
+      const page = await this.getJson<HorizonPage<HorizonClaimableBalance>>(
+        `/claimable_balances?claimant=${claimant}` +
+          `&limit=${CLAIMABLE_BALANCE_PAGE_LIMIT}${cursorParam}`,
+      );
+      const records = page._embedded?.records ?? [];
+      all.push(...records);
+
+      // A short (or empty) page is the last page.
+      if (records.length < CLAIMABLE_BALANCE_PAGE_LIMIT) break;
+
+      const next =
+        records[records.length - 1]?.paging_token ??
+        this.cursorFromNextLink(page._links?.next?.href);
+      // No cursor to advance with (or a stalled one) — stop rather than loop.
+      if (!next || next === cursor) break;
+      cursor = next;
+    }
+
+    return all;
+  }
+
+  /**
+   * Extract the `cursor` query parameter from a Horizon `_links.next.href`.
+   * Fallback for full pages whose records carry no `paging_token`.
+   */
+  private cursorFromNextLink(href: string | undefined): string | undefined {
+    if (!href) return undefined;
+    try {
+      return new URL(href, this.baseUrl).searchParams.get('cursor') ?? undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
