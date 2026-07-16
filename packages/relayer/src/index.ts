@@ -1,7 +1,12 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { Horizon } from '@stellar/stellar-sdk';
-import { resolveRelayerKeypair, warnIfPermissiveCors } from './boot.js';
+import {
+  resolveRelayerKeypair,
+  resolveRequireCredit,
+  warnIfEphemeralLedgerPath,
+  warnIfPermissiveCors,
+} from './boot.js';
 import { initRelayRoute, handleRelay } from './routes/relay.js';
 import { handleSponsor } from './routes/sponsor.js';
 import {
@@ -113,7 +118,27 @@ async function initRelayer() {
       }
     }
 
-    const requireCredit = process.env.RELAYER_REQUIRE_CREDIT === '1';
+    // Secure by default: when RELAYER_REQUIRE_CREDIT is unset, credit gating
+    // is ON for non-local networks (unauthenticated /relay and
+    // /sponsor-claim/submit would otherwise drain the hot wallet) and OFF on
+    // local for dev convenience. An explicit '0'/'1' always wins.
+    const { requireCredit, reason: requireCreditReason } = resolveRequireCredit(
+      process.env.RELAYER_REQUIRE_CREDIT,
+      NETWORK,
+    );
+    logger.info('Credit gating resolved', {
+      requireCredit,
+      reason: requireCreditReason,
+      network: NETWORK,
+    });
+
+    // If gating is ON on a real network, the ledger must survive redeploys.
+    warnIfEphemeralLedgerPath(
+      process.env.CREDIT_LEDGER_PATH,
+      requireCredit,
+      NETWORK,
+    );
+
     const ledger = new CreditLedger();
 
     const relayerCtx = initContext({
@@ -170,7 +195,9 @@ async function initRelayer() {
       logger.info('Relayer started', { port: PORT, network: NETWORK });
       console.log(`[Relayer] Server listening on port ${PORT}`);
       console.log(`[Relayer] Network: ${NETWORK}`);
-      console.log(`[Relayer] Require credit: ${requireCredit}`);
+      console.log(
+        `[Relayer] Credit gating: ${requireCredit ? 'ON' : 'OFF'} (${requireCreditReason})`,
+      );
       console.log(`[Relayer] Rate limit: 10 requests/minute per IP`);
       console.log(`[Relayer] Endpoints:`);
       console.log(`  POST /relay                  - Fee-bump transaction submission`);
