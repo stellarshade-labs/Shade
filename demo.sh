@@ -138,7 +138,7 @@ echo "  This creates Bob's viewing and spending keys..."
 # Create temp keystore for Bob
 export SHADE_KEYSTORE=/tmp/bob-stealth-keys-$$.json
 cd packages/cli
-KEYGEN_OUTPUT=$(npx tsx src/index.ts keygen --keystore $SHADE_KEYSTORE 2>&1)
+KEYGEN_OUTPUT=$(npx tsx src/index.ts keygen --keystore $SHADE_KEYSTORE --plaintext 2>&1)
 BOB_META_ADDR=$(echo "$KEYGEN_OUTPUT" | grep "shade:stellar:" | head -1 | tr -d '[:space:]')
 cd ../..
 
@@ -303,7 +303,7 @@ echo "  A fresh recipient receives 5 XLM directly to a one-time stealth account.
 # Fresh recipient keystore so the account-method scan cache is clean.
 export DIRECT_KEYSTORE=/tmp/direct-stealth-keys-$$.json
 cd packages/cli
-DIRECT_KEYGEN=$(npx tsx src/index.ts keygen --keystore $DIRECT_KEYSTORE 2>&1)
+DIRECT_KEYGEN=$(npx tsx src/index.ts keygen --keystore $DIRECT_KEYSTORE --plaintext 2>&1)
 DIRECT_META=$(echo "$DIRECT_KEYGEN" | grep "shade:stellar:" | head -1 | tr -d '[:space:]')
 
 echo "  Alice sends 5 XLM via --method account..."

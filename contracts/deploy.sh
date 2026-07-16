@@ -66,7 +66,7 @@ fi
 
 stellar contract build
 
-if [[ ! -f "target/wasm32-unknown-unknown/release/stealth_registry.wasm" ]]; then
+if [[ ! -f "target/wasm32v1-none/release/stealth_registry.wasm" ]]; then
     echo -e "${RED}✗ Error: Contract build failed${NC}" >&2
     exit 1
 fi
@@ -92,7 +92,7 @@ echo -e "${CYAN}Deploying from: ${YELLOW}${SOURCE_PUBLIC:0:10}...${NC}"
 # Deploy the contract
 echo -e "${CYAN}Deploying contract to $NETWORK...${NC}"
 CONTRACT_ID=$(stellar contract deploy \
-    --wasm target/wasm32-unknown-unknown/release/stealth_registry.wasm \
+    --wasm target/wasm32v1-none/release/stealth_registry.wasm \
     --source "$SOURCE_ACCOUNT" \
     --network "$NETWORK")
 
@@ -104,11 +104,14 @@ fi
 echo -e "${GREEN}✓ Contract deployed successfully${NC}"
 echo
 
-# Save contract ID for CLI
-CONFIG_DIR="../../packages/cli/.stealth"
+# Save the contract ID where the CLI actually reads it: ~/.stealth/<network>-contract.
+# getContractAddress() checks this path FIRST for both local and testnet; the old
+# packages/cli/.stealth/<network>-contract path was only a local-only fallback, so a
+# testnet id written there was never found and the CLI threw "no contract configured".
+CONFIG_DIR="$HOME/.stealth"
 mkdir -p "$CONFIG_DIR"
 echo "$CONTRACT_ID" > "$CONFIG_DIR/${NETWORK}-contract"
-echo -e "${GREEN}✓ Contract ID saved to CLI config${NC}"
+echo -e "${GREEN}✓ Contract ID saved to $CONFIG_DIR/${NETWORK}-contract${NC}"
 
 # Contract doesn't have an initialize function - removed unnecessary call
 
