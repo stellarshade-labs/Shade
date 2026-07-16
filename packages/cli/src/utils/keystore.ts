@@ -185,6 +185,17 @@ export async function saveKeystore(
   const dir = path.dirname(filepath);
   await fs.mkdir(dir, { recursive: true });
 
+  // An empty-string password is a mistake, not a request for plaintext: it would
+  // silently write unencrypted private keys. Only `undefined` (the --plaintext /
+  // --no-encrypt path) intentionally opts out of encryption.
+  if (password === '') {
+    throw new Error(
+      'Refusing to write a keystore with an empty password. Provide a non-empty ' +
+        'password to encrypt, or omit the password entirely to intentionally write ' +
+        'an unencrypted keystore.',
+    );
+  }
+
   if (password) {
     const salt = randomBytes(32);
     const iv = randomBytes(16);

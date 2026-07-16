@@ -7,21 +7,13 @@ import {
   labelForToken,
   type StealthKeys,
 } from '@shade/sdk';
-import { StrKey, Networks, Contract, nativeToScVal } from '@stellar/stellar-sdk';
+import { Networks, Contract, nativeToScVal } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { loadKeystoreInteractive, resolveKeystorePath } from '../utils/keystore.js';
 import { getContractAddress } from '../utils/config.js';
+import { fetchAnnouncements } from './scan.js';
 import Table from 'cli-table3';
 import chalk from 'chalk';
-
-interface Announcement {
-  ephemeralPubKey: Uint8Array;
-  viewTag: number;
-  stealthPubKey: Uint8Array;
-  stealthAddress: string;
-  token: string;
-  amount: bigint;
-}
 
 function createSimulationTx(
   operation: StellarSdk.xdr.Operation,
@@ -34,49 +26,6 @@ function createSimulationTx(
     .addOperation(operation)
     .setTimeout(30)
     .build();
-}
-
-async function fetchAllAnnouncements(
-  contractId: string,
-  server: StellarSdk.rpc.Server,
-  networkPassphrase: string,
-): Promise<Announcement[]> {
-  const contract = new Contract(contractId);
-  const announcements: Announcement[] = [];
-
-  try {
-    const op = contract.call(
-      'get_announcements',
-      nativeToScVal(0, { type: 'u64' }),
-      nativeToScVal(1000, { type: 'u64' })
-    );
-    const sim = await server.simulateTransaction(
-      createSimulationTx(op, networkPassphrase)
-    );
-
-    if (StellarSdk.rpc.Api.isSimulationSuccess(sim)) {
-      const result = sim.result?.retval;
-      if (result) {
-        const decoded = StellarSdk.scValToNative(result) as any[];
-        for (const ann of decoded) {
-          const stealthPk = new Uint8Array(ann.stealth_pk);
-          const stealthAddress = StrKey.encodeEd25519PublicKey(Buffer.from(stealthPk));
-          announcements.push({
-            ephemeralPubKey: new Uint8Array(ann.ephemeral_pk),
-            viewTag: ann.view_tag,
-            stealthPubKey: stealthPk,
-            stealthAddress,
-            token: ann.token?.toString?.() || 'unknown',
-            amount: BigInt(ann.amount || 0),
-          });
-        }
-      }
-    }
-  } catch (error) {
-    console.error(chalk.yellow('Warning: Could not fetch announcements'));
-  }
-
-  return announcements;
 }
 
 async function getContractBalance(
@@ -150,8 +99,9 @@ export const balanceCommand = new Command('balance')
       const viewPrivKey = Buffer.from(keystore.viewPrivateKey, 'hex');
       const spendPubKey = Buffer.from(keystore.spendPublicKey, 'hex');
 
-      // --- Pool method ---
-      const announcements = await fetchAllAnnouncements(
+      // --- Pool method (fully paged; reuses scan.ts fetchAnnouncements so a
+      // payment past the first page is not silently dropped — PAGE-1 fix) ---
+      const announcements = await fetchAnnouncements(
         contractAddress,
         server,
         networkPassphrase,

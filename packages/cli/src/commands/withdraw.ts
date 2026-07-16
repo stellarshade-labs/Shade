@@ -18,6 +18,7 @@ import {
 } from '../utils/keystore.js';
 import { resolveSecret } from '../utils/secrets.js';
 import { getContractAddress } from '../utils/config.js';
+import { fetchAnnouncements } from './scan.js';
 import chalk from 'chalk';
 
 interface MatchedAnnouncement {
@@ -101,33 +102,15 @@ async function findMatchingAnnouncement(
   viewPrivKey: Uint8Array,
   spendPubKey: Uint8Array,
 ): Promise<MatchedAnnouncement | null> {
-  const contract = new Contract(contractId);
-
-  const op = contract.call(
-    'get_announcements',
-    nativeToScVal(0, { type: 'u64' }),
-    nativeToScVal(1000, { type: 'u64' }),
+  // Page over ALL announcements (shared with scan.ts) rather than a single
+  // capped read, so a stealth payment past the first page is still found and
+  // remains withdrawable — otherwise those funds look unrecoverable via the CLI
+  // (PAGE-1 / fund-visibility fix).
+  const announcements = await fetchAnnouncements(
+    contractId,
+    server,
+    networkPassphrase,
   );
-  const sim = await server.simulateTransaction(
-    createSimulationTx(op, networkPassphrase),
-  );
-
-  if (!StellarSdk.rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) {
-    return null;
-  }
-
-  const decoded = StellarSdk.scValToNative(sim.result.retval) as any[];
-  const announcements = decoded.map((ann) => {
-    const stealthPk = new Uint8Array(ann.stealth_pk);
-    return {
-      ephemeralPubKey: new Uint8Array(ann.ephemeral_pk),
-      viewTag: ann.view_tag as number,
-      stealthPubKey: stealthPk,
-      stealthAddr: StrKey.encodeEd25519PublicKey(Buffer.from(stealthPk)),
-      token: ann.token?.toString?.() || 'unknown',
-      amount: BigInt(ann.amount || 0),
-    };
-  });
 
   const matches = scanAnnouncements(
     viewPrivKey,
@@ -135,18 +118,18 @@ async function findMatchingAnnouncement(
     announcements.map((a) => ({
       ephemeralPubKey: a.ephemeralPubKey,
       viewTag: a.viewTag,
-      stealthAddress: a.stealthAddr,
+      stealthAddress: a.stealthAddress,
     })),
   );
 
   for (const match of matches) {
-    if (match.address === stealthAddress) {
-      const ann = announcements.find((a) => a.stealthAddr === stealthAddress);
+    if (match && match.address === stealthAddress) {
+      const ann = announcements.find((a) => a.stealthAddress === stealthAddress);
       if (ann) {
         return {
           ephemeralPubKey: ann.ephemeralPubKey,
           stealthPubKey: ann.stealthPubKey,
-          stealthAddress: ann.stealthAddr,
+          stealthAddress: ann.stealthAddress,
           token: ann.token,
           amount: ann.amount,
         };

@@ -99,7 +99,7 @@ describe('keystore', () => {
     expect(mode).toBe('600');
   });
 
-  it('should handle keystore with empty password', async () => {
+  it('refuses an empty-string password but still allows explicit plaintext (undefined)', async () => {
     const keystore = {
       spendPrivateKey: Buffer.from(randomBytes(32)).toString('hex'),
       viewPrivateKey: Buffer.from(randomBytes(32)).toString('hex'),
@@ -107,10 +107,15 @@ describe('keystore', () => {
       viewPublicKey: 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'
     };
 
-    await saveKeystore(keystorePath, keystore, '');
+    // An empty string is a mistake, not an opt-out: it must throw rather than
+    // silently persist unencrypted private keys.
+    await expect(saveKeystore(keystorePath, keystore, '')).rejects.toThrow(/empty password/i);
 
-    const loaded = await loadKeystore(keystorePath, '');
-
+    // `undefined` remains the explicit, intentional plaintext path (used by
+    // keygen --plaintext / --no-encrypt).
+    await saveKeystore(keystorePath, keystore);
+    expect(await isKeystoreEncrypted(keystorePath)).toBe(false);
+    const loaded = await loadKeystore(keystorePath);
     expect(loaded.spendPrivateKey).toEqual(keystore.spendPrivateKey);
     expect(loaded.viewPrivateKey).toEqual(keystore.viewPrivateKey);
   });
