@@ -34,7 +34,16 @@ function mockServer(opts: {
   tx?: any;
   txError?: any;
   ops?: any[];
+  /** Multi-page operations fixture: each entry is one Horizon page of records. */
+  opsPages?: any[][];
 }) {
+  const pages: any[][] = opts.opsPages ?? [opts.ops ?? []];
+  // Mirrors Horizon's CollectionPage: `records` plus a `next()` that resolves
+  // the following page (empty records past the end, like the real SDK).
+  const makePage = (i: number): any => ({
+    records: pages[i] ?? [],
+    next: async () => makePage(i + 1),
+  });
   return {
     transactions: () => ({
       transaction: (_hash: string) => ({
@@ -45,9 +54,13 @@ function mockServer(opts: {
       }),
     }),
     operations: () => ({
-      forTransaction: (_hash: string) => ({
-        call: async () => ({ records: opts.ops ?? [] }),
-      }),
+      forTransaction: (_hash: string) => {
+        const builder: any = {
+          limit: (_n: number) => builder,
+          call: async () => makePage(0),
+        };
+        return builder;
+      },
     }),
   } as any;
 }
@@ -178,6 +191,93 @@ describe('credit routes', () => {
     await handleCreditClaim(req, res);
     expect(res.statusCode).toBe(200);
     expect(res.body.balance).toBe('4.0000000');
+  });
+
+  it('credits a payment op that sits beyond the first operations page', async () => {
+    // Page 1 is completely full (200 records) of non-payment ops, so the
+    // handler must follow next() to find the deposit on page 2. The old
+    // single-page read would have returned not_a_deposit here.
+    const fillers = Array.from({ length: 200 }, () => ({ type: 'manage_data' }));
+    setup({
+      tx: { successful: true, source_account: FUNDING, hash: 'TX_PAGE2' },
+      opsPages: [
+        fillers,
+        [
+          {
+            type: 'payment',
+            asset_type: 'native',
+            to: relayer.publicKey(),
+            amount: '5.0000000',
+          },
+        ],
+      ],
+    });
+    const req = { body: { fundingAccount: FUNDING, txHash: 'TX_PAGE2' } } as Request;
+    const res = mockRes();
+    await handleCreditClaim(req, res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.balance).toBe('5.0000000');
+    expect(ledger.getBalance(FUNDING)).toBe('5.0000000');
+  });
+
+  it('sums qualifying payments spread across multiple operations pages', async () => {
+    // 199 fillers + a 2 XLM payment fill page 1 exactly; a further 3 XLM
+    // payment lands on page 2. Both must be accumulated.
+    const fillers = Array.from({ length: 199 }, () => ({ type: 'manage_data' }));
+    setup({
+      tx: { successful: true, source_account: FUNDING, hash: 'TX_SPREAD' },
+      opsPages: [
+        [
+          ...fillers,
+          {
+            type: 'payment',
+            asset_type: 'native',
+            to: relayer.publicKey(),
+            amount: '2',
+          },
+        ],
+        [
+          {
+            type: 'payment',
+            asset_type: 'native',
+            from: FUNDING,
+            to: relayer.publicKey(),
+            amount: '3',
+          },
+        ],
+      ],
+    });
+    const req = { body: { fundingAccount: FUNDING, txHash: 'TX_SPREAD' } } as Request;
+    const res = mockRes();
+    await handleCreditClaim(req, res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.balance).toBe('5.0000000');
+  });
+
+  it('stops paginating on an empty trailing page (bounded loop)', async () => {
+    // A full page followed by an explicit empty page: the loop must terminate
+    // and still credit the qualifying op from page 1.
+    const fillers = Array.from({ length: 199 }, () => ({ type: 'manage_data' }));
+    setup({
+      tx: { successful: true, source_account: FUNDING, hash: 'TX_EMPTYNEXT' },
+      opsPages: [
+        [
+          ...fillers,
+          {
+            type: 'payment',
+            asset_type: 'native',
+            to: relayer.publicKey(),
+            amount: '1',
+          },
+        ],
+        [],
+      ],
+    });
+    const req = { body: { fundingAccount: FUNDING, txHash: 'TX_EMPTYNEXT' } } as Request;
+    const res = mockRes();
+    await handleCreditClaim(req, res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.balance).toBe('1.0000000');
   });
 
   it('returns 400 not_a_deposit when source account mismatches', async () => {

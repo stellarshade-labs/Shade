@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
-import { Keypair, Horizon } from '@stellar/stellar-sdk';
+import { Horizon } from '@stellar/stellar-sdk';
+import { resolveRelayerKeypair, warnIfPermissiveCors } from './boot.js';
 import { initRelayRoute, handleRelay } from './routes/relay.js';
 import { handleSponsor } from './routes/sponsor.js';
 import {
@@ -71,18 +72,12 @@ function asyncHandler(
 
 async function initRelayer() {
   try {
-    let keypair: Keypair;
+    // Fail fast on testnet/mainnet when no funded secret is configured; only
+    // NETWORK=local may fall back to a random (unfunded) keypair.
+    const keypair = resolveRelayerKeypair(RELAYER_SECRET, NETWORK);
 
-    if (RELAYER_SECRET) {
-      keypair = Keypair.fromSecret(RELAYER_SECRET);
-      logger.info('Using configured keypair', { publicKey: keypair.publicKey() });
-    } else {
-      keypair = Keypair.random();
-      logger.warn('Generated new keypair', {
-        publicKey: keypair.publicKey(),
-        message: 'Set RELAYER_SECRET env var to persist this keypair'
-      });
-    }
+    // Startup warning when CORS is wide open outside local development.
+    warnIfPermissiveCors(corsOptions.origin, NETWORK);
 
     const horizonUrl = NETWORK === 'local'
       ? 'http://localhost:8000'

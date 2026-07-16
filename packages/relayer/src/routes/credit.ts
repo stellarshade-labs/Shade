@@ -17,6 +17,20 @@ interface HorizonPaymentOp {
   amount?: string;
 }
 
+/** Minimal shape of a Horizon collection page as returned by `.call()`. */
+interface HorizonOpsPage {
+  records?: HorizonPaymentOp[];
+  next?: () => Promise<unknown>;
+}
+
+// Horizon caps page size at 200. A classic Stellar tx holds at most 100 ops,
+// but page defensively anyway: with the Horizon default limit of 10, a payment
+// op beyond the first page would silently be under-credited.
+const OPS_PAGE_LIMIT = 200;
+// Hard bound on pages followed (2000 ops) so a pathological/looping `next`
+// link can never spin the handler forever.
+const MAX_OPS_PAGES = 10;
+
 /**
  * POST /credit/claim { fundingAccount, txHash }
  *
@@ -59,13 +73,24 @@ export async function handleCreditClaim(req: Request, res: Response) {
     return res.status(400).json({ error: 'Source account mismatch', code: 'not_a_deposit' });
   }
 
-  let ops: HorizonPaymentOp[];
+  // Accumulate ALL operations of the tx, following pagination: the qualifying
+  // payment op may sit beyond the first page.
+  const ops: HorizonPaymentOp[] = [];
   try {
-    const page = (await ctx.server
+    let page = (await ctx.server
       .operations()
       .forTransaction(txHash)
-      .call()) as unknown as { records: HorizonPaymentOp[] };
-    ops = page.records ?? [];
+      .limit(OPS_PAGE_LIMIT)
+      .call()) as unknown as HorizonOpsPage;
+    for (let i = 0; i < MAX_OPS_PAGES; i++) {
+      const records = page.records ?? [];
+      ops.push(...records);
+      // A short (or empty) page means there is nothing further; also stop if
+      // the page cannot paginate at all (defensive against odd shapes).
+      if (records.length < OPS_PAGE_LIMIT) break;
+      if (typeof page.next !== 'function') break;
+      page = (await page.next()) as HorizonOpsPage;
+    }
   } catch (err: any) {
     return res.status(500).json({ error: err?.message ?? 'ops lookup failed', code: 'server_error' });
   }
