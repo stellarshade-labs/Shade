@@ -74,10 +74,14 @@ impl StealthPoolContract {
         let token_client = token::Client::new(&env, &token_addr);
         token_client.transfer(&sender, &env.current_contract_address(), &amount);
 
-        // Update balance
+        // Update balance.
+        // Explicit checked add: fail loudly on i128 overflow in the code itself
+        // rather than relying on the `overflow-checks = true` release profile
+        // (hardens against build-profile drift; unreachable for real token supplies).
         let bal_key = DataKey::Balance(stealth_pk.clone(), token_addr.clone());
         let current: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
-        env.storage().persistent().set(&bal_key, &(current + amount));
+        let new_balance = current.checked_add(amount).expect("balance overflow");
+        env.storage().persistent().set(&bal_key, &new_balance);
         env.storage().persistent().extend_ttl(&bal_key, TTL_THRESHOLD, TTL_EXTEND_TO);
 
         // Append announcement as its OWN keyed entry at index == current count.
@@ -298,16 +302,31 @@ impl StealthPoolContract {
         result
     }
 
-    /// Get announcements filtered by view tag.
+    /// Get announcements filtered by view tag, with pagination.
     ///
-    /// This iterates every index `0..count`, reading each keyed entry — it is O(n)
-    /// storage reads. The SDK normally filters by view tag client-side after paging
-    /// through `get_announcements`; this helper is a convenience for small pools.
-    pub fn get_announcements_by_tag(env: Env, view_tag: u32) -> Vec<AnnouncementEntry> {
+    /// Like `get_announcements`, this reads only the keyed entries in the
+    /// `start..min(start.saturating_add(limit), count)` index window — bounded
+    /// storage reads per call, so it stays within the Soroban resource budget
+    /// no matter how large the pool grows — and returns the entries in that
+    /// window whose `view_tag` matches. Callers page through history
+    /// window-by-window. (The SDK normally filters by view tag client-side
+    /// after paging through `get_announcements`; this helper mirrors that
+    /// pattern on-chain.)
+    pub fn get_announcements_by_tag(
+        env: Env,
+        view_tag: u32,
+        start: u64,
+        limit: u64,
+    ) -> Vec<AnnouncementEntry> {
         let total: u64 = env.storage().persistent().get(&DataKey::AnnouncementCount).unwrap_or(0);
+        if start >= total {
+            return vec![&env];
+        }
 
+        // saturating_add avoids u64 overflow (e.g. limit == u64::MAX).
+        let end = core::cmp::min(start.saturating_add(limit), total);
         let mut result = vec![&env];
-        for i in 0..total {
+        for i in start..end {
             if let Some(entry) = env
                 .storage()
                 .persistent()
@@ -724,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_announcements_by_tag() {
+    fn test_get_announcements_by_tag_pagination() {
         let env = Env::default();
         env.mock_all_auths();
 
@@ -735,24 +754,105 @@ mod tests {
         let sender = Address::generate(&env);
         sac.mint(&sender, &100000);
 
+        // 10 mixed-tag announcements: tag = i % 3.
+        // tag 0 -> indices 0, 3, 6, 9; tag 1 -> 1, 4, 7; tag 2 -> 2, 5, 8.
         for i in 0u8..10 {
             let stealth_pk = BytesN::from_array(&env, &[i + 1; 32]);
             let eph = BytesN::from_array(&env, &[i + 50; 32]);
             let tag = (i % 3) as u32;
             client.deposit(&sender, &token_id, &100, &stealth_pk, &eph, &tag);
         }
+        assert_eq!(client.get_announcement_count(), 10);
 
-        let tag0 = client.get_announcements_by_tag(&0);
-        assert_eq!(tag0.len(), 4); // 0, 3, 6, 9
+        // Full-span windows preserve the old full-scan behavior.
+        assert_eq!(client.get_announcements_by_tag(&0, &0, &100).len(), 4);
+        assert_eq!(client.get_announcements_by_tag(&1, &0, &100).len(), 3);
+        assert_eq!(client.get_announcements_by_tag(&2, &0, &100).len(), 3);
+        assert_eq!(client.get_announcements_by_tag(&99, &0, &100).len(), 0);
 
-        let tag1 = client.get_announcements_by_tag(&1);
-        assert_eq!(tag1.len(), 3); // 1, 4, 7
+        // start/limit window [0, 5): tag-0 matches at indices 0 and 3.
+        let w0 = client.get_announcements_by_tag(&0, &0, &5);
+        assert_eq!(w0.len(), 2);
+        assert_eq!(w0.get(0).unwrap().ephemeral_pk.get(0).unwrap(), 50u8); // index 0
+        assert_eq!(w0.get(1).unwrap().ephemeral_pk.get(0).unwrap(), 53u8); // index 3
 
-        let tag2 = client.get_announcements_by_tag(&2);
-        assert_eq!(tag2.len(), 3); // 2, 5, 8
+        // Next window [5, 10): tag-0 matches at indices 6 and 9.
+        let w1 = client.get_announcements_by_tag(&0, &5, &5);
+        assert_eq!(w1.len(), 2);
+        assert_eq!(w1.get(0).unwrap().ephemeral_pk.get(0).unwrap(), 56u8); // index 6
+        assert_eq!(w1.get(1).unwrap().ephemeral_pk.get(0).unwrap(), 59u8); // index 9
 
-        let tag99 = client.get_announcements_by_tag(&99);
-        assert_eq!(tag99.len(), 0);
+        // Consecutive windows tile the full span: no gaps, no overlap.
+        let full = client.get_announcements_by_tag(&0, &0, &10);
+        assert_eq!(full.len(), w0.len() + w1.len());
+        assert_eq!(full.get(0).unwrap(), w0.get(0).unwrap());
+        assert_eq!(full.get(1).unwrap(), w0.get(1).unwrap());
+        assert_eq!(full.get(2).unwrap(), w1.get(0).unwrap());
+        assert_eq!(full.get(3).unwrap(), w1.get(1).unwrap());
+
+        // Edge windows behave exactly like get_announcements: start at/past
+        // the end and zero limit are empty, never a panic.
+        assert_eq!(client.get_announcements_by_tag(&0, &10, &5).len(), 0);
+        assert_eq!(client.get_announcements_by_tag(&0, &100, &5).len(), 0);
+        assert_eq!(client.get_announcements_by_tag(&0, &0, &0).len(), 0);
+
+        // --- Large-N no-panic case ---
+        // Bulk-seed keyed entries directly (bypassing deposit) so the read
+        // path is exercised against a big pool without 1000 token transfers.
+        // Bulk tags live in 200..205 so they never collide with tags 0..3.
+        // The old unbounded 1-arg form scanned every index 0..total on each
+        // call, which exceeds the per-invocation resource budget at this size
+        // (a full-history single call still does, by design); bounded windows
+        // must stay affordable no matter how large the pool grows.
+        let n: u64 = 1000;
+        let mut expected_202: u32 = 0;
+        // Seeding 990 entries in one host context is test setup, not the
+        // behavior under test — run it unmetered, then restore the default
+        // budget so the windowed reads below are asserted under realistic
+        // resource limits.
+        env.cost_estimate().budget().reset_unlimited();
+        env.as_contract(&contract_id, || {
+            for i in 10..n {
+                let tag = 200 + (i % 5) as u32;
+                if tag == 202 {
+                    expected_202 += 1;
+                }
+                let entry = AnnouncementEntry {
+                    ephemeral_pk: BytesN::from_array(&env, &[(i % 251) as u8; 32]),
+                    view_tag: tag,
+                    stealth_pk: BytesN::from_array(&env, &[9u8; 32]),
+                    token: token_id.clone(),
+                    amount: 1,
+                    sequence: 0,
+                };
+                env.storage().persistent().set(&DataKey::Announcement(i), &entry);
+            }
+            env.storage().persistent().set(&DataKey::AnnouncementCount, &n);
+        });
+        env.cost_estimate().budget().reset_default();
+        assert_eq!(client.get_announcement_count(), n);
+
+        // Page through the entire large pool in bounded windows of 50: every
+        // window fits the default per-call budget (no panic), and the pages
+        // together find exactly every matching entry.
+        let page: u64 = 50;
+        let mut found_202: u32 = 0;
+        let mut cursor: u64 = 0;
+        while cursor < n {
+            found_202 += client.get_announcements_by_tag(&202, &cursor, &page).len();
+            cursor += page;
+        }
+        assert_eq!(found_202, expected_202);
+
+        // Deep bounded window near the end with start + limit far beyond
+        // u64::MAX: saturating_add clamps to total instead of panicking.
+        // [980, 1000) holds i % 5 == 2 at 982, 987, 992, 997.
+        let deep = client.get_announcements_by_tag(&202, &(n - 20), &u64::MAX);
+        assert_eq!(deep.len(), 4);
+
+        // The original small-set query still works as a bounded window over
+        // the first 10 indices, unaffected by the 990 later entries.
+        assert_eq!(client.get_announcements_by_tag(&0, &0, &10).len(), 4);
     }
 
     #[test]
