@@ -11,7 +11,7 @@ import {
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { StealthClient, parseStroops } from '@shade/sdk';
 import { getContractAddress } from '../utils/config.js';
-import { formatError, validateMetaAddress } from '../utils/network.js';
+import { assertNetwork, formatError, validateMetaAddress } from '../utils/network.js';
 import { resolveSecret } from '../utils/secrets.js';
 import chalk from 'chalk';
 import { randomBytes } from '@noble/hashes/utils';
@@ -122,7 +122,7 @@ export const sendCommand = new Command('send')
   .option('--verbose', 'Show detailed output')
   .action(async (metaAddress: string, amount: string, options) => {
     try {
-      const network = options.network as 'local' | 'testnet';
+      const network = assertNetwork(options.network);
 
       const method = options.method as string | undefined;
       if (!method) {

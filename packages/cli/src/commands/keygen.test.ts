@@ -81,3 +81,83 @@ describe('keygen CLI-02: encryption is the default', () => {
     expect(parsed).toHaveProperty('encrypted');
   });
 });
+
+describe('keygen overwrite protection (fund safety)', () => {
+  let dir: string;
+  let keystorePath: string;
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'keygen-force-'));
+    keystorePath = path.join(dir, 'keys.json');
+    vi.clearAllMocks();
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`exit:${code ?? 0}`);
+    }) as never);
+  });
+
+  afterEach(async () => {
+    exitSpy.mockRestore();
+    vi.restoreAllMocks();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  async function run(args: string[]): Promise<void> {
+    const cmd = createKeygenCommand();
+    await cmd.parseAsync(['node', 'keygen', ...args, '--keystore', keystorePath]);
+  }
+
+  it('refuses to overwrite an existing keystore without --force (before any prompt)', async () => {
+    await run(['--password', 'first-password']);
+    const before = await fs.readFile(keystorePath, 'utf-8');
+
+    promptMock.mockClear();
+    await expect(run([])).rejects.toThrow(/exit:1/);
+
+    // Refused EARLY: no password prompt, no key generation output reached.
+    expect(promptMock).not.toHaveBeenCalled();
+
+    // The existing keystore is byte-identical — nothing was destroyed.
+    const after = await fs.readFile(keystorePath, 'utf-8');
+    expect(after).toBe(before);
+
+    const output = errorSpy.mock.calls.flat().join('\n');
+    expect(output).toMatch(/already exists/i);
+    expect(output).toMatch(/DESTROYS/);
+    expect(output).toMatch(/--force/);
+    expect(output).toMatch(/--keystore/);
+    expect(output).toMatch(/shade address/);
+  });
+
+  it('refusal also applies to --recover and --from-stellar-secret flows', async () => {
+    await run(['--password', 'first-password']);
+    const before = await fs.readFile(keystorePath, 'utf-8');
+
+    await expect(run(['--recover'])).rejects.toThrow(/exit:1/);
+    await expect(run(['--from-stellar-secret', 'SXXX'])).rejects.toThrow(/exit:1/);
+
+    expect(await fs.readFile(keystorePath, 'utf-8')).toBe(before);
+  });
+
+  it('overwrites the keystore when --force is given', async () => {
+    await run(['--password', 'first-password']);
+    const before = JSON.parse(await fs.readFile(keystorePath, 'utf-8'));
+
+    await run(['--force', '--password', 'second-password']);
+    const after = JSON.parse(await fs.readFile(keystorePath, 'utf-8'));
+
+    // Fresh random keys were written over the old envelope.
+    expect(after).toHaveProperty('encrypted');
+    expect(after.spendPublicKey).not.toBe(before.spendPublicKey);
+  });
+
+  it('writes normally when no keystore exists yet (no --force needed)', async () => {
+    await run(['--password', 'pw']);
+    const parsed = JSON.parse(await fs.readFile(keystorePath, 'utf-8'));
+    expect(parsed).toHaveProperty('encrypted');
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+});

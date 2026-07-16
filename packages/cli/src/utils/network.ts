@@ -1,63 +1,27 @@
 import chalk from 'chalk';
 import { decodeMetaAddress } from '@shade/crypto';
 
-export interface RetryOptions {
-  maxAttempts?: number;
-  initialDelay?: number;
-  maxDelay?: number;
-  backoffFactor?: number;
-  verbose?: boolean;
-}
-
-export async function withRetry<T>(
-  fn: () => Promise<T>,
-  operation: string,
-  options: RetryOptions = {}
-): Promise<T> {
-  const {
-    maxAttempts = 3,
-    initialDelay = 1000,
-    maxDelay = 10000,
-    backoffFactor = 2,
-    verbose = false
-  } = options;
-
-  let lastError: Error | undefined;
-  let delay = initialDelay;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      if (verbose && attempt > 1) {
-        console.log(chalk.gray(`  Retry attempt ${attempt}/${maxAttempts} for ${operation}...`));
-      }
-      return await fn();
-    } catch (error: any) {
-      lastError = error;
-
-      const isTimeout = error.message?.includes('timeout') ||
-                       error.message?.includes('ETIMEDOUT') ||
-                       error.message?.includes('ECONNREFUSED');
-
-      const isRetriable = isTimeout ||
-                         error?.response?.status === 503 ||
-                         error?.response?.status === 504 ||
-                         error?.response?.status === 429;
-
-      if (!isRetriable || attempt === maxAttempts) {
-        throw error;
-      }
-
-      if (verbose) {
-        console.log(chalk.yellow(`  ${operation} failed (attempt ${attempt}/${maxAttempts}): ${error.message}`));
-        console.log(chalk.gray(`  Waiting ${delay}ms before retry...`));
-      }
-
-      await new Promise(resolve => setTimeout(resolve, delay));
-      delay = Math.min(delay * backoffFactor, maxDelay);
-    }
+/**
+ * Validate the transport `--network` flag, exiting on anything unsupported.
+ *
+ * Previously commands did `options.network as 'local' | 'testnet'` and every
+ * non-'local' value fell through to the testnet branch, so `--network mainnet`
+ * silently built a TESTNET transaction. Only the two supported values pass;
+ * anything else (notably 'mainnet') prints an error and exits.
+ */
+export function assertNetwork(value: string): 'local' | 'testnet' {
+  if (value === 'local' || value === 'testnet') {
+    return value;
   }
-
-  throw lastError || new Error(`${operation} failed after ${maxAttempts} attempts`);
+  console.error(
+    chalk.red(
+      `Error: unsupported network '${value}'. Supported: local, testnet. ` +
+        '(mainnet is not yet supported — the contracts are unaudited.)',
+    ),
+  );
+  process.exit(1);
+  // process.exit never returns; this satisfies the declared return type.
+  throw new Error('unreachable');
 }
 
 export function formatError(error: any): string {

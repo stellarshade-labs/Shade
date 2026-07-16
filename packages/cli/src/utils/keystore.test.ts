@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
@@ -266,5 +266,149 @@ describe('resolveKeystorePath', () => {
       fsSync.unlinkSync(encPath);
       fsSync.unlinkSync(plainPath);
     } catch {}
+  });
+});
+
+describe('loadKeystoreOrExit (wrong password vs missing keystore)', () => {
+  let dir: string;
+  let keystorePath: string;
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
+  const keystore = {
+    spendPrivateKey: Buffer.from(randomBytes(32)).toString('hex'),
+    viewPrivateKey: Buffer.from(randomBytes(32)).toString('hex'),
+    spendPublicKey: Buffer.from(randomBytes(32)).toString('hex'),
+    viewPublicKey: Buffer.from(randomBytes(32)).toString('hex'),
+  };
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'keystore-orexit-'));
+    keystorePath = path.join(dir, 'keys.json');
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`exit:${code ?? 0}`);
+    }) as never);
+  });
+
+  afterEach(async () => {
+    exitSpy.mockRestore();
+    vi.restoreAllMocks();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  function errorOutput(): string {
+    return errorSpy.mock.calls.flat().join('\n');
+  }
+
+  it('missing keystore → suggests shade keygen', async () => {
+    const { loadKeystoreOrExit } = await import('./keystore.js');
+    const missing = path.join(dir, 'does-not-exist.json');
+
+    await expect(loadKeystoreOrExit(missing, 'any-password')).rejects.toThrow(/exit:1/);
+
+    const out = errorOutput();
+    expect(out).toMatch(/no keystore at/i);
+    expect(out).toContain(missing);
+    expect(out).toMatch(/shade keygen/);
+    expect(out).not.toMatch(/wrong password/i);
+  });
+
+  it('wrong password → keystore intact, must NOT suggest keygen', async () => {
+    const { saveKeystore: save, loadKeystoreOrExit } = await import('./keystore.js');
+    await save(keystorePath, keystore, 'right-password');
+
+    await expect(loadKeystoreOrExit(keystorePath, 'wrong-password')).rejects.toThrow(/exit:1/);
+
+    const out = errorOutput();
+    expect(out).toMatch(/wrong password or corrupt/i);
+    expect(out).toMatch(/keystore is intact/i);
+    expect(out).toMatch(/do NOT run 'shade keygen'/);
+    expect(out).toMatch(/Try the password again/i);
+    // The dangerous hint must be absent: no "run 'shade keygen' first".
+    expect(out).not.toMatch(/keygen' first/);
+
+    // And the file really is untouched.
+    const { loadKeystore: load } = await import('./keystore.js');
+    const reloaded = await load(keystorePath, 'right-password');
+    expect(reloaded.spendPrivateKey).toBe(keystore.spendPrivateKey);
+  });
+
+  it('corrupt (non-JSON) keystore → treated as unreadable, not missing', async () => {
+    const { loadKeystoreOrExit } = await import('./keystore.js');
+    await fs.writeFile(keystorePath, 'not json at all {{{');
+
+    await expect(loadKeystoreOrExit(keystorePath, 'pw')).rejects.toThrow(/exit:1/);
+
+    const out = errorOutput();
+    expect(out).toMatch(/wrong password or corrupt/i);
+    expect(out).not.toMatch(/no keystore at/i);
+  });
+
+  it('correct password → returns the decrypted keystore without exiting', async () => {
+    const { saveKeystore: save, loadKeystoreOrExit } = await import('./keystore.js');
+    await save(keystorePath, keystore, 'right-password');
+
+    const loaded = await loadKeystoreOrExit(keystorePath, 'right-password');
+    expect(loaded.spendPrivateKey).toBe(keystore.spendPrivateKey);
+    expect(loaded.viewPrivateKey).toBe(keystore.viewPrivateKey);
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('readPublicKeys (no password needed)', () => {
+  let dir: string;
+  let keystorePath: string;
+
+  const keystore = {
+    spendPrivateKey: Buffer.from(randomBytes(32)).toString('hex'),
+    viewPrivateKey: Buffer.from(randomBytes(32)).toString('hex'),
+    spendPublicKey: Buffer.from(randomBytes(32)).toString('hex'),
+    viewPublicKey: Buffer.from(randomBytes(32)).toString('hex'),
+  };
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'keystore-pubkeys-'));
+    keystorePath = path.join(dir, 'keys.json');
+  });
+
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('reads public keys from an ENCRYPTED keystore without the password', async () => {
+    const { saveKeystore: save, readPublicKeys } = await import('./keystore.js');
+    await save(keystorePath, keystore, 'some-password');
+
+    const pub = await readPublicKeys(keystorePath);
+    expect(pub).toEqual({
+      spendPublicKey: keystore.spendPublicKey,
+      viewPublicKey: keystore.viewPublicKey,
+    });
+  });
+
+  it('reads public keys from a PLAINTEXT keystore', async () => {
+    const { saveKeystore: save, readPublicKeys } = await import('./keystore.js');
+    await save(keystorePath, keystore);
+
+    const pub = await readPublicKeys(keystorePath);
+    expect(pub).toEqual({
+      spendPublicKey: keystore.spendPublicKey,
+      viewPublicKey: keystore.viewPublicKey,
+    });
+  });
+
+  it('throws a clear error when public keys are absent', async () => {
+    const { readPublicKeys } = await import('./keystore.js');
+    await fs.writeFile(keystorePath, JSON.stringify({ hello: 'world' }));
+
+    await expect(readPublicKeys(keystorePath)).rejects.toThrow(/no public keys/i);
+  });
+
+  it('propagates ENOENT for a missing file', async () => {
+    const { readPublicKeys } = await import('./keystore.js');
+    await expect(readPublicKeys(path.join(dir, 'nope.json'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
   });
 });

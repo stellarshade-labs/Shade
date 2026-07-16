@@ -3,7 +3,8 @@ import { scanAnnouncements } from '@shade/crypto';
 import { StealthClient, labelForToken, type StealthKeys } from '@shade/sdk';
 import { StrKey, Networks, Contract, nativeToScVal } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { loadKeystoreInteractive, resolveKeystorePath } from '../utils/keystore.js';
+import { loadKeystoreOrExit, resolveKeystorePath } from '../utils/keystore.js';
+import { assertNetwork } from '../utils/network.js';
 import {
   getContractAddress,
   loadHorizonCursor,
@@ -233,13 +234,9 @@ export const scanCommand = new Command('scan')
   .option('--verbose', 'Show detailed scan progress')
   .action(async (options) => {
     try {
-      const network = options.network as 'local' | 'testnet';
+      const network = assertNetwork(options.network);
       const keystorePath = resolveKeystorePath(options.keystore);
-      const keystore = await loadKeystoreInteractive(keystorePath, options.password).catch(() => {
-        console.error(chalk.red('Error: Missing keystore'));
-        console.error(chalk.gray("  Run 'shade keygen' first to create keys"));
-        process.exit(1);
-      });
+      const keystore = await loadKeystoreOrExit(keystorePath, options.password);
 
       if (!keystore.viewPrivateKey) {
         console.error(chalk.red('Error: No view private key in keystore'));

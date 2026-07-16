@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import readline from 'readline';
+import chalk from 'chalk';
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'crypto';
 
 export interface Keystore {
@@ -175,6 +176,71 @@ export async function loadKeystoreInteractive(
     pw = await promptPassword('Enter keystore password: ');
   }
   return loadKeystore(filepath, pw);
+}
+
+/**
+ * Load a keystore for a command, exiting the process with an actionable
+ * message on failure. Crucially it distinguishes a MISSING keystore (safe to
+ * suggest `shade keygen`) from one that exists but could not be opened (wrong
+ * password / corrupt file) — in the latter case suggesting `shade keygen`
+ * would lead the user to overwrite the keystore and destroy their keys and
+ * any unclaimed funds.
+ */
+export async function loadKeystoreOrExit(
+  filepath: string,
+  password?: string,
+): Promise<Keystore> {
+  try {
+    return await loadKeystoreInteractive(filepath, password);
+  } catch (err: any) {
+    const message = String(err?.message ?? err);
+    if (err?.code === 'ENOENT' || /not found|no such file/i.test(message)) {
+      console.error(chalk.red(`Error: no keystore at ${filepath}`));
+      console.error(chalk.gray("  Run 'shade keygen' first to create keys"));
+    } else {
+      console.error(
+        chalk.red(
+          `Error: could not open keystore at ${filepath} (wrong password or corrupt file).`,
+        ),
+      );
+      console.error(
+        chalk.yellow(
+          "  Your keystore is intact — do NOT run 'shade keygen' (it would overwrite it).",
+        ),
+      );
+      console.error(chalk.gray('  Try the password again.'));
+    }
+    process.exit(1);
+    // process.exit never returns; this satisfies the Promise<Keystore> return type.
+    throw new Error('unreachable');
+  }
+}
+
+/**
+ * Read ONLY the public keys from a keystore file — no password required.
+ * Both envelope shapes (plaintext and encrypted) store the spend/view PUBLIC
+ * keys in cleartext at the top level, so the meta-address can be re-displayed
+ * without decrypting anything. Errors (including ENOENT) propagate to the
+ * caller; a structurally valid JSON file without public keys gets a clear error.
+ */
+export async function readPublicKeys(
+  filepath: string,
+): Promise<{ spendPublicKey: string; viewPublicKey: string }> {
+  const data = await fs.readFile(filepath, 'utf-8');
+  const parsed = JSON.parse(data);
+  const { spendPublicKey, viewPublicKey } = parsed ?? {};
+  if (
+    typeof spendPublicKey !== 'string' ||
+    spendPublicKey.length === 0 ||
+    typeof viewPublicKey !== 'string' ||
+    viewPublicKey.length === 0
+  ) {
+    throw new Error(
+      `Keystore at ${filepath} has no public keys (expected top-level ` +
+        'spendPublicKey/viewPublicKey) — the file may be corrupt or not a shade keystore.',
+    );
+  }
+  return { spendPublicKey, viewPublicKey };
 }
 
 export async function saveKeystore(

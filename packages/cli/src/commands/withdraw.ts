@@ -13,9 +13,10 @@ import * as StellarSdk from '@stellar/stellar-sdk';
 import { sha256 } from '@noble/hashes/sha256';
 import { parseStroops, formatStroops, prepareWithRestore } from '@shade/sdk';
 import {
-  loadKeystoreInteractive,
+  loadKeystoreOrExit,
   resolveKeystorePath,
 } from '../utils/keystore.js';
+import { assertNetwork } from '../utils/network.js';
 import { resolveSecret } from '../utils/secrets.js';
 import { getContractAddress } from '../utils/config.js';
 import { fetchAnnouncements } from './scan.js';
@@ -216,13 +217,9 @@ export const withdrawCommand = new Command('withdraw')
   .option('--verbose', 'Show detailed output')
   .action(async (stealthAddress: string, destination: string, options) => {
     try {
-      const network = options.network as 'local' | 'testnet';
+      const network = assertNetwork(options.network);
       const keystorePath = resolveKeystorePath(options.keystore);
-      const keystore = await loadKeystoreInteractive(keystorePath, options.password).catch(() => {
-        console.error(chalk.red('Error: Missing keystore'));
-        console.error(chalk.gray("  Run 'shade keygen' first to create keys"));
-        process.exit(1);
-      });
+      const keystore = await loadKeystoreOrExit(keystorePath, options.password);
 
       if (!keystore.viewPrivateKey || !keystore.spendPrivateKey) {
         console.error(chalk.red('Error: Missing private keys in keystore'));

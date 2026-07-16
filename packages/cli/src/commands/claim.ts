@@ -2,9 +2,10 @@ import { Command } from 'commander';
 import { StealthClient, type StealthKeys, type Payment } from '@shade/sdk';
 import { StrKey } from '@stellar/stellar-sdk';
 import {
-  loadKeystoreInteractive,
+  loadKeystoreOrExit,
   resolveKeystorePath,
 } from '../utils/keystore.js';
+import { assertNetwork } from '../utils/network.js';
 import { resolveSecret } from '../utils/secrets.js';
 import { findHorizonPayment } from '../utils/config.js';
 import { withdrawCommand } from './withdraw.js';
@@ -64,7 +65,7 @@ export const claimCommand = new Command('claim')
   .option('--verbose', 'Show detailed output')
   .action(async (stealthAddress: string, destination: string, options) => {
     try {
-      const network = options.network as 'local' | 'testnet';
+      const network = assertNetwork(options.network);
 
       if (!StrKey.isValidEd25519PublicKey(stealthAddress)) {
         console.error(chalk.red('Error: Invalid stealth address'));
@@ -107,11 +108,7 @@ export const claimCommand = new Command('claim')
         return;
       }
 
-      const keystore = await loadKeystoreInteractive(keystorePath, options.password).catch(() => {
-        console.error(chalk.red('Error: Missing keystore'));
-        console.error(chalk.gray("  Run 'shade keygen' first to create keys"));
-        process.exit(1);
-      });
+      const keystore = await loadKeystoreOrExit(keystorePath, options.password);
 
       if (!keystore.viewPrivateKey || !keystore.spendPrivateKey) {
         console.error(chalk.red('Error: Missing private keys in keystore'));

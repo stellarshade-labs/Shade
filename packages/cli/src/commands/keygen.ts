@@ -10,7 +10,12 @@ import {
 } from '@shade/crypto';
 import { Keypair } from '@stellar/stellar-sdk';
 import { sha256 } from '@noble/hashes/sha256';
-import { saveKeystore, resolveKeystorePath, promptPassword } from '../utils/keystore.js';
+import {
+  saveKeystore,
+  resolveKeystorePath,
+  promptPassword,
+  keystoreExists,
+} from '../utils/keystore.js';
 import chalk from 'chalk';
 import readline from 'readline';
 
@@ -68,8 +73,28 @@ export function createKeygenCommand(): Command {
   .option('--from-stellar-secret [secret]', 'Derive keys deterministically from a Stellar secret (SEP-53)')
   .option('--app-id <id>', 'Application id to scope derived keys', 'default')
   .option('--key-scope <scope>', 'Key-derivation scope (decoupled from transport network; must match across tools)', 'stealth')
+  .option('--force', 'Overwrite an existing keystore (DESTROYS the old keys and access to their unclaimed funds)')
   .action(async (options) => {
     try {
+      // Resolve the target path FIRST and refuse to clobber an existing
+      // keystore: overwriting silently destroys the old spend/view keys, and
+      // with them access to any funds not yet claimed from the old
+      // meta-address. Checked before any key generation or prompting.
+      const keystorePath = resolveKeystorePath(options.keystore);
+      if (!options.force && (await keystoreExists(keystorePath))) {
+        console.error(chalk.red(`Error: a keystore already exists at ${keystorePath}`));
+        console.error(
+          chalk.red(
+            '  Overwriting it DESTROYS the old keys — any unclaimed funds sent to the old meta-address would be lost forever.',
+          ),
+        );
+        console.error(chalk.gray('  Options:'));
+        console.error(chalk.gray('    - write elsewhere with a different --keystore <path>'));
+        console.error(chalk.gray("    - just re-display the existing meta-address with 'shade address'"));
+        console.error(chalk.gray('    - re-run with --force if you REALLY mean to overwrite it'));
+        process.exit(1);
+      }
+
       let spendPrivKey: Uint8Array;
       let viewPrivKey: Uint8Array;
       let spendPubKey: Uint8Array;
@@ -132,8 +157,6 @@ export function createKeygenCommand(): Command {
       }
 
       const encoded = encodeMetaAddress({ spendPubKey, viewPubKey });
-
-      const keystorePath = resolveKeystorePath(options.keystore);
 
       // Encryption is the DEFAULT (CLI-02). A plaintext keystore is written only
       // when explicitly opted out via --plaintext (or its --no-encrypt alias).
