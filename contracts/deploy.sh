@@ -55,11 +55,13 @@ command -v stellar >/dev/null 2>&1 || {
     exit 1
 }
 
-# Build the contract
-echo -e "${CYAN}Building registry contract...${NC}"
-cd "$(dirname "$0")/registry"
+# Build the contract from the cargo WORKSPACE root (contracts/), so the wasm lands
+# in the workspace target dir (contracts/target/), matching demo.sh. Building from
+# contracts/registry would still emit to contracts/target (workspace target), leaving
+# the relative target/ path below pointing at a nonexistent registry/target.
+cd "$(dirname "$0")"
 
-if [[ ! -f "Cargo.toml" ]]; then
+if [[ ! -f "registry/Cargo.toml" ]]; then
     echo -e "${RED}✗ Error: Registry contract not found${NC}" >&2
     exit 1
 fi
@@ -73,10 +75,15 @@ fi
 
 echo -e "${GREEN}✓ Contract built successfully${NC}"
 
-# Generate or use existing deployer account
-if [[ "$NETWORK" == "local" ]]; then
-    echo -e "${CYAN}Funding deployer account...${NC}"
-    stellar keys generate --network "$NETWORK" "$SOURCE_ACCOUNT" --fund >/dev/null 2>&1 || true
+# Generate the deployer key if missing, then fund it via friendbot. Funding is
+# idempotent and covers BOTH fresh and pre-existing keys: a key can outlive a reset
+# local network or the quarterly testnet reset, in which case `keys generate --fund`
+# (a no-op when the key already exists) would leave the account unfunded and the
+# upload fails with "Account not found". Mainnet has no friendbot — fund out-of-band.
+if [[ "$NETWORK" == "local" || "$NETWORK" == "testnet" ]]; then
+    echo -e "${CYAN}Ensuring deployer account exists and is funded...${NC}"
+    stellar keys generate --network "$NETWORK" "$SOURCE_ACCOUNT" >/dev/null 2>&1 || true
+    stellar keys fund "$SOURCE_ACCOUNT" --network "$NETWORK" >/dev/null 2>&1 || true
 fi
 
 # Get account info
