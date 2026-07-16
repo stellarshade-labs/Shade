@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   generateMetaAddress,
   encodeMetaAddress,
@@ -7,7 +7,6 @@ import {
   Networks,
   Keypair,
   Account,
-  Asset,
   StrKey,
   hash,
   rpc,
@@ -15,7 +14,11 @@ import {
   xdr,
 } from '@stellar/stellar-sdk';
 import { PoolAdapter } from '../src/methods/pool.js';
-import { TransactionRetryableError } from '../src/errors.js';
+import { waitForTransaction } from '../src/soroban.js';
+import {
+  TransactionRetryableError,
+  TransactionTimeoutError,
+} from '../src/errors.js';
 
 const NET = Networks.STANDALONE;
 
@@ -89,5 +92,40 @@ describe('pool deposit: sendTransaction status handling (SDK-01)', () => {
 
     expect(receipt.txHash).toBe('DEPOSIT_HASH');
     expect(receipt.stealthAddress).toBeTruthy();
+  });
+});
+
+describe('waitForTransaction: PENDING timeout is typed (double-send guard)', () => {
+  it('throws TransactionTimeoutError carrying the tx hash, retryable=false', async () => {
+    vi.useFakeTimers();
+    try {
+      // A tx that never reaches a terminal status within the polling window.
+      const server = {
+        async getTransaction(): Promise<{ status: string }> {
+          return { status: 'NOT_FOUND' };
+        },
+      } as unknown as rpc.Server;
+
+      // Capture the rejection up front so the pending promise never surfaces
+      // as an unhandled rejection while the fake clock advances.
+      const settled = waitForTransaction(server, 'STUCK_HASH').then(
+        () => null,
+        (e: unknown) => e,
+      );
+      // 30 polls x 1s sleep — advance past the whole confirmation window.
+      await vi.advanceTimersByTimeAsync(31_000);
+      const err = await settled;
+
+      expect(err).toBeInstanceOf(TransactionTimeoutError);
+      const timeout = err as TransactionTimeoutError;
+      // The hash is what lets a caller poll to a terminal status instead of
+      // blindly resubmitting (and double-sending) a tx that may still land.
+      expect(timeout.txHash).toBe('STUCK_HASH');
+      expect(timeout.retryable).toBe(false);
+      expect(timeout.code).toBe('transaction_timeout');
+      expect(timeout.message).toContain('STUCK_HASH');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

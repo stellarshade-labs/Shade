@@ -2,18 +2,28 @@ export { StealthClient } from './client.js';
 
 export {
   keysFromWalletSignature,
+  stealthKeysFromRaw,
   DEFAULT_KEY_SCOPE,
   DEFAULT_APP_ID,
   type WalletSigner,
   type WalletKeysOpts,
 } from './wallet.js';
 
+/**
+ * Crypto's raw (Uint8Array-based) stealth keys, re-exported under a distinct
+ * name so code that mixes both layers has one import site: convert with
+ * {@link stealthKeysFromRaw} to get the SDK's hex-string {@link StealthKeys}.
+ */
+export type { StealthKeys as RawStealthKeys } from '@shade/crypto';
+
 export {
+  ShadeError,
   MethodRequiredError,
   MethodNotEnabledError,
   MethodNotAvailableError,
   MinimumAmountError,
   ClaimAmountError,
+  ClaimAmountRequiresNoMergeError,
   InvalidAmountError,
   SponsoredClaimMismatchError,
   WrongPasswordError,
@@ -27,6 +37,7 @@ export {
   EntryArchivedRestoringError,
   ContractIdRequiredError,
   TransactionRetryableError,
+  TransactionTimeoutError,
 } from './errors.js';
 
 export {

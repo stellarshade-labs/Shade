@@ -1,11 +1,12 @@
 import {
   generateMetaAddress,
-  encodeMetaAddress,
   generateMnemonic,
   mnemonicToStealthKeys,
 } from '@shade/crypto';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { getNetworkConfig } from './soroban.js';
+import { numberToStroops } from './stroops.js';
+import { stealthKeysFromRaw } from './wallet.js';
 import { HorizonClient } from './horizon.js';
 import { PoolAdapter } from './methods/pool.js';
 import { AccountAdapter } from './methods/account.js';
@@ -125,16 +126,7 @@ export class StealthClient {
    * No network connection needed.
    */
   static keygen(): StealthKeys {
-    const keys = generateMetaAddress();
-    const metaAddress = encodeMetaAddress(keys.metaAddress);
-
-    return {
-      metaAddress,
-      spendPubKey: Buffer.from(keys.metaAddress.spendPubKey).toString('hex'),
-      spendPrivKey: Buffer.from(keys.spendPrivKey).toString('hex'),
-      viewPubKey: Buffer.from(keys.metaAddress.viewPubKey).toString('hex'),
-      viewPrivKey: Buffer.from(keys.viewPrivKey).toString('hex'),
-    };
+    return stealthKeysFromRaw(generateMetaAddress());
   }
 
   /**
@@ -144,16 +136,9 @@ export class StealthClient {
    */
   static fromMnemonic(mnemonic?: string): StealthKeys & { mnemonic: string } {
     const phrase = mnemonic || generateMnemonic();
-    const keys = mnemonicToStealthKeys(phrase);
-    const metaAddress = encodeMetaAddress(keys.metaAddress);
-
     return {
       mnemonic: phrase,
-      metaAddress,
-      spendPubKey: Buffer.from(keys.metaAddress.spendPubKey).toString('hex'),
-      spendPrivKey: Buffer.from(keys.spendPrivKey).toString('hex'),
-      viewPubKey: Buffer.from(keys.metaAddress.viewPubKey).toString('hex'),
-      viewPrivKey: Buffer.from(keys.viewPrivKey).toString('hex'),
+      ...stealthKeysFromRaw(mnemonicToStealthKeys(phrase)),
     };
   }
 
@@ -199,8 +184,10 @@ export class StealthClient {
     metaAddress: string,
     amount: number,
     senderSecret: string,
-    opts?: SendOpts,
+    opts: SendOpts,
   ): Promise<SendReceipt> {
+    // opts is required at the type level too, but keep the runtime guard for
+    // plain-JS callers (and for `{}` casts) so misuse still fails loudly.
     if (!opts || !opts.method) {
       throw new MethodRequiredError();
     }
@@ -283,7 +270,10 @@ export class StealthClient {
       stealthAddress: p.stealthAddress,
       token: p.token,
       amount: p.amount,
-      amountStroops: p.amountStroops,
+      // Every built-in adapter sets amountStroops; the fallback only exists for
+      // the type system (Payment allows externally built rows to omit it) and
+      // converts the display amount exactly rather than guessing.
+      amountStroops: p.amountStroops ?? numberToStroops(p.amount).toString(),
     }));
   }
 

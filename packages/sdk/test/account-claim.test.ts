@@ -19,6 +19,7 @@ import { AccountAdapter } from '../src/methods/account.js';
 import { HorizonClient, type FetchLike } from '../src/horizon.js';
 import {
   ClaimAmountError,
+  ClaimAmountRequiresNoMergeError,
   InvalidAmountError,
   SponsoredClaimMismatchError,
 } from '../src/errors.js';
@@ -252,6 +253,88 @@ describe('account claim: native', () => {
     expect((err as ClaimAmountError).max).toBeCloseTo(3.99999, 7);
     // Nothing was submitted — rejected before building.
     expect(submitted).toHaveLength(0);
+  });
+});
+
+describe('account claim: amount misuse is loud, never a silent full sweep', () => {
+  /** Native payment fixture + a horizon that records submissions. */
+  function nativeSetup() {
+    const { keys, stealthAddress, ephemeralPubKeyHex } = makeFixture();
+    const submitted: string[] = [];
+    const horizon = makeCapturingHorizon({
+      accountsByAddress: { [stealthAddress]: accountRecord(stealthAddress, '10.0000000') },
+      submitted,
+    });
+    const adapter = new AccountAdapter(NET, horizon);
+    const payment: Payment = {
+      stealthAddress,
+      ephemeralPubKey: ephemeralPubKeyHex,
+      token: 'native',
+      amount: 10,
+      method: 'account',
+    };
+    return { keys, adapter, payment, submitted };
+  }
+
+  it('native claim with amount but default merge throws instead of sweeping the whole balance', async () => {
+    const { keys, adapter, payment, submitted } = nativeSetup();
+
+    // merge defaults to true -> AccountMerge would sweep ALL 10 XLM while the
+    // caller asked for 2. This must fail loudly, not silently over-send.
+    const err = await adapter
+      .claim(payment, DEST, { keys, amount: 2 })
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(ClaimAmountRequiresNoMergeError);
+    expect((err as ClaimAmountRequiresNoMergeError).code).toBe(
+      'claim_amount_requires_no_merge',
+    );
+    expect((err as Error).message).toMatch(/merge: false/);
+    expect(submitted).toHaveLength(0);
+  });
+
+  it('native claim with amount and explicit merge: true also throws', async () => {
+    const { keys, adapter, payment, submitted } = nativeSetup();
+
+    const err = await adapter
+      .claim(payment, DEST, { keys, merge: true, amount: 2 })
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(ClaimAmountRequiresNoMergeError);
+    expect(submitted).toHaveLength(0);
+  });
+
+  it('token claim with amount throws (token claims are always full)', async () => {
+    const { keys, stealthAddress, ephemeralPubKeyHex } = makeFixture();
+    const submitted: string[] = [];
+    // No accounts served: the guard must fire BEFORE any Horizon probe.
+    const horizon = makeCapturingHorizon({ submitted });
+    const adapter = new AccountAdapter(NET, horizon);
+
+    const payment: Payment = {
+      stealthAddress,
+      ephemeralPubKey: ephemeralPubKeyHex,
+      token: ASSET,
+      asset: ASSET,
+      claimableBalanceId: CB_ID,
+      amount: 100,
+      method: 'account',
+    };
+
+    const err = await adapter
+      .claim(payment, DEST, { keys, merge: false, amount: 40 })
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(ClaimAmountRequiresNoMergeError);
+    expect((err as Error).message).toMatch(/not supported/);
+    expect(submitted).toHaveLength(0);
+  });
+
+  it('native full sweep WITHOUT amount still works (default unchanged)', async () => {
+    const { keys, adapter, payment, submitted } = nativeSetup();
+
+    const receipt = await adapter.claim(payment, DEST, { keys });
+    expect(receipt.method).toBe('account');
+    expect(submitted).toHaveLength(1);
+    const ops = parseTx(submitted[0]!).operations;
+    expect(ops.map((o) => o.type)).toEqual(['accountMerge']);
   });
 });
 

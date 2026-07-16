@@ -54,11 +54,19 @@ export interface Payment {
   stealthAddress: string;
   /** Ephemeral public key from the announcement/memo (hex) */
   ephemeralPubKey: string;
-  /** Token contract address (or the string 'native' for direct XLM sends) */
+  /**
+   * Token identifier — tri-modal, depending on how the payment arrived:
+   * - pool method: the SAC token CONTRACT address (`C...`);
+   * - account method, native send: the literal string `'native'`;
+   * - account method, token send: Horizon's `"CODE:ISSUER"` form.
+   */
   token: string;
   /**
-   * Asset in Horizon "CODE:ISSUER" form (or 'native') for account-method token
-   * payments. Present only when the payment arrived as a claimable balance.
+   * Human-oriented asset label. Set on EVERY pool payment (`'XLM'` for the
+   * native SAC, otherwise the `C...` address — see `labelForToken`) and on
+   * account-method token payments (`"CODE:ISSUER"`, from the claimable
+   * balance). Absent only on account-method NATIVE payments, where
+   * {@link token} is already `'native'`.
    */
   asset?: string;
   /**
@@ -70,9 +78,12 @@ export interface Payment {
   amount: number;
   /**
    * Exact amount as a decimal `bigint` count of stroops (1e-7 units), serialized
-   * as a string. Present alongside {@link amount} so callers that need exactness
-   * above ~9.007e8 XLM (where a float can no longer represent every stroop) can
-   * avoid the lossy `number`. The `number` field is retained for display and
+   * as a string. ALWAYS set by the SDK's scan adapters, alongside {@link amount},
+   * so callers that need exactness above ~9.007e8 XLM (where a float can no
+   * longer represent every stroop) can avoid the lossy `number`. Optional in the
+   * type only for payments constructed OUTSIDE the SDK (e.g. rehydrated from an
+   * older cache); set it whenever you build a `Payment` by hand — claims prefer
+   * it over the lossy `number`. The `number` field is retained for display and
    * backwards compatibility.
    */
   amountStroops?: string;
@@ -92,10 +103,10 @@ export interface Balance {
   amount: number;
   /**
    * Exact amount as a decimal `bigint` count of stroops, serialized as a string.
-   * Present so callers can sum/display without a lossy float. See
+   * Always set, so callers can sum/display without a lossy float. See
    * {@link Payment.amountStroops}.
    */
-  amountStroops?: string;
+  amountStroops: string;
 }
 
 /** Result of a withdrawal. */
@@ -196,7 +207,14 @@ export interface ClaimOpts {
   feePayer?: string;
   /** Asset to claim (pool method). Default: native XLM. Format: "CODE:ISSUER" */
   asset?: string;
-  /** Amount to claim (pool method). Default: full balance */
+  /**
+   * Amount to claim. Default: full balance. Honored by POOL claims (partial
+   * withdrawal) AND by account-method NATIVE claims with `merge: false`
+   * (partial payout that keeps the stealth account open). Passing it on an
+   * account-method native claim WITHOUT `merge: false`, or on an
+   * account-method token claim (always claimed in full), throws
+   * {@link ClaimAmountRequiresNoMergeError} instead of being silently ignored.
+   */
   amount?: number;
   /**
    * For the account-method token claim: use the relayer's sponsor-claim pair

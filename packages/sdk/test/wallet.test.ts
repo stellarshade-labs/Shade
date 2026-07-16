@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { keysFromWalletSignature } from '../src/wallet.js';
+import {
+  generateMetaAddress,
+  deriveKeysFromSignature,
+  encodeMetaAddress,
+} from '@shade/crypto';
+import { keysFromWalletSignature, stealthKeysFromRaw } from '../src/wallet.js';
+import type { RawStealthKeys } from '../src/index.js';
 
 const hexToBytes = (hex: string): Uint8Array =>
   new Uint8Array(hex.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
@@ -120,5 +126,32 @@ describe('keysFromWalletSignature', () => {
     expect(keys.metaAddress.startsWith('shade:stellar:')).toBe(true);
     expect(keys.spendPrivKey).toHaveLength(64);
     expect(keys.viewPrivKey).toHaveLength(64);
+  });
+});
+
+describe('stealthKeysFromRaw', () => {
+  it('converts crypto raw keys to the SDK hex shape, matching encodeMetaAddress', () => {
+    const raw: RawStealthKeys = generateMetaAddress();
+    const keys = stealthKeysFromRaw(raw);
+
+    expect(keys.metaAddress).toBe(encodeMetaAddress(raw.metaAddress));
+    expect(keys.spendPubKey).toBe(
+      Buffer.from(raw.metaAddress.spendPubKey).toString('hex'),
+    );
+    expect(keys.spendPrivKey).toBe(Buffer.from(raw.spendPrivKey).toString('hex'));
+    expect(keys.viewPubKey).toBe(
+      Buffer.from(raw.metaAddress.viewPubKey).toString('hex'),
+    );
+    expect(keys.viewPrivKey).toBe(Buffer.from(raw.viewPrivKey).toString('hex'));
+  });
+
+  it('is the exact conversion keysFromWalletSignature applies', async () => {
+    const viaWallet = await keysFromWalletSignature(
+      async () => hexToBytes(VECTOR_SIG_HEX),
+    );
+    const direct = stealthKeysFromRaw(
+      deriveKeysFromSignature(hexToBytes(VECTOR_SIG_HEX)),
+    );
+    expect(direct).toEqual(viaWallet);
   });
 });

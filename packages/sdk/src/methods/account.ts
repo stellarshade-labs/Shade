@@ -34,6 +34,7 @@ import { RelayerClient } from '../relayer.js';
 import {
   MinimumAmountError,
   ClaimAmountError,
+  ClaimAmountRequiresNoMergeError,
   InvalidAmountError,
   SponsoredClaimMismatchError,
   StealthAccountNotFoundError,
@@ -611,12 +612,22 @@ export class AccountAdapter implements DeliveryAdapter {
    * account with a sequence number. Full sweep (default) uses AccountMerge; a
    * partial claim uses Payment. Signing uses the raw stealth scalar (verifies as
    * standard ed25519). Optionally fee-bumped via a relayer.
+   *
+   * Passing `opts.amount` without `merge: false` is rejected up front
+   * ({@link ClaimAmountRequiresNoMergeError}): the default merge sweeps the
+   * ENTIRE balance via AccountMerge, so silently ignoring `amount` would move
+   * more funds than the caller asked for.
    */
   private async claimNative(
     payment: Payment,
     destination: string,
     opts: ClaimOpts,
   ): Promise<ClaimReceipt> {
+    // Fund-safety guard BEFORE any I/O or signing: amount + effective merge
+    // would sweep everything while looking like a partial claim.
+    if (opts.amount !== undefined && opts.merge !== false) {
+      throw new ClaimAmountRequiresNoMergeError('native-merge');
+    }
     const stealthPrivKey = this.recoverKey(payment, opts);
     const stealthAddress = payment.stealthAddress;
     const account = await this.horizon.getAccount(stealthAddress);
@@ -707,6 +718,12 @@ export class AccountAdapter implements DeliveryAdapter {
     destination: string,
     opts: ClaimOpts,
   ): Promise<ClaimReceipt> {
+    // Fund-safety guard: a token claim always claims (and pays out) the FULL
+    // claimable balance — `opts.amount` cannot be honored, so reject it loudly
+    // instead of silently moving a different amount.
+    if (opts.amount !== undefined) {
+      throw new ClaimAmountRequiresNoMergeError('token');
+    }
     if (!payment.claimableBalanceId) {
       throw new Error('Token claim requires a claimableBalanceId on the payment');
     }

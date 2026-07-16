@@ -8,7 +8,7 @@ import {
 } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { sha256 } from '@noble/hashes/sha256';
-import { TransactionRetryableError } from './errors.js';
+import { TransactionRetryableError, TransactionTimeoutError } from './errors.js';
 
 /** Network configuration resolved from a network name. */
 export interface NetworkConfig {
@@ -113,7 +113,15 @@ export function labelForToken(
   return tokenAddress;
 }
 
-/** Poll for transaction confirmation. Throws on failure or timeout. */
+/**
+ * Poll for transaction confirmation. Throws on failure or timeout.
+ *
+ * The timeout is a typed {@link TransactionTimeoutError} carrying the tx hash:
+ * a still-PENDING transaction MAY land after we stop polling, so callers must
+ * be able to distinguish "gave up waiting" (poll the hash, do NOT resubmit)
+ * from a hard failure — a generic error here invites retry loops that
+ * double-send funds.
+ */
 export async function waitForTransaction(
   server: StellarSdk.rpc.Server,
   hash: string,
@@ -131,7 +139,7 @@ export async function waitForTransaction(
     }
     attempts++;
   }
-  throw new Error('Transaction confirmation timed out');
+  throw new TransactionTimeoutError(hash);
 }
 
 /**

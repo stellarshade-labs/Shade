@@ -1,22 +1,43 @@
 import { describe, it, expect } from 'vitest';
+import { Keypair } from '@stellar/stellar-sdk';
 import { StealthClient } from '../src/client.js';
 import {
+  ShadeError,
   MethodRequiredError,
   MethodNotEnabledError,
   MethodNotAvailableError,
   MinimumAmountError,
+  ClaimAmountError,
+  ClaimAmountRequiresNoMergeError,
+  InvalidAmountError,
+  SponsoredClaimMismatchError,
+  WrongPasswordError,
+  SessionIntegrityError,
+  NoBalanceError,
+  AnnouncementNotFoundError,
+  StealthAccountNotFoundError,
+  DestinationTrustlineError,
+  FeePayerRequiredError,
+  FeePayerAddressRequiredError,
+  EntryArchivedRestoringError,
+  ContractIdRequiredError,
+  TransactionRetryableError,
+  TransactionTimeoutError,
 } from '../src/errors.js';
 import { SppAdapter } from '../src/methods/spp.js';
 
 describe('send method resolution', () => {
   const keys = StealthClient.keygen();
 
-  it('throws MethodRequiredError when no method is given', async () => {
+  it('throws MethodRequiredError (a coded ShadeError) when no method is given', async () => {
     const client = new StealthClient({ network: 'local', methods: ['pool', 'account'] });
-    await expect(
-      // @ts-expect-error deliberately omitting method
-      client.send(keys.metaAddress, 100, 'SXXX'),
-    ).rejects.toBeInstanceOf(MethodRequiredError);
+    const err = await client
+      // @ts-expect-error deliberately omitting the (now required) opts
+      .send(keys.metaAddress, 100, 'SXXX')
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(MethodRequiredError);
+    expect(err).toBeInstanceOf(ShadeError);
+    expect((err as MethodRequiredError).code).toBe('method_required');
   });
 
   it("'auto' picks 'account' for native amount > 1 when account enabled", async () => {
@@ -89,5 +110,50 @@ describe('spp adapter', () => {
         { keys },
       ),
     ).rejects.toBeInstanceOf(MethodNotAvailableError);
+  });
+});
+
+describe('error codes: every SDK error extends ShadeError with a stable code', () => {
+  const G = Keypair.random().publicKey();
+  const cases: Array<[ShadeError, string]> = [
+    [new MethodRequiredError(), 'method_required'],
+    [new MethodNotEnabledError('account'), 'method_not_enabled'],
+    [new MethodNotAvailableError('nope'), 'method_not_available'],
+    [new MinimumAmountError(0.5), 'minimum_amount'],
+    [new ClaimAmountError(5, 4), 'claim_amount_exceeds_max'],
+    [new ClaimAmountRequiresNoMergeError(), 'claim_amount_requires_no_merge'],
+    [new ClaimAmountRequiresNoMergeError('token'), 'claim_amount_requires_no_merge'],
+    [new InvalidAmountError(NaN), 'invalid_amount'],
+    [new SponsoredClaimMismatchError('detail'), 'sponsored_claim_mismatch'],
+    [new WrongPasswordError(), 'wrong_password'],
+    [new SessionIntegrityError('spend'), 'session_integrity'],
+    [new NoBalanceError(), 'no_balance'],
+    [new AnnouncementNotFoundError(), 'announcement_not_found'],
+    [new StealthAccountNotFoundError(), 'stealth_account_not_found'],
+    [new DestinationTrustlineError('no trustline'), 'destination_trustline'],
+    [new FeePayerRequiredError(), 'fee_payer_required'],
+    [new FeePayerAddressRequiredError(), 'fee_payer_address_required'],
+    [new EntryArchivedRestoringError('cause'), 'entry_archived_restoring'],
+    [new ContractIdRequiredError('testnet'), 'contract_id_required'],
+    [new TransactionRetryableError('TRY_AGAIN_LATER'), 'transaction_retryable'],
+    [new TransactionTimeoutError('HASH'), 'transaction_timeout'],
+  ];
+
+  it.each(cases.map(([err, code]) => [err.name, err, code]))(
+    '%s carries its stable code',
+    (_name, err, code) => {
+      expect(err).toBeInstanceOf(ShadeError);
+      expect(err).toBeInstanceOf(Error);
+      expect((err as ShadeError).code).toBe(code);
+      // name is preserved per class (not flattened to 'ShadeError').
+      expect((err as ShadeError).name).not.toBe('ShadeError');
+    },
+  );
+
+  it('fund-safety flags: retryable errors are distinguishable from timeouts', () => {
+    expect(new TransactionRetryableError('X').retryable).toBe(true);
+    const t = new TransactionTimeoutError(G);
+    expect(t.retryable).toBe(false);
+    expect(t.txHash).toBe(G);
   });
 });

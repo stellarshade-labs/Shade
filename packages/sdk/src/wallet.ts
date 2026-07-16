@@ -3,7 +3,28 @@ import {
   deriveKeysFromSignature,
   encodeMetaAddress,
 } from '@shade/crypto';
+import type { StealthKeys as RawStealthKeys } from '@shade/crypto';
 import type { StealthKeys } from './types.js';
+
+/**
+ * Convert crypto's raw stealth keys (Uint8Array scalars + meta-address object,
+ * as returned by `generateMetaAddress`, `mnemonicToStealthKeys`, or
+ * `deriveKeysFromSignature`) into the SDK's hex-string {@link StealthKeys}
+ * shape used by every client/session API.
+ *
+ * The two packages deliberately reuse the name `StealthKeys` for different
+ * shapes; import the raw one as `RawStealthKeys` (re-exported from the SDK
+ * index) and convert at the boundary with this helper.
+ */
+export function stealthKeysFromRaw(raw: RawStealthKeys): StealthKeys {
+  return {
+    metaAddress: encodeMetaAddress(raw.metaAddress),
+    spendPubKey: Buffer.from(raw.metaAddress.spendPubKey).toString('hex'),
+    spendPrivKey: Buffer.from(raw.spendPrivKey).toString('hex'),
+    viewPubKey: Buffer.from(raw.metaAddress.viewPubKey).toString('hex'),
+    viewPrivKey: Buffer.from(raw.viewPrivKey).toString('hex'),
+  };
+}
 
 /**
  * A wallet signer. Given the derivation message it returns an ed25519 signature
@@ -147,14 +168,5 @@ export async function keysFromWalletSignature(
     }
   }
 
-  const keys = deriveKeysFromSignature(signature);
-  const metaAddress = encodeMetaAddress(keys.metaAddress);
-
-  return {
-    metaAddress,
-    spendPubKey: Buffer.from(keys.metaAddress.spendPubKey).toString('hex'),
-    spendPrivKey: Buffer.from(keys.spendPrivKey).toString('hex'),
-    viewPubKey: Buffer.from(keys.metaAddress.viewPubKey).toString('hex'),
-    viewPrivKey: Buffer.from(keys.viewPrivKey).toString('hex'),
-  };
+  return stealthKeysFromRaw(deriveKeysFromSignature(signature));
 }
