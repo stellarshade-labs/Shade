@@ -139,6 +139,20 @@ secret-based behavior unchanged. Omitting `feePayerAddress` on a signed pool cla
 throws `FeePayerAddressRequiredError` rather than treating a public key as a secret.
 The CLI stays secret-based (no Freighter in the terminal).
 
+## Two fund-safety footguns
+
+- **The raw-scalar rule.** `recoverStealthPrivateKey` returns a **raw ed25519
+  scalar**, not a seed. It must be signed with `signWithStealthKey` — **never**
+  feed it to `Keypair.fromRawEd25519Seed()` (or any seed-based API), which
+  hashes it into a *different* key: the contract rejects the signature and the
+  funds become **permanently unwithdrawable**. `client.claim()` does the signing
+  correctly for you.
+- **Two types named `StealthKeys`.** `@shade/crypto` and `@shade/sdk` both
+  export a type named `StealthKeys` with **different shapes**: crypto's holds
+  raw `Uint8Array` private keys plus a nested `metaAddress` object; the SDK's
+  holds hex strings plus a `metaAddress` string. Import from the package whose
+  functions you are calling.
+
 ## Roadmap / known limitations
 
 Crypto is pending external audit (not for mainnet yet). The relayer's JSON credit

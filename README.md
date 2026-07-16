@@ -130,8 +130,14 @@ shade keygen --mnemonic                   # New BIP-39 mnemonic (enables recover
 shade keygen --recover                    # Recover from an existing 12-word mnemonic
 shade keygen --password                   # Set the encryption password explicitly (else prompts on stderr)
 shade keygen --plaintext                  # Opt OUT of encryption (writes an UNENCRYPTED keystore)
+shade keygen --force                      # Required to OVERWRITE an existing keystore (destroys the old keys + any unclaimed funds)
+
+# Re-print your meta-address from an existing keystore — no password needed
+# (public keys are stored in the clear; use this instead of re-running keygen).
+shade address
 
 # Send — a delivery method is REQUIRED (pool = private, account = direct, auto = pick).
+# --network accepts only local or testnet (mainnet is rejected as unaudited).
 # Supply the secret via $SHADE_FROM_SECRET or the prompt so it never hits shell history.
 shade send <meta-address> 100 --method auto --network local
 shade send <meta-address> 100 --method pool --from SXXX
@@ -221,8 +227,9 @@ Stealth addresses hide the **identity** of the recipient, not the **flow** of fu
 
 ## Known Limitations
 
-- **Announcement reads must be paged:** Each announcement is its own keyed entry (`DataKey::Announcement(u64)`), so `deposit` is O(1) and storage has no `Vec` size ceiling. A single `get_announcements(start, limit)` response is still bounded by Soroban's return-size limit, so clients must page — the SDK pages at 200/request. The CLI's `balance`/`withdraw` currently read one capped window (limit 1000) instead of paging, so a payment past index 1000 is invisible to them; use `scan`, which pages fully.
-- **Local network only:** All development and testing uses the Docker local network. `testnet` is a supported configuration and the relayer ships a Railway/testnet deploy guide, but the project has never actually been deployed to or tested on testnet or mainnet.
+- **Announcement reads must be paged:** Each announcement is its own keyed entry (`DataKey::Announcement(u64)`), so `deposit` is O(1) and storage has no `Vec` size ceiling. A single `get_announcements(start, limit)` response is still bounded by Soroban's return-size limit, so clients must page — the SDK pages at 200/request, and the CLI's `balance`/`withdraw` reuse `scan`'s paged fetch, so all three page the full announcement set.
+- **Testnet-validated, not audited:** Day-to-day development uses the Docker local network, and the **pool** method has been validated end-to-end on Stellar **testnet** (2026-07-17): deposit → scan → balance → direct withdraw → relayer fee-bumped withdraw, for both native XLM and a classic-asset (USDC) SAC. No testnet contract id is pinned — testnet resets quarterly, so deploy your own. Mainnet remains out of scope until an external audit.
+- **Account-method discovery doesn't scale on public networks:** the account method's scan (and `balance`) walk the global Horizon transaction feed, so a cold scan for a fresh recipient is impractical on testnet/mainnet-sized histories. A Horizon indexer is the roadmap fix.
 - **No BIP-32/44:** HD derivation uses domain-separated SHA-256, not standard BIP-32 paths (those use secp256k1).
 - **No view key rotation:** Shared view keys cannot be revoked. Generate new keys to stop a viewer from seeing future payments.
 - **Destination account must exist:** The withdrawal destination needs an active Stellar account (1 XLM MBR). Fund it via exchange withdrawal for best privacy.

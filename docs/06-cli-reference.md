@@ -1,11 +1,11 @@
 ---
 title: CLI Reference
-description: "Every shade CLI command and flag: keygen, send, scan, balance, claim and withdraw — plus secret handling and the encrypted keystore format."
+description: "Every shade CLI command and flag: keygen, address, send, scan, balance, claim and withdraw — plus secret handling and the encrypted keystore format."
 ---
 
 # Shade CLI Reference
 
-`shade` is the reference command-line tool and the fastest way to feel the whole flow. Six commands: `keygen`, `send`, `scan`, `balance`, `claim`, `withdraw`.
+`shade` is the reference command-line tool and the fastest way to feel the whole flow. Seven commands: `keygen`, `address`, `send`, `scan`, `balance`, `claim`, `withdraw`.
 
 This page documents every command's real arguments and flags.
 
@@ -23,7 +23,7 @@ This page documents every command's real arguments and flags.
 
 **Keystore path** resolves as: `--keystore <path>` → `$SHADE_KEYSTORE` → `~/.shade-keys.json`.
 
-**Networks:** `--network local` (default) or `--network testnet`.
+**Networks:** `--network local` (default) or `--network testnet`. These are the **only** accepted values — anything else, notably `mainnet`, is rejected with an error (the contracts are unaudited, so mainnet is deliberately unsupported).
 
 ---
 
@@ -37,6 +37,7 @@ shade keygen --mnemonic                   # new BIP-39 mnemonic (enables recover
 shade keygen --recover                    # recover from an existing 12-word mnemonic
 shade keygen --from-stellar-secret        # derive deterministically from a Stellar secret
 shade keygen --plaintext                  # opt OUT of encryption
+shade keygen --force                      # required to OVERWRITE an existing keystore
 ```
 
 | Flag | Description |
@@ -50,12 +51,31 @@ shade keygen --plaintext                  # opt OUT of encryption
 | `--from-stellar-secret [secret]` | Derive keys deterministically from a Stellar secret (SEP-53) |
 | `--app-id <id>` | Application id to scope derived keys (default: `default`) |
 | `--key-scope <scope>` | Key-derivation scope (default: `stealth`) |
+| `--force` | Overwrite an existing keystore (**destroys** the old keys and access to their unclaimed funds) |
+
+**Keygen refuses to overwrite.** If a keystore already exists at the target path, `keygen` exits with an error rather than clobbering it — overwriting destroys the old spend/view keys, and with them access to any unclaimed funds sent to the old meta-address. Either write elsewhere with `--keystore <path>`, re-display the existing meta-address with `shade address`, or pass `--force` if you really mean to overwrite.
 
 **Encryption is the default.** A plaintext keystore is written only when you explicitly opt out with `--plaintext` / `--no-encrypt`. Combining `--plaintext` with `--password` is an error, and an empty password is rejected.
 
 > **Keystore format.** AES-256-GCM over the two private keys; public keys stay in the clear. KDF is **scrypt** with `N=131072, r=8, p=1` for new keystores (envelope v2), with the parameters stored in the envelope. Older envelopes without stored params fall back to Node's defaults (`N=16384`) so they still decrypt. Files are written with mode `0600`.
 
 > **`--app-id` / `--key-scope` must match across every tool** that derives keys from the same wallet/secret, or you get different, non-interoperable keys. `--key-scope` is deliberately **decoupled from `--network`** so the same keys work regardless of which network you later transact on. These defaults line up with the SDK's `DEFAULT_APP_ID` / `DEFAULT_KEY_SCOPE`.
+
+---
+
+## `shade address`
+
+Re-display the meta-address of an **existing** keystore. **No password needed** — both the plaintext and encrypted envelopes store the spend/view public keys in the clear, and the meta-address derives purely from them.
+
+```bash
+shade address                             # prints shade:stellar:...
+```
+
+| Flag | Description |
+|---|---|
+| `--keystore <path>` | Keystore file path (defaults to `$SHADE_KEYSTORE` or `~/.shade-keys.json`) |
+
+This is the safe answer to "I lost my meta-address" — as opposed to re-running `shade keygen`, which would overwrite the keys (and now refuses to without `--force`).
 
 ---
 
@@ -127,7 +147,7 @@ shade balance --network local
 
 Balances are aggregated per token in stroops and displayed with a readable asset label (`XLM` rather than the native SAC `C...` address).
 
-> **Known limitation.** `balance` and `withdraw` read announcements with a single capped request (limit 1000) rather than paging like `scan` does. In a pool with more than 1000 announcements, a payment at a higher index will not appear in `balance` and cannot be resolved by `withdraw`. See [FAQ & Troubleshooting](./10-faq-troubleshooting.md).
+> **Paging.** `balance` and `withdraw` reuse `scan`'s paged announcement fetch, so all three page through the **full** announcement set — a payment is found regardless of its index in the pool.
 
 ---
 

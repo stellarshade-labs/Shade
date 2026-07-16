@@ -74,10 +74,10 @@ The contract exposes seven functions — two that write, five read-only:
 | `get_balance(stealth_pk, token_addr) -> i128` | read | Pool balance for a (key, token) pair. **Extends the entry's TTL.** |
 | `get_nonce(stealth_pk) -> u64` | read | Current replay-protection nonce. **Extends the entry's TTL.** |
 | `get_announcements(start, limit) -> Vec<AnnouncementEntry>` | read | Paginated announcement window. Deserializes only `start..min(start+limit, count)`. `limit` uses `saturating_add`, so `u64::MAX` clamps instead of panicking. |
-| `get_announcements_by_tag(view_tag) -> Vec<AnnouncementEntry>` | read | All announcements matching one view tag. |
+| `get_announcements_by_tag(view_tag, start, limit) -> Vec<AnnouncementEntry>` | read | Paginated window filtered to one view tag. Same bounds as `get_announcements`: scans only `start..min(start+limit, count)`, with the `saturating_add` clamp. |
 | `get_announcement_count() -> u64` | read | Total announcements — a cheap freshness check. |
 
-> **`get_announcements_by_tag` is a convenience, not the scanning path.** It iterates **every** index `0..count`, reading each keyed entry — O(n) storage reads, and its result grows with the number of matches, so it is only practical for small pools. The SDK deliberately does **not** use it: it pages `get_announcements` and filters by view tag **client-side**, which keeps the per-call work bounded and avoids leaking which tag you are interested in to the RPC node you query. Reach for it only for ad-hoc inspection of a small deployment.
+> **`get_announcements_by_tag` is a convenience, not the scanning path.** It is paginated like `get_announcements` — each call reads only the `start..start+limit` window and returns the matches within it, so callers page it the same way. The SDK deliberately does **not** use it: it pages `get_announcements` and filters by view tag **client-side**, which avoids leaking which tag you are interested in to the RPC node you query. Reach for it only for ad-hoc inspection.
 
 ### Storage layout
 

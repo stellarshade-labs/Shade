@@ -96,7 +96,8 @@ No announcement matching that stealth address was found for your keys. Causes:
 
 1. The payment isn't yours.
 2. The deposit hasn't landed/indexed yet — wait and rescan.
-3. **The announcement is past index 1000 and you're using `balance`/`withdraw`**, which don't page. Use `scan` (which pages fully) to confirm the payment exists. See [Security](./09-security.md#implementation-gaps-worth-knowing).
+
+(`balance`, `withdraw` and `scan` all page the full announcement set, so a high announcement index is *not* a cause.)
 
 ### `StealthAccountNotFoundError`
 
@@ -153,7 +154,7 @@ The meta-address failed prefix, length, hex, checksum, or on-curve/torsion valid
 
 ### "`balance` shows less than `scan` found"
 
-Expected in two cases: `balance` suppresses fully-swept native accounts (live balance 0), **and** it doesn't page announcements past the 1000 cap. `scan` pages fully — trust it for discovery.
+Expected in one case: `balance` suppresses fully-swept native accounts (live balance 0). For pool announcements the two commands can't diverge — `balance` reuses `scan`'s paged fetch and pages the full set.
 
 ### "My withdraw signature is rejected by the contract"
 

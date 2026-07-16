@@ -154,7 +154,7 @@ cd contracts && cargo test   # Rust contract tests only
 
 Fund a `local` or `testnet` account with friendbot before using it.
 
-> **Status note.** `testnet` is a **supported configuration** — the network settings exist and the relayer ships a Railway/testnet deploy guide — but the project has **never actually been deployed to or tested on testnet**. Every end-to-end exercise (including `demo.sh`) runs on the Docker local network, no test connects to testnet, and there is no CI. Mainnet is **out of scope** until an external audit lands. See [Security](./09-security.md).
+> **Status note.** The **pool** method has been validated end-to-end on Stellar **testnet** (2026-07-17): deposit → scan → balance → direct withdraw → relayer fee-bumped withdraw, for both native XLM and a classic-asset (USDC) SAC. No testnet contract id is pinned — testnet **resets quarterly**, so deploy your own and save it as shown above. The **account** method's discovery does **not** scale on a public network: its scan (and `balance`) walk the global Horizon transaction feed, so a cold scan for a fresh recipient is impractical — a Horizon indexer is the roadmap fix. Day-to-day development (including `demo.sh`) still runs on the Docker local network, and there is no CI. Mainnet is **out of scope** until an external audit lands. See [Security](./09-security.md).
 
 ---
 

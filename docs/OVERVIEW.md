@@ -137,7 +137,7 @@ Two things to be clear about: today the top-up is a **plain Stellar payment** ve
 
 ## 8. Running it for real — Railway (testnet)
 
-The relayer is a standalone service (no dependency on the crypto package), so it deploys anywhere. It ships **ready** for **Railway** — this is a prepared configuration, not a record of a deployment; nothing has been deployed to testnet yet:
+The relayer is a standalone service (no dependency on the crypto package), so it deploys anywhere. It ships **ready** for **Railway** — this is a prepared configuration, not a record of a Railway deployment. (The relayer itself has been exercised against testnet: it fee-bumped the pool withdraw in the 2026-07-17 testnet validation, see §11.)
 
 - `packages/relayer/railway.json` — NIXPACKS build, `npm run start` (`node dist/index.js`), health check on `/health`.
 - Fund a testnet account via friendbot, set `RELAYER_SECRET` to its secret and `NETWORK=testnet`, point Railway's root at `packages/relayer`, deploy, and hit `/health`.
@@ -160,7 +160,7 @@ shade balance --network testnet
 shade claim <stealth-addr> <your-address> --fee-payer <secret>  # or --relay <url>, or --sponsored
 ```
 
-Secrets are read from env vars (`SHADE_FROM_SECRET`, `SHADE_FEE_PAYER`) or an stderr prompt so they don't land in your shell history. Keystores are encrypted by default (AES-256-GCM); opt out with `--plaintext`. Full commands: `keygen`, `send`, `scan`, `balance`, `claim`, `withdraw`.
+Secrets are read from env vars (`SHADE_FROM_SECRET`, `SHADE_FEE_PAYER`) or an stderr prompt so they don't land in your shell history. Keystores are encrypted by default (AES-256-GCM); opt out with `--plaintext`. Full commands: `keygen`, `address`, `send`, `scan`, `balance`, `claim`, `withdraw`.
 
 ---
 
@@ -200,7 +200,7 @@ Everything is there: delivery methods, cursor-aware `scanWithCursor`, Freighter 
 
 ## 11. What's real vs. what's roadmap
 
-**Implemented today:** `pool` + `account` delivery, the relayer (fee-bump / sponsor / credit), Freighter external signing, encrypted sessions, and wallet-signature key derivation. Testnet **deploy configuration** ships too (§8), but nothing has actually been deployed to or tested on testnet yet — all development and testing runs on the Docker local network.
+**Implemented today:** `pool` + `account` delivery, the relayer (fee-bump / sponsor / credit), Freighter external signing, encrypted sessions, and wallet-signature key derivation. The `pool` method has been **validated end-to-end on Stellar testnet** (2026-07-17): deposit → scan → balance → direct withdraw → relayer fee-bumped withdraw, for both native XLM and a classic-asset (USDC) SAC. No testnet contract id is pinned — testnet resets quarterly, so you deploy your own. One honest caveat: the `account` method's discovery does **not** scale on public networks — its scan walks the global Horizon transaction feed, so a cold scan for a fresh recipient is impractical there (the Horizon indexer on the roadmap is the fix). Day-to-day development still runs on the Docker local network.
 
 **On the roadmap (Shade's own work):** an external cryptography audit (so **not for mainnet yet**), a durable credit ledger, a Horizon indexer for faster account-method scans, and a Rust-crate rename. Note: `spp` is **not** on this list — it's a reserved hook for a _separate, external_ private-payments effort, not something Shade is building.
 
