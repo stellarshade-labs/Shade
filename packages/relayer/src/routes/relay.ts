@@ -27,7 +27,7 @@ function maxBaseFee(): number {
 }
 
 /** Absolute cap (XLM) on the built outer fee-bump fee. */
-function maxRelayFeeXlm(): number {
+export function maxRelayFeeXlm(): number {
   const n = Number(process.env.MAX_RELAY_FEE_XLM);
   return Number.isFinite(n) && n > 0 ? n : 0.1;
 }
@@ -58,7 +58,7 @@ export async function handleRelay(req: Request, res: Response) {
       return res.status(500).json({ error: 'Relayer not initialized' });
     }
 
-    const { xdr, fundingAccount, nonce, signature } = req.body;
+    const { xdr, fundingAccount, nonce, signature, authAmount } = req.body;
 
     if (!xdr || typeof xdr !== 'string') {
       return res.status(400).json({ error: 'Missing or invalid XDR' });
@@ -151,19 +151,34 @@ export async function handleRelay(req: Request, res: Response) {
           .json({ error: 'Funding account required', code: 'insufficient_credit' });
       }
       // Proof-of-control: the fundingAccount must sign a fresh challenge nonce
-      // binding this endpoint + account + the authorized fee AND the specific
-      // inner transaction (network-scoped hash). Binding the inner-tx hash stops
-      // an intercepted {nonce, signature} from being paired with a different
-      // attacker-signed inner XDR of the same op count / amount.
+      // binding this endpoint + account + an authorized fee CEILING AND the
+      // specific inner transaction (network-scoped hash). The client cannot
+      // predict the exact outer fee (it depends on this relayer's clamped
+      // base-fee fetch at build time), so the signature covers a
+      // client-declared ceiling (`authAmount`, echoed in the body): it
+      // authorizes "debit up to authAmount XLM for THIS inner tx". The actual
+      // fee must come in under the ceiling, and only the actual fee is
+      // reserved. Binding the inner-tx hash stops an intercepted
+      // {nonce, signature} from being paired with a different attacker-signed
+      // inner XDR.
+      if (typeof authAmount !== 'string' || !/^\d+(\.\d{1,7})?$/.test(authAmount)) {
+        return res.status(401).json({ error: 'Unauthorized', code: 'missing_auth' });
+      }
       const innerTxHash = innerTx.hash().toString('hex');
       const authErr = relayChallenges.verify(
         'relay',
         { fundingAccount, nonce, signature },
-        feeXlm,
+        authAmount,
         innerTxHash,
       );
       if (authErr) {
         return res.status(401).json({ error: 'Unauthorized', code: authErr });
+      }
+      if (Number(feeXlm) > Number(authAmount)) {
+        return res.status(402).json({
+          error: `Fee ${feeXlm} exceeds the authorized ceiling ${authAmount}`,
+          code: 'fee_exceeds_authorization',
+        });
       }
       try {
         reservation = await relayLedger.reserve(

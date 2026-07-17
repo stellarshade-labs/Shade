@@ -43,6 +43,10 @@ export interface RelayerHealth {
   network?: string;
   relayerAddress?: string;
   balance?: string;
+  /** Whether the relayer gates fee-spending endpoints on credit. */
+  requireCredit?: boolean;
+  /** Advertised ceiling (XLM) on a fee-bump — the amount a client authorizes. */
+  maxRelayFeeXlm?: number;
 }
 
 /** Options for {@link RelayerClient.relay}. */
@@ -249,6 +253,7 @@ export class RelayerClient {
    */
   async relay(xdr: string, opts?: RelayOpts): Promise<{ txHash: string }> {
     const fundingAccount = opts?.fundingAccount ?? this.fundingAccount;
+    const fundingSigner = opts?.fundingSigner ?? this.fundingSigner;
     // Bind the inner-tx hash into the proof-of-control signature so a captured
     // {nonce, signature} cannot be paired with a different inner XDR (REL-01
     // tx-binding). MUST use the same network passphrase the relayer verifies
@@ -256,22 +261,54 @@ export class RelayerClient {
     const innerTxHash = opts?.networkPassphrase
       ? new Transaction(xdr, opts.networkPassphrase).hash().toString('hex')
       : undefined;
+    // The signed amount is a fee CEILING, not the exact fee: a client cannot
+    // predict the relayer's built fee (it depends on the relayer's clamped
+    // base-fee fetch), so it authorizes "debit up to authAmount for THIS inner
+    // tx". Default the ceiling to the relayer's advertised max fee when a
+    // signer is in play and the caller didn't pin one.
+    let authAmount = opts?.authAmount;
+    if (fundingAccount && fundingSigner && authAmount === undefined) {
+      authAmount = await this.maxRelayFee();
+    }
     const auth = await this.signedAuth(
       'relay',
       fundingAccount,
       opts?.fundingSigner,
-      opts?.authAmount,
+      authAmount,
       innerTxHash,
     );
     const result = await this.post<{ txHash: string }>('/relay', {
       xdr,
       fundingAccount,
-      ...(auth ?? {}),
+      ...(auth ? { ...auth, authAmount } : {}),
     });
     if (opts?.confirm) {
       await this.confirmOnChain(result.txHash);
     }
     return result;
+  }
+
+  /** Cached per-client relayer fee ceiling (XLM, 7-dp), fetched from /health. */
+  private cachedMaxRelayFee?: string;
+
+  /**
+   * The relayer's advertised max fee-bump fee (`maxRelayFeeXlm` from /health),
+   * as the fee ceiling to authorize. Falls back to the protocol default cap
+   * (0.1 XLM) when an older relayer does not advertise it. Cached per client.
+   */
+  private async maxRelayFee(): Promise<string> {
+    if (this.cachedMaxRelayFee) return this.cachedMaxRelayFee;
+    let cap = 0.1;
+    try {
+      const h = await this.health();
+      if (typeof h.maxRelayFeeXlm === 'number' && h.maxRelayFeeXlm > 0) {
+        cap = h.maxRelayFeeXlm;
+      }
+    } catch {
+      // Unreachable /health: fall back to the documented default cap.
+    }
+    this.cachedMaxRelayFee = cap.toFixed(7);
+    return this.cachedMaxRelayFee;
   }
 
   /**

@@ -218,6 +218,13 @@ describe('pool relayed withdraw goes through RelayerClient (SDK-POOLRELAY-AUTH)'
       async (url: string, init?: { method?: string; body?: string }) => {
         const body = init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : {};
         calls.push({ url, body });
+        if (url.endsWith('/health')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ status: 'ok', requireCredit: true, maxRelayFeeXlm: 0.1 }),
+          };
+        }
         if (url.includes('/credit/challenge')) {
           return { ok: true, status: 200, json: async () => ({ nonce: 'NONCE123' }) };
         }
@@ -248,9 +255,13 @@ describe('pool relayed withdraw goes through RelayerClient (SDK-POOLRELAY-AUTH)'
     expect(relayCall!.body.fundingAccount).toBe(fundingKp.publicKey());
     expect(relayCall!.body.nonce).toBe('NONCE123');
     expect(typeof relayCall!.body.signature).toBe('string');
+    // The authorized fee ceiling comes from the relayer's advertised cap
+    // (/health maxRelayFeeXlm) and is echoed in the body for the relayer to
+    // verify the signature over.
+    expect(relayCall!.body.authAmount).toBe('0.1000000');
 
     // The signature verifies over the canonical challenge message, bound to
-    // the exact inner tx that was relayed (REL-01 tx-binding).
+    // the exact inner tx that was relayed (REL-01 tx-binding) and the ceiling.
     const innerTxHash = new Transaction(relayCall!.body.xdr as string, NET)
       .hash()
       .toString('hex');
@@ -258,7 +269,7 @@ describe('pool relayed withdraw goes through RelayerClient (SDK-POOLRELAY-AUTH)'
       'relay',
       fundingKp.publicKey(),
       'NONCE123',
-      '0',
+      '0.1000000',
       innerTxHash,
     );
     const sigOk = fundingKp.verify(

@@ -8,7 +8,7 @@ import {
   warnIfEphemeralLedgerPath,
   warnIfPermissiveCors,
 } from './boot.js';
-import { initRelayRoute, handleRelay } from './routes/relay.js';
+import { initRelayRoute, handleRelay, maxRelayFeeXlm } from './routes/relay.js';
 import { handleSponsor } from './routes/sponsor.js';
 import {
   handleSponsorClaimPrepare,
@@ -159,6 +159,9 @@ async function initRelayer() {
         relayerAddress: keypair.publicKey(),
         balance,
         requireCredit,
+        // Advertised so clients know the fee ceiling to sign in the /relay
+        // challenge (authAmount) without predicting the exact built fee.
+        maxRelayFeeXlm: maxRelayFeeXlm(),
       });
     });
 

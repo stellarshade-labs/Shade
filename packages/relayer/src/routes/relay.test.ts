@@ -253,12 +253,20 @@ describe('handleRelay credit gating', () => {
   // /relay challenge so a signature is pinned to the specific inner tx.
   const INNER_TX_HASH = Buffer.from('innertxhash').toString('hex');
 
-  /** Produce a valid proof-of-control {nonce, signature} for the funder. */
-  function auth(amount: string): { nonce: string; signature: string } {
+  /**
+   * Produce a valid proof-of-control triple for the funder. The signed amount
+   * is the client's fee CEILING and is echoed in the body as `authAmount`
+   * (the route verifies the signature over it and enforces fee <= ceiling).
+   */
+  function auth(amount: string): {
+    nonce: string;
+    signature: string;
+    authAmount: string;
+  } {
     const nonce = challenges.issue(fundingAccount);
     const msg = challengeMessage('relay', fundingAccount, nonce, amount, INNER_TX_HASH);
     const signature = funder.sign(Buffer.from(msg, 'utf8')).toString('base64');
-    return { nonce, signature };
+    return { nonce, signature, authAmount: amount };
   }
 
   it('gates with 402 when the funding account has no credit', async () => {
@@ -405,7 +413,7 @@ describe('handleRelay proof-of-control auth (credit-gated)', () => {
     const nonce = challenges.issue(forNonceOf ?? funder.publicKey());
     const msg = challengeMessage(endpoint, funder.publicKey(), nonce, amount, INNER_TX_HASH);
     const signature = signer.sign(Buffer.from(msg, 'utf8')).toString('base64');
-    return { nonce, signature };
+    return { nonce, signature, authAmount: amount };
   }
 
   async function callWith(body: Record<string, unknown>) {
@@ -486,7 +494,7 @@ describe('handleRelay proof-of-control auth (credit-gated)', () => {
     const nonce = expiring.issue(funder.publicKey());
     const msg = challengeMessage('relay', funder.publicKey(), nonce, FEE_XLM, INNER_TX_HASH);
     const signature = funder.sign(Buffer.from(msg, 'utf8')).toString('base64');
-    await callWith({ nonce, signature });
+    await callWith({ nonce, signature, authAmount: FEE_XLM });
     expect(mockRes.status).toHaveBeenCalledWith(401);
     expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
   });
@@ -696,7 +704,15 @@ describe('handleRelay inner-tx binding (credit-gated)', () => {
     const signature = funder.sign(Buffer.from(msg, 'utf8')).toString('base64');
 
     await handleRelay(
-      { body: { xdr: 'anything', fundingAccount: funder.publicKey(), nonce, signature } } as Request,
+      {
+        body: {
+          xdr: 'anything',
+          fundingAccount: funder.publicKey(),
+          nonce,
+          signature,
+          authAmount: FEE_XLM,
+        },
+      } as Request,
       mockRes as Response,
     );
 
@@ -710,10 +726,43 @@ describe('handleRelay inner-tx binding (credit-gated)', () => {
     const signature = funder.sign(Buffer.from(msg, 'utf8')).toString('base64');
 
     await handleRelay(
-      { body: { xdr: 'anything', fundingAccount: funder.publicKey(), nonce, signature } } as Request,
+      {
+        body: {
+          xdr: 'anything',
+          fundingAccount: funder.publicKey(),
+          nonce,
+          signature,
+          authAmount: FEE_XLM,
+        },
+      } as Request,
       mockRes as Response,
     );
 
     expect(mockRes.json).toHaveBeenCalledWith({ success: true, txHash: 'OK' });
+  });
+
+  it('rejects when the built fee exceeds the signed authorization ceiling', async () => {
+    // Signed ceiling is below the built fee (FEE_XLM=0.0000600 built vs a tiny
+    // authorized ceiling): the relayer must refuse rather than overcharge.
+    const nonce = challenges.issue(funder.publicKey());
+    const tinyCeiling = '0.0000001';
+    const msg = challengeMessage('relay', funder.publicKey(), nonce, tinyCeiling, HASH_A);
+    const signature = funder.sign(Buffer.from(msg, 'utf8')).toString('base64');
+
+    await handleRelay(
+      {
+        body: {
+          xdr: 'anything',
+          fundingAccount: funder.publicKey(),
+          nonce,
+          signature,
+          authAmount: tinyCeiling,
+        },
+      } as Request,
+      mockRes as Response,
+    );
+
+    expect(mockRes.status).toHaveBeenCalledWith(402);
+    expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
   });
 });
