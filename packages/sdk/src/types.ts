@@ -205,6 +205,14 @@ export interface ScanOpts {
   methods?: DeliveryMethod[];
   /** Resume from a previously returned cursor */
   cursor?: ScanCursor;
+  /**
+   * Account method with an indexer configured ({@link ClientConfig.indexerUrl})
+   * only: a COLD scan (no cursor) walks the full Horizon history from genesis
+   * instead of fast-starting at the indexer's first covered position. Set it
+   * to discover payments that predate the indexer's coverage. Without an
+   * indexer the Horizon walk is always exhaustive, so this has no effect.
+   */
+  exhaustive?: boolean;
 }
 
 /**
@@ -312,6 +320,17 @@ export interface ClientConfig {
   contractId?: string;
   /** Override the Horizon REST endpoint (used by the account method) */
   horizonUrl?: string;
+  /**
+   * Optional announcement-indexer URL — an account-method DISCOVERY
+   * accelerator. When set, `scan`/`balance` consume the indexer's
+   * pre-extracted announcement feed (operations inlined, no per-tx Horizon
+   * round-trip) instead of walking every Horizon transaction. Horizon remains
+   * the source of truth: the scan verifies the indexer's /health coverage
+   * first and falls back to the pure Horizon walk automatically when the
+   * indexer is unreachable, unhealthy, or on the wrong network — and always
+   * finishes with a Horizon tail so indexer lag cannot hide a payment.
+   */
+  indexerUrl?: string;
   /** Delivery methods to enable. Default: ['pool'] */
   methods?: DeliveryMethod[];
   /**

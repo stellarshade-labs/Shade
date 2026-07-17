@@ -22,6 +22,8 @@ export {
   RelayerHttpError,
   RelayerNetworkError,
   NoHealthyRelayerError,
+  IndexerHttpError,
+  IndexerNetworkError,
   MethodRequiredError,
   MethodNotEnabledError,
   MethodNotAvailableError,
@@ -90,6 +92,13 @@ export type {
   FundingSigner,
   CreditChallenge,
 } from './relayer.js';
+
+export { IndexerClient } from './indexer.js';
+export type {
+  IndexerHealth,
+  IndexerAnnouncement,
+  AnnouncementsPage,
+} from './indexer.js';
 
 export { RelayerPool, normalizeRelayList } from './relayerPool.js';
 export type {

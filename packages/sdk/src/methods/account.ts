@@ -31,6 +31,7 @@ import type {
   HorizonClaimableBalance,
 } from '../horizon.js';
 import { RelayerClient } from '../relayer.js';
+import type { IndexerClient } from '../indexer.js';
 import {
   RelayerPool,
   normalizeRelayList,
@@ -49,6 +50,8 @@ import {
   SponsoredClaimMismatchError,
   StealthAccountNotFoundError,
   DestinationTrustlineError,
+  IndexerHttpError,
+  IndexerNetworkError,
 } from '../errors.js';
 import { numberToStroops, parseStroops, formatStroops } from '../stroops.js';
 import type {
@@ -62,6 +65,31 @@ import type { DeliveryAdapter, AdapterSendParams } from './types.js';
 import { signTx } from './sign.js';
 
 const HORIZON_PAGE_SIZE = 200;
+
+/** Indexer announcements page size (the service caps `limit` at 200). */
+const INDEXER_PAGE_SIZE = 200;
+
+/** Decoded key material + flags threaded through one scan invocation. */
+interface ScanContext {
+  viewPrivKey: Uint8Array;
+  spendPubKey: Uint8Array;
+  suppressClaimedNative: boolean;
+}
+
+/**
+ * The transaction fields the candidate matcher consumes — satisfied verbatim
+ * by a Horizon transaction record AND by an indexer announcement (which omits
+ * `source_account`; the token path then falls back to its asset+amount
+ * claimable-balance binding).
+ */
+interface CandidateTx {
+  hash: string;
+  paging_token: string;
+  memo_type: string;
+  memo?: string;
+  successful?: boolean;
+  source_account?: string;
+}
 
 /**
  * Reserves the sender fronts on a token send: 1 XLM to open the stealth account
@@ -191,6 +219,7 @@ export class AccountAdapter implements DeliveryAdapter {
   readonly method = 'account' as const;
   private readonly rpcServer?: TransactionStatusSource;
   private readonly relayerSelection?: RelayerSelection;
+  private readonly indexer?: IndexerClient;
 
   constructor(
     private readonly networkPassphrase: string,
@@ -199,10 +228,13 @@ export class AccountAdapter implements DeliveryAdapter {
     opts?: {
       rpcServer?: TransactionStatusSource;
       relayerSelection?: RelayerSelection;
+      /** Optional discovery accelerator consumed by {@link scan}. */
+      indexer?: IndexerClient;
     },
   ) {
     this.rpcServer = opts?.rpcServer;
     this.relayerSelection = opts?.relayerSelection;
+    this.indexer = opts?.indexer;
   }
 
   /**
@@ -373,103 +405,263 @@ export class AccountAdapter implements DeliveryAdapter {
   }
 
   /**
-   * Discover incoming direct payments by paging Horizon transactions in
-   * ascending order. For each tx with a hash memo, the memo decodes to a
-   * candidate R; deriving the stealth address from (viewPrivKey, spendPubKey, R)
-   * and finding an operation whose destination equals that address confirms the
+   * Discover incoming direct payments over Horizon's ascending transaction
+   * feed. For each tx with a hash memo, the memo decodes to a candidate R;
+   * deriving the stealth address from (viewPrivKey, spendPubKey, R) and
+   * finding an operation whose destination equals that address confirms the
    * payment is ours. Three op shapes are matched:
    * - `create_account` / `payment` -> a native XLM send.
    * - `create_claimable_balance` with our address as a claimant -> a token send;
    *   the claimable balance id is resolved via Horizon's claimable-balances API.
+   *
+   * With an indexer configured (and passing the health guard) the walk is
+   * segmented: a bounded Horizon pre-segment covers anything before the
+   * indexer's coverage window, the covered span consumes pre-extracted
+   * announcements with inlined operations (no per-tx round-trip), and a
+   * Horizon tail ALWAYS runs from the last adopted position so indexer lag —
+   * or an indexer fault mid-segment — can never hide a payment. A cold scan
+   * fast-starts at the indexer's first covered position; payments predating
+   * that coverage need `exhaustive: true`. Without an indexer the behavior is
+   * exactly the original unbounded Horizon walk.
    */
   async scan(
     keys: StealthKeys,
     cursor?: string,
-    opts?: { suppressClaimedNative?: boolean },
+    opts?: { suppressClaimedNative?: boolean; exhaustive?: boolean },
   ): Promise<{ payments: Payment[]; cursor?: string }> {
-    const suppressClaimedNative = opts?.suppressClaimedNative ?? false;
-    const viewPrivKey = new Uint8Array(Buffer.from(keys.viewPrivKey, 'hex'));
-    const spendPubKey = new Uint8Array(Buffer.from(keys.spendPubKey, 'hex'));
-
+    const ctx: ScanContext = {
+      viewPrivKey: new Uint8Array(Buffer.from(keys.viewPrivKey, 'hex')),
+      spendPubKey: new Uint8Array(Buffer.from(keys.spendPubKey, 'hex')),
+      suppressClaimedNative: opts?.suppressClaimedNative ?? false,
+    };
     const payments: Payment[] = [];
-    let pageCursor = cursor;
-    let lastToken = cursor;
+
+    const indexer = this.indexer;
+    const coverage = indexer && (await this.indexerCoverage(indexer));
+    if (!indexer || !coverage) {
+      // No indexer (or one that failed the health guard): the plain unbounded
+      // Horizon walk, byte-identical to the pre-indexer scan.
+      const finalCursor = await this.walkHorizon(cursor, undefined, ctx, payments);
+      return { payments, cursor: finalCursor };
+    }
+
+    // Fast cold start: with no client cursor the scan begins at the indexer's
+    // first covered position rather than genesis. Documented tradeoff:
+    // payments predating indexer coverage need `exhaustive: true`.
+    const begin =
+      cursor ?? (opts?.exhaustive ? undefined : coverage.startCursor);
+
+    // Pre-segment: a bounded Horizon walk over the span the indexer does NOT
+    // cover, INCLUSIVE of the startCursor tx — coverage is the open interval
+    // (startCursor, cursor], so the boundary tx comes from Horizon and only
+    // from Horizon (/announcements serves strictly-greater tokens: no dup).
+    if (begin === undefined || BigInt(begin) < BigInt(coverage.startCursor)) {
+      await this.walkHorizon(begin, coverage.startCursor, ctx, payments);
+    }
+
+    // Indexer segment: consume pre-extracted announcements from wherever the
+    // covered span begins for this scan.
+    let cur =
+      begin !== undefined && BigInt(begin) > BigInt(coverage.startCursor)
+        ? begin
+        : coverage.startCursor;
+    try {
+      for (;;) {
+        const page = await indexer.getAnnouncements(cur, INDEXER_PAGE_SIZE);
+        for (const record of page.records) {
+          await this.collectCandidate(record, record.operations, ctx, payments);
+        }
+        // Advance only AFTER the page's records are processed, so an
+        // abandoned segment can never sit past unprocessed records. Adopt the
+        // furthest well-formed position the page yields — its reported cursor
+        // over the last processed record's token — so a malformed or stalled
+        // feed cannot poison the Horizon tail cursor (defensive; a
+        // contract-compliant cursor always advances past both).
+        const prev = cur;
+        const adopt = (candidate: unknown): void => {
+          if (
+            typeof candidate === 'string' &&
+            /^\d+$/.test(candidate) &&
+            BigInt(candidate) > BigInt(cur)
+          ) {
+            cur = candidate;
+          }
+        };
+        adopt(page.records[page.records.length - 1]?.paging_token);
+        adopt(page.cursor);
+        if (page.records.length < INDEXER_PAGE_SIZE) break;
+        // (defensive) A full page that fails to advance would replay the same
+        // records forever — abandon to the Horizon tail instead.
+        if (cur === prev) break;
+      }
+    } catch (err) {
+      // Indexer fault mid-segment: abandon it (cur = last adopted position)
+      // and let the Horizon tail below cover the rest. Anything else (e.g. a
+      // Horizon error inside the candidate matcher) propagates as before.
+      if (
+        !(err instanceof IndexerHttpError) &&
+        !(err instanceof IndexerNetworkError)
+      ) {
+        throw err;
+      }
+    }
+
+    // Horizon tail: ALWAYS runs — it covers indexer lag (and an abandoned
+    // segment); when the indexer is at head it costs one short page.
+    const finalCursor = await this.walkHorizon(cur, undefined, ctx, payments);
+    return { payments, cursor: finalCursor };
+  }
+
+  /**
+   * Probe the configured indexer and return its coverage start when it is
+   * usable for THIS scan: `status === 'ok'`, same network as this adapter,
+   * and a non-null coverage interval. Any guard failure — including an
+   * unreachable /health — returns undefined and the scan silently stays on
+   * the pure Horizon walk (Horizon is the source of truth).
+   */
+  private async indexerCoverage(
+    indexer: IndexerClient,
+  ): Promise<{ startCursor: string } | undefined> {
+    try {
+      const h = await indexer.health();
+      if (h.status !== 'ok') return undefined;
+      if (h.network !== networkNameForPassphrase(this.networkPassphrase)) {
+        return undefined;
+      }
+      if (h.cursor == null || h.startCursor == null) return undefined;
+      return { startCursor: h.startCursor };
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Ascending Horizon transaction walk shared by every scan segment,
+   * processing candidates from `from` (exclusive, Horizon cursor semantics).
+   * Unbounded when `stopAtToken` is undefined. When bounded, txs with
+   * `BigInt(paging_token) <= BigInt(stopAtToken)` are processed — INCLUSIVE
+   * of the boundary tx, matching the indexer's open coverage interval
+   * (startCursor, cursor] — and the walk returns `stopAtToken` at the first
+   * tx beyond it. Otherwise returns the last seen paging token (the scan
+   * cursor), or `from` when nothing new was seen.
+   */
+  private async walkHorizon(
+    from: string | undefined,
+    stopAtToken: string | undefined,
+    ctx: ScanContext,
+    payments: Payment[],
+  ): Promise<string | undefined> {
+    let pageCursor = from;
+    let lastToken = from;
 
     for (;;) {
       const txs = await this.horizon.getTransactions(pageCursor, HORIZON_PAGE_SIZE);
       if (txs.length === 0) break;
 
       for (const tx of txs) {
+        if (
+          stopAtToken !== undefined &&
+          BigInt(tx.paging_token) > BigInt(stopAtToken)
+        ) {
+          return stopAtToken;
+        }
         lastToken = tx.paging_token;
-        if (tx.memo_type !== 'hash' || !tx.memo) continue;
-        if (tx.successful === false) continue;
-
-        const ephemeralPubKey = new Uint8Array(Buffer.from(tx.memo, 'base64'));
-        if (ephemeralPubKey.length !== 32) continue;
-
-        let derivedAddress: string;
-        try {
-          derivedAddress = computeReceiverStealthAddress(
-            viewPrivKey,
-            spendPubKey,
-            ephemeralPubKey,
-          );
-        } catch {
-          continue;
-        }
-
-        const ops = await this.horizon.getTransactionOperations(tx.hash);
-        const ephHex = Buffer.from(ephemeralPubKey).toString('hex');
-
-        // A create_claimable_balance in THIS tx naming the derived address as a
-        // claimant. Destinations are muxed-normalized so a send to the M-form of
-        // the stealth address still matches.
-        const cbMatch = ops.find(
-          (op) =>
-            op.type === 'create_claimable_balance' &&
-            (op.claimants ?? []).some(
-              (c) => normalizeDestination(c.destination) === derivedAddress,
-            ),
+        await this.collectCandidate(
+          tx,
+          () => this.horizon.getTransactionOperations(tx.hash),
+          ctx,
+          payments,
         );
-
-        // Native leg (create_account / payment) landing at the derived address.
-        const nativeMatch = ops.find(
-          (op) =>
-            (op.type === 'create_account' &&
-              normalizeDestination(op.account) === derivedAddress) ||
-            (op.type === 'payment' &&
-              normalizeDestination(op.to) === derivedAddress),
-        );
-
-        if (nativeMatch) {
-          const payment = await this.buildNativePayment(
-            nativeMatch,
-            derivedAddress,
-            ephHex,
-            tx.hash,
-            !!cbMatch,
-            suppressClaimedNative,
-          );
-          if (payment) payments.push(payment);
-        }
-
-        if (cbMatch) {
-          const payment = await this.buildTokenPayment(
-            cbMatch,
-            derivedAddress,
-            ephHex,
-            tx.hash,
-            tx.source_account,
-          );
-          if (payment) payments.push(payment);
-        }
       }
 
       if (txs.length < HORIZON_PAGE_SIZE) break;
       pageCursor = txs[txs.length - 1]!.paging_token;
     }
 
-    return { payments, cursor: lastToken };
+    return lastToken;
+  }
+
+  /**
+   * Run one transaction through the candidate pipeline: verify the memo
+   * shape, decode the ephemeral R, derive the receiver-side stealth address,
+   * and — on an ownership match — collect the native and/or token payment
+   * rows into `payments`.
+   *
+   * `ops` is either the inline operation records (indexer announcements carry
+   * them verbatim — no per-tx round-trip) or a lazy fetch invoked only after
+   * the candidate checks pass (the Horizon walk — preserving the pre-indexer
+   * behavior of never fetching operations for non-candidate txs). The memo
+   * checks run here even for indexer-served records, so a corrupt feed entry
+   * degrades to "not a candidate" rather than a bogus derivation.
+   */
+  private async collectCandidate(
+    tx: CandidateTx,
+    ops: HorizonOp[] | (() => Promise<HorizonOp[]>),
+    ctx: ScanContext,
+    payments: Payment[],
+  ): Promise<void> {
+    if (tx.memo_type !== 'hash' || !tx.memo) return;
+    if (tx.successful === false) return;
+
+    const ephemeralPubKey = new Uint8Array(Buffer.from(tx.memo, 'base64'));
+    if (ephemeralPubKey.length !== 32) return;
+
+    let derivedAddress: string;
+    try {
+      derivedAddress = computeReceiverStealthAddress(
+        ctx.viewPrivKey,
+        ctx.spendPubKey,
+        ephemeralPubKey,
+      );
+    } catch {
+      return;
+    }
+
+    const resolvedOps = typeof ops === 'function' ? await ops() : ops;
+    const ephHex = Buffer.from(ephemeralPubKey).toString('hex');
+
+    // A create_claimable_balance in THIS tx naming the derived address as a
+    // claimant. Destinations are muxed-normalized so a send to the M-form of
+    // the stealth address still matches.
+    const cbMatch = resolvedOps.find(
+      (op) =>
+        op.type === 'create_claimable_balance' &&
+        (op.claimants ?? []).some(
+          (c) => normalizeDestination(c.destination) === derivedAddress,
+        ),
+    );
+
+    // Native leg (create_account / payment) landing at the derived address.
+    const nativeMatch = resolvedOps.find(
+      (op) =>
+        (op.type === 'create_account' &&
+          normalizeDestination(op.account) === derivedAddress) ||
+        (op.type === 'payment' &&
+          normalizeDestination(op.to) === derivedAddress),
+    );
+
+    if (nativeMatch) {
+      const payment = await this.buildNativePayment(
+        nativeMatch,
+        derivedAddress,
+        ephHex,
+        tx.hash,
+        !!cbMatch,
+        ctx.suppressClaimedNative,
+      );
+      if (payment) payments.push(payment);
+    }
+
+    if (cbMatch) {
+      const payment = await this.buildTokenPayment(
+        cbMatch,
+        derivedAddress,
+        ephHex,
+        tx.hash,
+        tx.source_account,
+      );
+      if (payment) payments.push(payment);
+    }
   }
 
   /**

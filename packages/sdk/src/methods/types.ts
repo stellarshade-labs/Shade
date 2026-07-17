@@ -51,12 +51,15 @@ export interface DeliveryAdapter {
    *
    * @param keys - Recipient stealth keys (needs viewPrivKey + spendPubKey).
    * @param cursor - Opaque per-method resume cursor.
+   * @param opts - `suppressClaimedNative` drops swept accounts (balance view);
+   *   `exhaustive` disables the account adapter's indexer fast cold start.
+   *   Adapters ignore flags that do not apply to their method.
    * @returns Detected payments and the next cursor to persist.
    */
   scan(
     keys: StealthKeys,
     cursor?: string,
-    opts?: { suppressClaimedNative?: boolean },
+    opts?: { suppressClaimedNative?: boolean; exhaustive?: boolean },
   ): Promise<{ payments: Payment[]; cursor?: string }>;
 
   /**

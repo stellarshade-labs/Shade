@@ -389,6 +389,42 @@ export class RelayerNetworkError extends ShadeError {
 }
 
 /**
+ * Thrown when an indexer HTTP endpoint responds non-2xx. Carries the HTTP
+ * {@link status} and the indexer's own machine-readable {@link indexerCode}
+ * from the `{ error, code }` body so callers can branch on the failure KIND.
+ * The account scan treats it as "abandon the indexer segment" and falls back
+ * to the Horizon walk — Horizon remains the source of truth.
+ */
+export class IndexerHttpError extends ShadeError {
+  /** HTTP status the indexer responded with. */
+  readonly status: number;
+  /** The indexer's own `code` field from the error body, when present. */
+  readonly indexerCode?: string;
+  constructor(path: string, status: number, indexerCode?: string, detail?: string) {
+    super(
+      'indexer_http_error',
+      `Indexer ${path} failed (${status}): ${indexerCode ?? detail ?? 'unknown'}`,
+    );
+    this.name = 'IndexerHttpError';
+    this.status = status;
+    this.indexerCode = indexerCode;
+  }
+}
+
+/**
+ * Thrown when an indexer cannot be reached at the transport level (DNS
+ * failure, refused connection, request timeout, invalid response body).
+ * Distinct from {@link IndexerHttpError} for parity with the relayer errors;
+ * the account scan treats both the same way (fall back to Horizon).
+ */
+export class IndexerNetworkError extends ShadeError {
+  constructor(path: string, detail: string) {
+    super('indexer_network_error', `Indexer ${path} unreachable: ${detail}`);
+    this.name = 'IndexerNetworkError';
+  }
+}
+
+/**
  * Thrown by the `RelayerPool` when no candidate relayer is usable for this
  * call. {@link candidates} maps every probed URL to the reason it was rejected
  * (`unreachable: ...`, `timeout`, `http_<status>`, `status_not_ok`,

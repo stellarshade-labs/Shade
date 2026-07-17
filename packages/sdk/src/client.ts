@@ -7,6 +7,7 @@ import * as StellarSdk from '@stellar/stellar-sdk';
 import { getNetworkConfig } from './soroban.js';
 import { stealthKeysFromRaw } from './wallet.js';
 import { HorizonClient } from './horizon.js';
+import { IndexerClient } from './indexer.js';
 import { PoolAdapter } from './methods/pool.js';
 import { AccountAdapter } from './methods/account.js';
 import { SppAdapter } from './methods/spp.js';
@@ -89,6 +90,11 @@ export class StealthClient {
 
     const horizonUrl = config.horizonUrl || netConfig.horizonUrl;
     const horizon = new HorizonClient(horizonUrl);
+    // Optional account-method discovery accelerator; the scan health-guards it
+    // and falls back to the pure Horizon walk on any fault.
+    const indexer = config.indexerUrl
+      ? new IndexerClient(config.indexerUrl)
+      : undefined;
 
     this.adapters = new Map();
     for (const method of this.enabledMethods) {
@@ -109,6 +115,7 @@ export class StealthClient {
               // Soroban RPC's getTransaction resolves classic tx hashes too.
               rpcServer: this.server,
               relayerSelection: this.relayerSelection,
+              indexer,
             }),
           );
           break;
@@ -247,6 +254,7 @@ export class StealthClient {
       const prev = cursor[method];
       const result = await adapter.scan(keys, prev, {
         suppressClaimedNative: suppressClaimed,
+        exhaustive: opts?.exhaustive,
       });
       for (const p of result.payments) {
         payments.push({ ...p, method });
