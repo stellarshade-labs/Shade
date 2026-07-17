@@ -4,7 +4,8 @@ import os from 'os';
 import path from 'path';
 import { Request, Response } from 'express';
 import { Keypair } from '@stellar/stellar-sdk';
-import { CreditLedger } from '../ledger.js';
+import type { CreditLedger } from '../ledger.js';
+import { JsonCreditLedger } from '../ledger.js';
 import { initContext, resetContext, getContext } from '../context.js';
 import { challengeMessage } from '../utils/auth.js';
 import { handleSponsor } from './sponsor.js';
@@ -48,8 +49,8 @@ function mockServer(relayerKey: string, existing: string[] = []) {
 }
 
 /** Issue a challenge for `funder` and sign the canonical `sponsor` message. */
-function signedAuth(funder: Keypair, totalXlm: string) {
-  const nonce = getContext().challenges.issue(funder.publicKey());
+async function signedAuth(funder: Keypair, totalXlm: string) {
+  const nonce = await getContext().challenges.issue(funder.publicKey());
   const message = challengeMessage(
     'sponsor',
     funder.publicKey(),
@@ -70,7 +71,7 @@ describe('sponsor route', () => {
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sponsor-'));
-    ledger = new CreditLedger(path.join(dir, 'ledger.json'));
+    ledger = new JsonCreditLedger(path.join(dir, 'ledger.json'));
     relayer = Keypair.random();
   });
 
@@ -95,7 +96,7 @@ describe('sponsor route', () => {
 
   it('rejects a request whose signature is missing (401) even with a funder', async () => {
     const funder = Keypair.random();
-    ledger.credit(funder.publicKey(), '10', 'DEP1');
+    await ledger.credit(funder.publicKey(), '10', 'DEP1');
     const { server, submitTransaction } = mockServer(relayer.publicKey());
     initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
@@ -124,7 +125,7 @@ describe('sponsor route', () => {
 
   it('rejects a startingBalance above the (lowered) cap with 400', async () => {
     const funder = Keypair.random();
-    ledger.credit(funder.publicKey(), '100', 'DEP1');
+    await ledger.credit(funder.publicKey(), '100', 'DEP1');
     const { server, submitTransaction } = mockServer(relayer.publicKey());
     initContext({
       keypair: relayer,
@@ -151,7 +152,7 @@ describe('sponsor route', () => {
 
   it('defaults the cap to 5 (a small bootstrap ceiling, not a faucet)', async () => {
     const funder = Keypair.random();
-    ledger.credit(funder.publicKey(), '2000', 'DEP1');
+    await ledger.credit(funder.publicKey(), '2000', 'DEP1');
     const { server, submitTransaction } = mockServer(relayer.publicKey());
     initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
@@ -172,7 +173,7 @@ describe('sponsor route', () => {
 
   it('returns 409 when the account already exists', async () => {
     const funder = Keypair.random();
-    ledger.credit(funder.publicKey(), '10', 'DEP1');
+    await ledger.credit(funder.publicKey(), '10', 'DEP1');
     const { server } = mockServer(relayer.publicKey(), [stealth]);
     initContext({ keypair: relayer, network: 'testnet', server, ledger });
     const req = {
@@ -186,12 +187,12 @@ describe('sponsor route', () => {
 
   it('accepts a valid authenticated+funded request and debits startingBalance + fee', async () => {
     const funder = Keypair.random();
-    ledger.credit(funder.publicKey(), '3', 'DEP1');
+    await ledger.credit(funder.publicKey(), '3', 'DEP1');
     const { server, submitTransaction } = mockServer(relayer.publicKey());
     initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     // fee = 100 stroops = 0.00001; total authorized = 2 + 0.00001.
-    const auth = signedAuth(funder, '2.0000100');
+    const auth = await signedAuth(funder,'2.0000100');
     const req = {
       body: { address: stealth, startingBalance: '2', ...auth },
     } as Request;
@@ -208,16 +209,16 @@ describe('sponsor route', () => {
     expect(opTypes).toEqual(['createAccount']);
 
     // 3 - 2 - 0.00001 = 0.99999.
-    expect(ledger.getBalance(funder.publicKey())).toBe('0.9999900');
+    expect(await ledger.getBalance(funder.publicKey())).toBe('0.9999900');
   });
 
   it('returns 402 when the funder credit is insufficient', async () => {
     const funder = Keypair.random();
-    ledger.credit(funder.publicKey(), '1', 'DEP1');
+    await ledger.credit(funder.publicKey(), '1', 'DEP1');
     const { server } = mockServer(relayer.publicKey());
     initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
-    const auth = signedAuth(funder, '2.0000100');
+    const auth = await signedAuth(funder,'2.0000100');
     const req = {
       body: { address: stealth, startingBalance: '2', ...auth },
     } as Request;
@@ -229,12 +230,12 @@ describe('sponsor route', () => {
 
   it('rejects a signature bound to a different amount (401)', async () => {
     const funder = Keypair.random();
-    ledger.credit(funder.publicKey(), '10', 'DEP1');
+    await ledger.credit(funder.publicKey(), '10', 'DEP1');
     const { server, submitTransaction } = mockServer(relayer.publicKey());
     initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     // Sign for a smaller amount than the route will actually authorize.
-    const auth = signedAuth(funder, '1.0000000');
+    const auth = await signedAuth(funder,'1.0000000');
     const req = {
       body: { address: stealth, startingBalance: '2', ...auth },
     } as Request;
@@ -246,11 +247,11 @@ describe('sponsor route', () => {
 
   it('rejects a reused nonce (401 on replay)', async () => {
     const funder = Keypair.random();
-    ledger.credit(funder.publicKey(), '10', 'DEP1');
+    await ledger.credit(funder.publicKey(), '10', 'DEP1');
     const { server } = mockServer(relayer.publicKey());
     initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
-    const auth = signedAuth(funder, '2.0000100');
+    const auth = await signedAuth(funder,'2.0000100');
     const first = {
       body: { address: stealth, startingBalance: '2', ...auth },
     } as Request;

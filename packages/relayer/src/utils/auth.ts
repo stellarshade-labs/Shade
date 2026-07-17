@@ -11,13 +11,39 @@ interface IssuedNonce {
 }
 
 /**
- * In-memory, single-use challenge-nonce store keyed by nonce. Proof-of-control
+ * A single-use, proof-of-control challenge-nonce store. Every method returns a
+ * Promise so a shared backend (e.g. Redis) that cannot answer synchronously can
+ * implement the same contract. {@link MemoryChallengeStore} is the default
+ * in-process implementation; call sites depend on this interface.
+ */
+export interface ChallengeStore {
+  /**
+   * Issue a fresh random nonce bound to `account`, valid for the store TTL.
+   * Rejects `invalid_account` when `account` is not a valid G-address.
+   */
+  issue(account: string): Promise<string>;
+  /**
+   * Verify a proof-of-control challenge. Resolves `null` on success (the nonce
+   * is consumed) or an error-code string on any failure.
+   */
+  verify(
+    endpoint: string,
+    auth: { fundingAccount?: unknown; nonce?: unknown; signature?: unknown },
+    amount: string,
+    bind?: string,
+  ): Promise<string | null>;
+  /** Consume (single-use) a nonce, removing it from the store. */
+  consume(nonce: string): Promise<void>;
+}
+
+/**
+ * In-memory, single-use {@link ChallengeStore} keyed by nonce. Proof-of-control
  * for a `fundingAccount` works as: the client fetches a fresh nonce bound to the
  * account, signs a canonical message binding the endpoint + account + nonce +
  * authorized amount with the account's ed25519 key, and submits the signature.
  * The relayer verifies, then consumes the nonce so it cannot be replayed.
  */
-export class ChallengeStore {
+export class MemoryChallengeStore implements ChallengeStore {
   private readonly nonces = new Map<string, IssuedNonce>();
 
   constructor(private readonly ttlMs: number = DEFAULT_TTL_MS) {}
@@ -26,7 +52,7 @@ export class ChallengeStore {
    * Issue a fresh random nonce bound to `account`, valid for the store TTL.
    * @throws Error('invalid_account') when `account` is not a valid G-address.
    */
-  issue(account: string): string {
+  async issue(account: string): Promise<string> {
     if (!validateStellarAddress(account)) {
       throw new Error('invalid_account');
     }
@@ -59,7 +85,7 @@ export class ChallengeStore {
   }
 
   /** Consume (single-use) a nonce, removing it from the store. */
-  consume(nonce: string): void {
+  async consume(nonce: string): Promise<void> {
     this.nonces.delete(nonce);
   }
 
@@ -77,7 +103,7 @@ export class ChallengeStore {
    *   the signed message so a `{nonce, signature}` cannot be paired with a
    *   different transaction of the same amount.
    */
-  verify(
+  async verify(
     endpoint: string,
     auth: {
       fundingAccount?: unknown;
@@ -86,7 +112,7 @@ export class ChallengeStore {
     },
     amount: string,
     bind?: string,
-  ): string | null {
+  ): Promise<string | null> {
     const fundingAccount = auth?.fundingAccount;
     const nonce = auth?.nonce;
     const signature = auth?.signature;
@@ -116,7 +142,7 @@ export class ChallengeStore {
     if (!ok) return 'invalid_signature';
 
     // Single-use: consume only after a fully successful verification.
-    this.consume(nonce);
+    await this.consume(nonce);
     return null;
   }
 }

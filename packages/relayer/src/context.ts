@@ -1,6 +1,8 @@
 import { Keypair, Networks, Horizon } from '@stellar/stellar-sdk';
-import { CreditLedger } from './ledger.js';
-import { ChallengeStore } from './utils/auth.js';
+import type { CreditLedger } from './ledger.js';
+import { JsonCreditLedger } from './ledger.js';
+import type { ChallengeStore } from './utils/auth.js';
+import { MemoryChallengeStore } from './utils/auth.js';
 
 /** Shared, injectable relayer context — set once at startup, read by routes. */
 export interface RelayerContext {
@@ -85,7 +87,7 @@ export function initContext(
     new Horizon.Server(horizonUrl, {
       allowHttp: networkDefinitionFor(network).allowHttp,
     });
-  const ledger = partial.ledger ?? new CreditLedger();
+  const ledger = partial.ledger ?? new JsonCreditLedger();
   const requireCredit =
     partial.requireCredit ?? process.env.RELAYER_REQUIRE_CREDIT === '1';
   const sponsorMaxXlm =
@@ -96,7 +98,7 @@ export function initContext(
     (process.env.SPONSOR_CLAIM_MAX_HELD
       ? Number(process.env.SPONSOR_CLAIM_MAX_HELD)
       : 10);
-  const challenges = partial.challenges ?? new ChallengeStore();
+  const challenges = partial.challenges ?? new MemoryChallengeStore();
 
   ctx = {
     keypair: partial.keypair,

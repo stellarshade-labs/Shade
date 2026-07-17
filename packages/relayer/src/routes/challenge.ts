@@ -11,7 +11,7 @@ import { validateStellarAddress } from '../utils/validation.js';
  * `{ fundingAccount, nonce, signature }` to a fee-spending request. The nonce
  * expires after the store TTL and is consumed on first successful use.
  */
-export function handleCreditChallenge(req: Request, res: Response) {
+export async function handleCreditChallenge(req: Request, res: Response) {
   const ctx = getContext();
   const account = req.query?.account;
   if (typeof account !== 'string' || !validateStellarAddress(account)) {
@@ -19,6 +19,6 @@ export function handleCreditChallenge(req: Request, res: Response) {
       .status(400)
       .json({ error: 'Invalid or missing account', code: 'invalid_account' });
   }
-  const nonce = ctx.challenges.issue(account);
+  const nonce = await ctx.challenges.issue(account);
   return res.json({ account, nonce });
 }

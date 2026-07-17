@@ -49,7 +49,7 @@ export async function handleCreditClaim(req: Request, res: Response) {
     return res.status(400).json({ error: 'Missing txHash', code: 'invalid_tx' });
   }
 
-  if (ctx.ledger.hasConsumed(txHash)) {
+  if (await ctx.ledger.hasConsumed(txHash)) {
     return res.status(409).json({ error: 'Transaction already claimed', code: 'tx_already_claimed' });
   }
 
@@ -121,7 +121,7 @@ export async function handleCreditClaim(req: Request, res: Response) {
   // (under Express 4) would hang the socket. Any other error surfaces as 500.
   let acct;
   try {
-    acct = ctx.ledger.credit(fundingAccount, fromStroops(totalStroops), txHash);
+    acct = await ctx.ledger.credit(fundingAccount, fromStroops(totalStroops), txHash);
   } catch (err: any) {
     if (err?.message === 'tx_already_claimed') {
       return res
@@ -140,10 +140,10 @@ export async function handleCreditClaim(req: Request, res: Response) {
 /**
  * GET /credit/:account -> { fundingAccount, balance, updatedAt }
  */
-export function handleCreditBalance(req: Request, res: Response) {
+export async function handleCreditBalance(req: Request, res: Response) {
   const ctx = getContext();
   const account = req.params.account ?? '';
-  const record = ctx.ledger.getAccount(account);
+  const record = await ctx.ledger.getAccount(account);
   if (!record) {
     return res.status(404).json({ error: 'Unknown account', code: 'account_unknown' });
   }

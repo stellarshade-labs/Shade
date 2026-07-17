@@ -7,7 +7,7 @@ import {
 import { getContext } from '../context.js';
 import type { CreditLedger, Reservation } from '../ledger.js';
 import { validateStellarAddress } from '../utils/validation.js';
-import { ChallengeStore } from '../utils/auth.js';
+import type { ChallengeStore } from '../utils/auth.js';
 
 let relayerKeypair: Keypair | null = null;
 let relayLedger: CreditLedger | null = null;
@@ -165,7 +165,7 @@ export async function handleRelay(req: Request, res: Response) {
         return res.status(401).json({ error: 'Unauthorized', code: 'missing_auth' });
       }
       const innerTxHash = innerTx.hash().toString('hex');
-      const authErr = relayChallenges.verify(
+      const authErr = await relayChallenges.verify(
         'relay',
         { fundingAccount, nonce, signature },
         authAmount,

@@ -16,7 +16,7 @@ import {
 } from './routes/sponsorClaim.js';
 import { handleCreditClaim, handleCreditBalance } from './routes/credit.js';
 import { handleCreditChallenge } from './routes/challenge.js';
-import { CreditLedger } from './ledger.js';
+import { JsonCreditLedger } from './ledger.js';
 import { initContext, networkDefinitionFor } from './context.js';
 import RateLimiter from './utils/rateLimit.js';
 import { logger } from './utils/logger.js';
@@ -129,7 +129,7 @@ async function initRelayer() {
     // If gating is ON, the ledger must survive redeploys.
     warnIfEphemeralLedgerPath(process.env.CREDIT_LEDGER_PATH, requireCredit);
 
-    const ledger = new CreditLedger();
+    const ledger = new JsonCreditLedger();
 
     const relayerCtx = initContext({
       keypair,

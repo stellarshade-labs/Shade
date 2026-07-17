@@ -67,6 +67,12 @@ export interface ReservationRecord {
   /** Whether this reservation actually moved credit (a no-op reserve did not). */
   debited: boolean;
   state: ReservationState;
+  /**
+   * ISO timestamp when this reservation was created. Present on records written
+   * by this version; absent on legacy records persisted before the field was
+   * added. A later recovery job uses it to age OUTSTANDING reservations.
+   */
+  createdAt?: string;
 }
 
 /** On-disk shape of the credit ledger. */
@@ -94,6 +100,56 @@ export interface Reservation {
   ref: string;
   /** True when this reservation actually debited (false on an idempotent no-op). */
   debited: boolean;
+}
+
+/**
+ * An all-async, stroop-precision credit ledger. Every method returns a Promise
+ * so a durable backend (e.g. Postgres) that cannot answer synchronously can
+ * implement the same contract. {@link JsonCreditLedger} is the default JSON-file
+ * implementation; call sites depend on this interface, not the concrete class.
+ */
+export interface CreditLedger {
+  /** Whether a deposit tx hash has already been credited. */
+  hasConsumed(txHash: string): Promise<boolean>;
+  /** Current balance (decimal string) for an account, or null if unknown. */
+  getBalance(account: string): Promise<string | null>;
+  /** Full account record, or null if unknown. */
+  getAccount(account: string): Promise<LedgerAccount | null>;
+  /** Whether an account has at least `amount` credit available. */
+  hasSufficient(account: string, amount: string): Promise<boolean>;
+  /**
+   * Credit an account from a verified deposit tx. Idempotent: a repeated
+   * txHash rejects so the caller can return 409.
+   */
+  credit(account: string, amount: string, txHash: string): Promise<LedgerAccount>;
+  /**
+   * Debit an account by an amount. Rejects `insufficient_credit` when the
+   * balance would go negative. Idempotent by `ref`.
+   */
+  debit(account: string, amount: string, ref: string): Promise<LedgerAccount>;
+  /**
+   * Atomically check credit and debit the fee BEFORE the caller submits.
+   * Rejects `insufficient_credit` when the balance would go negative.
+   * Idempotent by `ref`.
+   */
+  reserve(account: string, amount: string, ref: string): Promise<Reservation>;
+  /** Mark a reservation SETTLED after a SUCCESSFUL submit. */
+  settle(reservation: Reservation): Promise<void>;
+  /** Restore a previously reserved amount after a FAILED submit. */
+  refund(reservation: Reservation): Promise<void>;
+  /**
+   * Record sponsored reserves the relayer fronts for a funding account and
+   * return the new held total. Rejects `sponsored_held_exceeded` when the
+   * addition would push held reserves above `maxHeld`.
+   */
+  holdReserve(
+    account: string,
+    amount: string,
+    maxHeld: string,
+    ref?: string,
+  ): Promise<string>;
+  /** Release previously held sponsored reserves (clamped at zero). */
+  releaseReserve(account: string, amount: string, ref?: string): Promise<string>;
 }
 
 const STROOPS_PER_UNIT = 10_000_000n;
@@ -124,13 +180,16 @@ export function fromStroops(stroops: bigint): string {
 }
 
 /**
- * A durable, stroop-precision credit ledger backed by a single JSON file.
+ * A durable, stroop-precision {@link CreditLedger} backed by a single JSON file.
  *
  * All arithmetic is done on BigInt stroops (never floats), and writes are
  * atomic (write-tmp + rename) so a crash mid-write cannot corrupt the ledger.
  * Consumed deposit tx hashes are recorded to make credit claims idempotent.
+ * The read/write methods are synchronous internally but exposed as Promises to
+ * satisfy the {@link CreditLedger} contract; per-account promise locks still
+ * serialize reserve-check-and-debit.
  */
-export class CreditLedger {
+export class JsonCreditLedger implements CreditLedger {
   private readonly filePath: string;
   private data: LedgerData;
   /** Per-account promise chains that serialize reserve-check-and-debit. */
@@ -240,18 +299,23 @@ export class CreditLedger {
     }
   }
 
-  /** Whether a deposit tx hash has already been credited. */
-  hasConsumed(txHash: string): boolean {
+  /** Synchronous idempotency check reused by {@link credit}. */
+  private hasConsumedSync(txHash: string): boolean {
     return txHash in this.data.consumedTxs;
   }
 
+  /** Whether a deposit tx hash has already been credited. */
+  async hasConsumed(txHash: string): Promise<boolean> {
+    return this.hasConsumedSync(txHash);
+  }
+
   /** Current balance (decimal string) for an account, or null if unknown. */
-  getBalance(account: string): string | null {
+  async getBalance(account: string): Promise<string | null> {
     return this.data.accounts[account]?.balance ?? null;
   }
 
   /** Full account record, or null if unknown. */
-  getAccount(account: string): LedgerAccount | null {
+  async getAccount(account: string): Promise<LedgerAccount | null> {
     return this.data.accounts[account] ?? null;
   }
 
@@ -259,8 +323,8 @@ export class CreditLedger {
    * Credit an account from a verified deposit tx. Idempotent: a repeated
    * txHash throws so the caller can return 409.
    */
-  credit(account: string, amount: string, txHash: string): LedgerAccount {
-    if (this.hasConsumed(txHash)) {
+  async credit(account: string, amount: string, txHash: string): Promise<LedgerAccount> {
+    if (this.hasConsumedSync(txHash)) {
       throw new Error('tx_already_claimed');
     }
     const acct = this.ensureAccount(account);
@@ -284,7 +348,7 @@ export class CreditLedger {
    * already applied is a no-op (returns the account unchanged) rather than
    * double-charging.
    */
-  debit(account: string, amount: string, ref: string): LedgerAccount {
+  async debit(account: string, amount: string, ref: string): Promise<LedgerAccount> {
     return this.debitInternal(account, amount, ref).acct;
   }
 
@@ -326,7 +390,7 @@ export class CreditLedger {
   }
 
   /** Whether an account has at least `amount` credit available. */
-  hasSufficient(account: string, amount: string): boolean {
+  async hasSufficient(account: string, amount: string): Promise<boolean> {
     const acct = this.data.accounts[account];
     if (!acct) return false;
     return toStroops(acct.balance) >= toStroops(amount);
@@ -375,6 +439,9 @@ export class CreditLedger {
         ref,
         debited,
         state: 'OUTSTANDING',
+        // Timestamp so a later recovery job can age OUTSTANDING reservations
+        // (a crash between reserve and settle/refund).
+        createdAt: new Date().toISOString(),
       };
       this.persist();
       return { id, account, amount, ref, debited };

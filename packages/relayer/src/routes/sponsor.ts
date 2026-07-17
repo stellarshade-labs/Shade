@@ -102,7 +102,7 @@ export async function handleSponsor(req: Request, res: Response) {
 
     // Proof-of-control: fundingAccount must sign a fresh challenge nonce binding
     // this endpoint + account + the total (startingBalance + fee) it authorizes.
-    const authErr = ctx.challenges.verify(
+    const authErr = await ctx.challenges.verify(
       'sponsor',
       { fundingAccount, nonce, signature },
       totalXlm,

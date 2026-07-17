@@ -4,7 +4,8 @@ import os from 'os';
 import path from 'path';
 import { Request, Response } from 'express';
 import { Keypair } from '@stellar/stellar-sdk';
-import { CreditLedger } from '../ledger.js';
+import type { CreditLedger } from '../ledger.js';
+import { JsonCreditLedger } from '../ledger.js';
 import { initContext, resetContext } from '../context.js';
 import { handleCreditClaim, handleCreditBalance } from './credit.js';
 
@@ -72,7 +73,7 @@ describe('credit routes', () => {
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'credit-'));
-    ledger = new CreditLedger(path.join(dir, 'ledger.json'));
+    ledger = new JsonCreditLedger(path.join(dir, 'ledger.json'));
     relayer = Keypair.random();
   });
 
@@ -108,11 +109,11 @@ describe('credit routes', () => {
     await handleCreditClaim(req, res);
     expect(res.statusCode).toBe(200);
     expect(res.body.balance).toBe('7.5000000');
-    expect(ledger.getBalance(FUNDING)).toBe('7.5000000');
+    expect(await ledger.getBalance(FUNDING)).toBe('7.5000000');
   });
 
   it('rejects a duplicate claim with 409', async () => {
-    ledger.credit(FUNDING, '1', 'TX1');
+    await ledger.credit(FUNDING, '1', 'TX1');
     setup({ tx: { successful: true, source_account: FUNDING, hash: 'TX1' } });
     const req = { body: { fundingAccount: FUNDING, txHash: 'TX1' } } as Request;
     const res = mockRes();
@@ -164,7 +165,7 @@ describe('credit routes', () => {
     await handleCreditClaim(req, res);
     expect(res.statusCode).toBe(400);
     expect(res.body.code).toBe('not_a_deposit');
-    expect(ledger.getBalance(FUNDING)).toBeNull();
+    expect(await ledger.getBalance(FUNDING)).toBeNull();
   });
 
   it('sums multiple native payments from the funding account', async () => {
@@ -217,7 +218,7 @@ describe('credit routes', () => {
     await handleCreditClaim(req, res);
     expect(res.statusCode).toBe(200);
     expect(res.body.balance).toBe('5.0000000');
-    expect(ledger.getBalance(FUNDING)).toBe('5.0000000');
+    expect(await ledger.getBalance(FUNDING)).toBe('5.0000000');
   });
 
   it('sums qualifying payments spread across multiple operations pages', async () => {
@@ -331,21 +332,21 @@ describe('credit routes', () => {
     const loser = resA.statusCode === 409 ? resA : resB;
     expect(loser.body.code).toBe('tx_already_claimed');
     // Credited exactly once — not doubled.
-    expect(ledger.getBalance(FUNDING)).toBe('3.0000000');
+    expect(await ledger.getBalance(FUNDING)).toBe('3.0000000');
   });
 
   it('GET /credit/:account returns balance, 404 when unknown', async () => {
-    ledger.credit(FUNDING, '3', 'TXA');
+    await ledger.credit(FUNDING, '3', 'TXA');
     setup({});
     const okReq = { params: { account: FUNDING } } as unknown as Request;
     const okRes = mockRes();
-    handleCreditBalance(okReq, okRes);
+    await handleCreditBalance(okReq, okRes);
     expect(okRes.statusCode).toBe(200);
     expect(okRes.body.balance).toBe('3.0000000');
 
     const missReq = { params: { account: 'GUNKNOWN' } } as unknown as Request;
     const missRes = mockRes();
-    handleCreditBalance(missReq, missRes);
+    await handleCreditBalance(missReq, missRes);
     expect(missRes.statusCode).toBe(404);
     expect(missRes.body.code).toBe('account_unknown');
   });

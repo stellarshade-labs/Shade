@@ -15,7 +15,8 @@ import {
   TimeoutInfinite,
 } from '@stellar/stellar-sdk';
 import { resolveRequireCredit } from '../boot.js';
-import { CreditLedger } from '../ledger.js';
+import type { CreditLedger } from '../ledger.js';
+import { JsonCreditLedger } from '../ledger.js';
 import { initContext, resetContext, getContext } from '../context.js';
 import { challengeMessage } from '../utils/auth.js';
 import {
@@ -85,7 +86,7 @@ describe('sponsor-claim routes', () => {
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'spclaim-'));
-    ledger = new CreditLedger(path.join(dir, 'ledger.json'));
+    ledger = new JsonCreditLedger(path.join(dir, 'ledger.json'));
     relayer = Keypair.random();
     stealth = Keypair.random();
     destination = Keypair.random().publicKey();
@@ -620,7 +621,7 @@ describe('sponsor-claim submit: credit-gated reserve accounting', () => {
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'spclaim-credit-'));
-    ledger = new CreditLedger(path.join(dir, 'ledger.json'));
+    ledger = new JsonCreditLedger(path.join(dir, 'ledger.json'));
     relayer = Keypair.random();
     stealth = Keypair.random();
     funder = Keypair.random();
@@ -656,8 +657,8 @@ describe('sponsor-claim submit: credit-gated reserve accounting', () => {
     return (feeXlm + Number(RESERVE)).toFixed(7);
   }
 
-  function signAuth(total: string) {
-    const nonce = getContext().challenges.issue(funder.publicKey());
+  async function signAuth(total: string) {
+    const nonce = await getContext().challenges.issue(funder.publicKey());
     const msg = challengeMessage(
       'sponsor-claim',
       funder.publicKey(),
@@ -671,7 +672,7 @@ describe('sponsor-claim submit: credit-gated reserve accounting', () => {
   }
 
   it('debits reserve + fee against fundingAccount and increments sponsoredHeld', async () => {
-    ledger.credit(funder.publicKey(), '10', 'DEP1');
+    await ledger.credit(funder.publicKey(), '10', 'DEP1');
     const { server, submitTransaction } = mockServer(
       relayer.publicKey(),
       [],
@@ -695,7 +696,7 @@ describe('sponsor-claim submit: credit-gated reserve accounting', () => {
         balanceId: BALANCE_ID,
         destination,
         amount: AMOUNT,
-        ...signAuth(total),
+        ...(await signAuth(total)),
       },
     } as Request;
     const res = mockRes();
@@ -705,12 +706,12 @@ describe('sponsor-claim submit: credit-gated reserve accounting', () => {
     expect(submitTransaction).toHaveBeenCalledOnce();
     // Reserve + fee were debited; the reserve is tracked in sponsoredHeld.
     const expectedBal = (10 - Number(total)).toFixed(7);
-    expect(ledger.getBalance(funder.publicKey())).toBe(expectedBal);
-    expect(ledger.getAccount(funder.publicKey())?.sponsoredHeld).toBe(RESERVE);
+    expect(await ledger.getBalance(funder.publicKey())).toBe(expectedBal);
+    expect((await ledger.getAccount(funder.publicKey()))?.sponsoredHeld).toBe(RESERVE);
   });
 
   it('rejects an unauthenticated (no signature) request with 401', async () => {
-    ledger.credit(funder.publicKey(), '10', 'DEP1');
+    await ledger.credit(funder.publicKey(), '10', 'DEP1');
     const { server, submitTransaction } = mockServer(
       relayer.publicKey(),
       [],
@@ -773,7 +774,7 @@ describe('sponsor-claim submit: credit-gated reserve accounting', () => {
         balanceId: BALANCE_ID,
         destination,
         amount: AMOUNT,
-        ...signAuth(total),
+        ...(await signAuth(total)),
       },
     } as Request;
     const res = mockRes();
@@ -785,7 +786,7 @@ describe('sponsor-claim submit: credit-gated reserve accounting', () => {
   });
 
   it('returns 402 when the per-funder sponsored-reserve cap is exceeded', async () => {
-    ledger.credit(funder.publicKey(), '10', 'DEP1');
+    await ledger.credit(funder.publicKey(), '10', 'DEP1');
     const { server, submitTransaction } = mockServer(
       relayer.publicKey(),
       [],
@@ -811,7 +812,7 @@ describe('sponsor-claim submit: credit-gated reserve accounting', () => {
         balanceId: BALANCE_ID,
         destination,
         amount: AMOUNT,
-        ...signAuth(total),
+        ...(await signAuth(total)),
       },
     } as Request;
     const res = mockRes();

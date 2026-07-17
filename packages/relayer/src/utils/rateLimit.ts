@@ -5,7 +5,33 @@ interface TokenBucket {
   lastRefill: number;
 }
 
-class RateLimiter {
+/** Outcome of attempting to take one token from a client's bucket. */
+export interface RateLimitDecision {
+  allowed: boolean;
+  /** Seconds the client should wait before retrying (only meaningful when denied). */
+  retryAfterSec: number;
+}
+
+/**
+ * Token-bucket state behind the {@link RateLimiter} middleware. Async so a shared
+ * backend (e.g. Redis) can implement the same contract across instances.
+ * {@link MemoryRateLimitStore} is the default in-process implementation.
+ */
+export interface RateLimitStore {
+  /**
+   * Attempt to consume one token for `clientId`. Refills first, then either
+   * denies WITHOUT decrementing (empty bucket) or takes one token.
+   */
+  take(clientId: string): Promise<RateLimitDecision>;
+}
+
+/**
+ * In-memory token-bucket {@link RateLimitStore}. Each client gets a bucket of
+ * `capacity` tokens that refills `refillRate` tokens every `refillInterval` ms.
+ * Stale buckets (idle past a threshold) are periodically swept so the map cannot
+ * grow without bound.
+ */
+export class MemoryRateLimitStore implements RateLimitStore {
   private buckets: Map<string, TokenBucket> = new Map();
   private readonly capacity: number;
   private readonly refillRate: number;
@@ -17,6 +43,69 @@ class RateLimiter {
     this.refillInterval = refillInterval;
 
     setInterval(() => this.cleanup(), 300000);
+  }
+
+  private getBucket(clientId: string): TokenBucket {
+    const now = Date.now();
+    let bucket = this.buckets.get(clientId);
+
+    if (!bucket) {
+      bucket = { tokens: this.capacity, lastRefill: now };
+      this.buckets.set(clientId, bucket);
+      return bucket;
+    }
+
+    const timeSinceLastRefill = now - bucket.lastRefill;
+    const refillsNeeded = Math.floor(timeSinceLastRefill / this.refillInterval);
+
+    if (refillsNeeded > 0) {
+      bucket.tokens = Math.min(
+        this.capacity,
+        bucket.tokens + refillsNeeded * this.refillRate
+      );
+      bucket.lastRefill = now;
+    }
+
+    return bucket;
+  }
+
+  async take(clientId: string): Promise<RateLimitDecision> {
+    const bucket = this.getBucket(clientId);
+    if (bucket.tokens <= 0) {
+      return {
+        allowed: false,
+        retryAfterSec: Math.ceil(this.refillInterval / 1000),
+      };
+    }
+    bucket.tokens--;
+    return { allowed: true, retryAfterSec: 0 };
+  }
+
+  private cleanup() {
+    const now = Date.now();
+    const staleTime = 600000;
+
+    for (const [clientId, bucket] of this.buckets.entries()) {
+      if (now - bucket.lastRefill > staleTime) {
+        this.buckets.delete(clientId);
+      }
+    }
+  }
+
+  public reset(clientId?: string) {
+    if (clientId) {
+      this.buckets.delete(clientId);
+    } else {
+      this.buckets.clear();
+    }
+  }
+}
+
+class RateLimiter {
+  private readonly store: MemoryRateLimitStore;
+
+  constructor(capacity = 10, refillRate = 10, refillInterval = 60000) {
+    this.store = new MemoryRateLimitStore(capacity, refillRate, refillInterval);
   }
 
   private getClientId(req: Request): string {
@@ -75,48 +164,13 @@ class RateLimiter {
     return process.env.TRUST_PROXY === 'true' ? 1 : 0;
   }
 
-  private getBucket(clientId: string): TokenBucket {
-    const now = Date.now();
-    let bucket = this.buckets.get(clientId);
-
-    if (!bucket) {
-      bucket = { tokens: this.capacity, lastRefill: now };
-      this.buckets.set(clientId, bucket);
-      return bucket;
-    }
-
-    const timeSinceLastRefill = now - bucket.lastRefill;
-    const refillsNeeded = Math.floor(timeSinceLastRefill / this.refillInterval);
-
-    if (refillsNeeded > 0) {
-      bucket.tokens = Math.min(
-        this.capacity,
-        bucket.tokens + refillsNeeded * this.refillRate
-      );
-      bucket.lastRefill = now;
-    }
-
-    return bucket;
-  }
-
-  private cleanup() {
-    const now = Date.now();
-    const staleTime = 600000;
-
-    for (const [clientId, bucket] of this.buckets.entries()) {
-      if (now - bucket.lastRefill > staleTime) {
-        this.buckets.delete(clientId);
-      }
-    }
-  }
-
   public middleware() {
-    return (req: Request, res: Response, next: NextFunction) => {
+    return async (req: Request, res: Response, next: NextFunction) => {
       const clientId = this.getClientId(req);
-      const bucket = this.getBucket(clientId);
+      const decision = await this.store.take(clientId);
 
-      if (bucket.tokens <= 0) {
-        const retryAfter = Math.ceil(this.refillInterval / 1000);
+      if (!decision.allowed) {
+        const retryAfter = decision.retryAfterSec;
         res.set('Retry-After', retryAfter.toString());
         return res.status(429).json({
           error: 'Rate limit exceeded',
@@ -124,17 +178,12 @@ class RateLimiter {
         });
       }
 
-      bucket.tokens--;
       return next();
     };
   }
 
   public reset(clientId?: string) {
-    if (clientId) {
-      this.buckets.delete(clientId);
-    } else {
-      this.buckets.clear();
-    }
+    this.store.reset(clientId);
   }
 }
 
