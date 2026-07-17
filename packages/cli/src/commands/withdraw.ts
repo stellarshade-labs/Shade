@@ -16,6 +16,7 @@ import {
   getNetworkConfig,
   waitForTransaction,
   buildWithdrawMessage,
+  RelayerClient,
   type NetworkName,
 } from '@shade/sdk';
 import {
@@ -24,6 +25,7 @@ import {
 } from '../utils/keystore.js';
 import { assertNetwork } from '../utils/network.js';
 import { resolveSecret } from '../utils/secrets.js';
+import { resolveFundingAuth } from '../utils/funding.js';
 import { getContractAddress } from '../utils/config.js';
 import { getContractBalance, getNonce } from '../utils/soroban.js';
 import { fetchAnnouncements } from './scan.js';
@@ -106,6 +108,10 @@ export interface RunPoolWithdrawOpts {
   feePayer?: string;
   /** Relay URL for fee-bumped submission. */
   relay?: string;
+  /** App account to debit a credit-gated relayer fee against. */
+  fundingAccount?: string;
+  /** Secret controlling `fundingAccount` (signs the relayer challenge). */
+  fundingSecret?: string;
   /** Show detailed output. */
   verbose?: boolean;
 }
@@ -302,23 +308,39 @@ export async function runPoolWithdraw(options: RunPoolWithdrawOpts): Promise<voi
       return Promise.resolve(tx);
     };
 
+    // Funding auth only matters on the relayed path (credit-gated relayers);
+    // never prompt for it on a direct submission.
+    const funding = options.relay
+      ? await resolveFundingAuth({
+          fundingAccount: options.fundingAccount,
+          fundingSecret: options.fundingSecret,
+        })
+      : {};
+
     // Submit a signed tx, fee-bumped through the relayer when configured,
     // otherwise directly to the RPC. Returns the transaction hash.
+    //
+    // The relayed path goes through the SDK RelayerClient (which also accepts a
+    // bare `.../relay` URL): a hand-rolled `{xdr}` POST carries no funding auth,
+    // so a credit-gated relayer — the default — rejects it 401/402. The
+    // passphrase binds the inner-tx hash into the proof-of-control signature.
+    const relayerClient = options.relay
+      ? new RelayerClient(options.relay, undefined, {
+          fundingSigner: funding.fundingSigner,
+          rpcServer: server,
+        })
+      : undefined;
     const submit = async (signed: StellarSdk.Transaction): Promise<string> => {
-      if (options.relay) {
+      if (relayerClient) {
         console.log(chalk.cyan('Submitting via relay...'));
-        const url = options.relay.endsWith('/relay') ? options.relay : `${options.relay}/relay`;
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ xdr: signed.toEnvelope().toXDR('base64') }),
-        });
-        if (!res.ok) {
-          const err = await res.json();
-          throw new Error(`Relay error: ${(err as any).error}`);
-        }
-        const data = (await res.json()) as any;
-        return data.txHash;
+        const { txHash } = await relayerClient.relay(
+          signed.toEnvelope().toXDR('base64'),
+          {
+            fundingAccount: funding.fundingAccount,
+            networkPassphrase,
+          },
+        );
+        return txHash;
       }
       console.log(chalk.cyan('Submitting transaction...'));
       const result = await server.sendTransaction(signed);
@@ -370,6 +392,8 @@ export const withdrawCommand = new Command('withdraw')
   .option('--asset <asset>', 'Asset to withdraw (default: native XLM, or CODE:ISSUER)')
   .option('--fee-payer <secret>', 'Secret key of account paying the Soroban fee (or set SHADE_FEE_PAYER / prompt; flags leak into shell history)')
   .option('--relay <url>', 'Relay URL for fee-bumped submission')
+  .option('--funding-account <address>', 'App account to debit a credit-gated relayer fee against')
+  .option('--funding-secret <secret>', 'Secret controlling the funding account, signs the relayer challenge (or set SHADE_FUNDING_SECRET / prompt; flags leak into shell history)')
   .option('--verbose', 'Show detailed output')
   .action(async (stealthAddress: string, destination: string, options) =>
     runPoolWithdraw({
@@ -382,6 +406,8 @@ export const withdrawCommand = new Command('withdraw')
       asset: options.asset,
       feePayer: options.feePayer,
       relay: options.relay,
+      fundingAccount: options.fundingAccount,
+      fundingSecret: options.fundingSecret,
       verbose: options.verbose,
     }),
   );

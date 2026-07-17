@@ -14,6 +14,7 @@ import {
 } from '../utils/keystore.js';
 import { assertNetwork } from '../utils/network.js';
 import { resolveSecret } from '../utils/secrets.js';
+import { resolveFundingAuth } from '../utils/funding.js';
 import { findHorizonPayment } from '../utils/config.js';
 import { runPoolWithdraw } from './withdraw.js';
 import chalk from 'chalk';
@@ -65,6 +66,7 @@ export const claimCommand = new Command('claim')
   .option('--relay <url>', 'Relayer URL for fee-bumped submission')
   .option('--sponsored', 'Use the relayer sponsor-claim pair (token claimable-balance claims)')
   .option('--funding-account <address>', 'App account to debit a credit-gated relayer fee against')
+  .option('--funding-secret <secret>', 'Secret controlling the funding account, signs the relayer challenge (or set SHADE_FUNDING_SECRET / prompt; flags leak into shell history)')
   .option('--fee-payer <secret>', 'Secret key paying the pool-withdraw Soroban fee (or set SHADE_FEE_PAYER / prompt; flags leak into shell history)')
   .option('--asset <asset>', 'Asset to claim (pool method): native or CODE:ISSUER')
   .option('--amount <amount>', 'Partial claim amount (account method, with --no-merge)')
@@ -109,6 +111,8 @@ export const claimCommand = new Command('claim')
           relay: options.relay,
           feePayer,
           asset: options.asset,
+          fundingAccount: options.fundingAccount,
+          fundingSecret: options.fundingSecret,
           keystore: options.keystore,
           password: options.password,
           verbose: options.verbose,
@@ -176,12 +180,22 @@ export const claimCommand = new Command('claim')
         }
       }
 
+      // Funding auth only matters on the relayed path (credit-gated relayers);
+      // never prompt for it on a direct submission.
+      const funding = options.relay
+        ? await resolveFundingAuth({
+            fundingAccount: options.fundingAccount,
+            fundingSecret: options.fundingSecret,
+          })
+        : {};
+
       const receipt = await client.claim(payment, destination, {
         keys,
         merge: options.merge !== false,
         relay: options.relay,
         sponsored: options.sponsored,
-        fundingAccount: options.fundingAccount,
+        fundingAccount: funding.fundingAccount,
+        fundingSigner: funding.fundingSigner,
         amount: claimAmount,
       });
 
