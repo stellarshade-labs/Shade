@@ -16,7 +16,7 @@ import {
 } from './routes/sponsorClaim.js';
 import { handleCreditClaim, handleCreditBalance } from './routes/credit.js';
 import { handleCreditChallenge } from './routes/challenge.js';
-import { JsonCreditLedger } from './ledger.js';
+import { createCreditLedger, createSharedState } from './store/factory.js';
 import { initContext, networkDefinitionFor } from './context.js';
 import RateLimiter from './utils/rateLimit.js';
 import { logger } from './utils/logger.js';
@@ -126,10 +126,32 @@ async function initRelayer() {
       network: NETWORK,
     });
 
-    // If gating is ON, the ledger must survive redeploys.
-    warnIfEphemeralLedgerPath(process.env.CREDIT_LEDGER_PATH, requireCredit);
+    // Build the durable/shared backends from the environment. Both fail fast
+    // (exit 1 via the outer catch) when their URL is set but the backend is
+    // unreachable — never a silent fallback that forks the money ledger or
+    // drops back to per-instance auth state.
+    const ledgerHandle = await createCreditLedger();
+    const sharedState = await createSharedState();
+    const ledger = ledgerHandle.ledger;
 
-    const ledger = new JsonCreditLedger();
+    // The JSON ledger on an ephemeral FS loses credit on redeploy; only warn
+    // for that backend (Postgres is durable). And when gating is on with
+    // per-instance memory state, a second instance would not share nonces.
+    if (ledgerHandle.kind === 'json') {
+      warnIfEphemeralLedgerPath(process.env.CREDIT_LEDGER_PATH, requireCredit);
+    }
+    if (requireCredit && sharedState.kind === 'memory') {
+      logger.warn('Single-instance shared state', {
+        message:
+          'Credit gating is ON but REDIS_URL is unset: challenge nonces and ' +
+          'rate-limit buckets live in this process only. Safe for one ' +
+          'instance; set REDIS_URL to run more than one.',
+      });
+    }
+
+    // Swap the Redis-backed rate-limit store in before the server listens (the
+    // middleware was registered at module load with the in-memory default).
+    rateLimiter.setStore(sharedState.rateLimitStore);
 
     const relayerCtx = initContext({
       keypair,
@@ -138,6 +160,7 @@ async function initRelayer() {
       server: horizonServer,
       ledger,
       requireCredit,
+      challenges: sharedState.challenges,
     });
     initRelayRoute(keypair, {
       ledger,
@@ -162,6 +185,10 @@ async function initRelayer() {
         // Advertised so clients know the fee ceiling to sign in the /relay
         // challenge (authAmount) without predicting the exact built fee.
         maxRelayFeeXlm: maxRelayFeeXlm(),
+        // Backend transparency (also lets discovery clients prefer a durable,
+        // multi-instance relayer): 'postgres'|'json' and 'redis'|'memory'.
+        store: ledgerHandle.kind,
+        sharedState: sharedState.kind,
       });
     });
 
@@ -210,7 +237,11 @@ async function initRelayer() {
       logger.info(`Received ${signal}, starting graceful shutdown`);
       console.log(`\n[Relayer] Received ${signal}, shutting down gracefully...`);
 
-      httpServer.close(() => {
+      httpServer.close(async () => {
+        // Stop the recovery loop + close the pool/redis so the process can exit
+        // cleanly (and so a restart does not leak connections against free-tier
+        // caps). Best-effort; never block exit on a backend that is already gone.
+        await Promise.allSettled([ledgerHandle.close(), sharedState.close()]);
         logger.info('Server closed');
         console.log('[Relayer] Server closed');
         process.exit(0);

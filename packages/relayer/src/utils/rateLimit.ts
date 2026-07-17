@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { logger } from './logger.js';
 
 interface TokenBucket {
   tokens: number;
@@ -102,10 +103,27 @@ export class MemoryRateLimitStore implements RateLimitStore {
 }
 
 class RateLimiter {
-  private readonly store: MemoryRateLimitStore;
+  private store: RateLimitStore;
 
-  constructor(capacity = 10, refillRate = 10, refillInterval = 60000) {
-    this.store = new MemoryRateLimitStore(capacity, refillRate, refillInterval);
+  constructor(
+    capacityOrStore: number | RateLimitStore = 10,
+    refillRate = 10,
+    refillInterval = 60000,
+  ) {
+    this.store =
+      typeof capacityOrStore === 'number'
+        ? new MemoryRateLimitStore(capacityOrStore, refillRate, refillInterval)
+        : capacityOrStore;
+  }
+
+  /**
+   * Swap the backing store after construction. The middleware is registered on
+   * the Express app at module load (with the default in-memory store), but the
+   * Redis-backed store can only be built once its connection is verified at
+   * boot — so boot swaps it in before the server starts accepting requests.
+   */
+  public setStore(store: RateLimitStore): void {
+    this.store = store;
   }
 
   private getClientId(req: Request): string {
@@ -167,7 +185,22 @@ class RateLimiter {
   public middleware() {
     return async (req: Request, res: Response, next: NextFunction) => {
       const clientId = this.getClientId(req);
-      const decision = await this.store.take(clientId);
+      let decision: RateLimitDecision;
+      try {
+        decision = await this.store.take(clientId);
+      } catch (err) {
+        // Fail closed: a shared (Redis) store that is unreachable must not let
+        // requests through unthrottled — the rate limiter is a hot-wallet
+        // protection, so availability yields to safety. The in-memory store
+        // never rejects, so this only bites a Redis outage.
+        logger.error('Rate limiter store error — failing closed', {
+          error: (err as Error).message,
+        });
+        return res.status(503).json({
+          error: 'Rate limiter temporarily unavailable',
+          code: 'server_error',
+        });
+      }
 
       if (!decision.allowed) {
         const retryAfter = decision.retryAfterSec;
@@ -183,7 +216,7 @@ class RateLimiter {
   }
 
   public reset(clientId?: string) {
-    this.store.reset(clientId);
+    (this.store as { reset?: (clientId?: string) => void }).reset?.(clientId);
   }
 }
 

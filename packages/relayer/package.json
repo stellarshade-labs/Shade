@@ -10,6 +10,8 @@
     "test:watch": "vitest watch",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
+    "migrate": "node dist/store/migrate.js",
+    "test:integration": "bash scripts/integration.sh",
     "clean": "rm -rf dist"
   },
   "dependencies": {
