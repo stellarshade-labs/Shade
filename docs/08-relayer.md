@@ -18,6 +18,16 @@ This page covers what it does, its endpoints, the credit system, configuration, 
 
 > **There is no hosted or hard-coded relayer URL.** "Default" only ever means the reference service *you* deploy and point your app at. The relayer is standalone — it has no dependency on `@shade/crypto`.
 
+## Choosing a relayer
+
+Apps and users can hand the SDK/CLI **several** relayer URLs instead of one (`ClientConfig.relayer: string[]`, CLI `--relay a,b` or the `SHADE_RELAYERS` env var). The client then health-probes every candidate in parallel and routes each relayed submission to a healthy one, failing over on relayer faults — see [SDK Reference → RelayerPool](./07-sdk-reference.md#relayerpool) for the exact health rule and failover semantics. A candidate counts as healthy only when its `/health` reports `status: 'ok'` on the right network with a workable balance, **and** its credit gate is passable by this caller — which is where the `store`/`sharedState` fields also let a client prefer a durable (`postgres`/`redis`) deployment over a dev-fallback one.
+
+Selection among healthy candidates is **random by default** — deliberate, so a community's users spread across its relayer set instead of herding onto the first entry.
+
+> **Privacy: which relayer you use matters.** A relayer's value is partly its **anonymity set** — a shared relayer fee-bumps many users' transactions, so any one of them blends into the crowd. Running a **personal** relayer inverts that: its funded account pays fees for exactly one person, and its funding trail links straight back to you, tagging every transaction it touches as yours. Prefer **per-dApp or community relayers** with many users; treat a personal relayer as a convenience for testing, not a privacy tool.
+
+**Credit is per-relayer.** A funding account's prepaid credit lives in one relayer's ledger. If you list several independent relayers, fund your account at each of them — a failover target where you hold no credit rejects with `402 insufficient_credit` (and the client correctly stops rather than retrying elsewhere).
+
 ## Endpoints
 
 | Endpoint | What it does |

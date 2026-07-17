@@ -24,6 +24,8 @@ This page documents every command's real arguments and flags.
 
 **Keystore path** resolves as: `--keystore <path>` → `$SHADE_KEYSTORE` → `~/.shade-keys.json`.
 
+**Relayers.** `--relay` (on `claim` and `withdraw`) is **repeatable and comma-separated** — `--relay https://a,https://b` and `--relay https://a --relay https://b` both work — and falls back to the comma-separated **`SHADE_RELAYERS`** env var when omitted. With more than one URL the client health-probes all candidates in parallel, routes to a healthy one (random by default, spreading users across the set), and fails over on relayer faults; `--verbose` prints the chosen relayer. When none is usable, the error lists every candidate with its rejection reason. See [Relayer → Choosing a relayer](./08-relayer.md#choosing-a-relayer).
+
 **Networks:** `--network testnet` is the default and the **only** accepted value today — anything else, notably the removed `local` and the unaudited `mainnet`, is rejected with an error. Mainnet ("public") is a forward-looking, post-audit addition.
 
 ---
@@ -101,7 +103,7 @@ shade send <meta-address> 200 --method account --asset USDC:GISSUER
 | `--network <network>` | Network to use (default: `testnet`; only `testnet` accepted) |
 | `--from <secret>` | Sender secret key (prefer `$SHADE_FROM_SECRET` or the prompt) |
 | `--asset <asset>` | Asset to send (default: native XLM, or `CODE:ISSUER`) |
-| `--relay <url>` | Relayer URL (account-method fee-bump) |
+| `--relay <url>` | Accepted but unused — a send is an ordinary sender-signed transaction and never goes through a relayer |
 | `--verbose` | Show detailed output |
 
 **A method is mandatory.** `auto` resolves to `account` for native XLM above 1 XLM when the account method is available, otherwise `pool`.
@@ -181,7 +183,7 @@ The funding secret alone is enough — the account is derived from it; passing b
 | `--password <password>` | Keystore password (prompts if omitted) |
 | `--merge` | Sweep the whole account via `AccountMerge` (account method) |
 | `--no-merge` | Leave the stealth account open (partial payout) |
-| `--relay <url>` | Relayer URL for fee-bumped submission |
+| `--relay <url>` | Relayer URL(s) for fee-bumped submission — repeatable or comma-separated; falls back to `$SHADE_RELAYERS` |
 | `--sponsored` | Use the relayer sponsor-claim pair (token claimable-balance claims) |
 | `--funding-account <address>` | App account to debit a credit-gated relayer fee against |
 | `--funding-secret <secret>` | Secret controlling the funding account — signs the relayer challenge (prefer `$SHADE_FUNDING_SECRET`) |
@@ -215,7 +217,7 @@ shade withdraw <stealth-addr> <destination> --fee-payer S... --asset USDC:GISSUE
 | `--amount <amount>` | Amount to withdraw (default: full balance) |
 | `--asset <asset>` | Asset to withdraw (default: native XLM, or `CODE:ISSUER`) |
 | `--fee-payer <secret>` | Secret of the account paying the Soroban fee (prefer `$SHADE_FEE_PAYER`) |
-| `--relay <url>` | Relay URL for fee-bumped submission |
+| `--relay <url>` | Relayer URL(s) for fee-bumped submission — repeatable or comma-separated; falls back to `$SHADE_RELAYERS` |
 | `--funding-account <address>` | App account to debit a credit-gated relayer fee against |
 | `--funding-secret <secret>` | Secret controlling the funding account — signs the relayer challenge (prefer `$SHADE_FUNDING_SECRET`) |
 | `--verbose` | Show detailed output |

@@ -23,7 +23,7 @@ const client = new StealthClient({
   network: 'testnet',
   contractId: 'C...',                 // required when the pool method is enabled
   methods: ['pool', 'account'],
-  relayer: 'https://your-relayer.example', // optional
+  relayer: 'https://your-relayer.example', // optional; also accepts a list — see RelayerPool
 });
 
 const bob = StealthClient.keygen();   // share bob.metaAddress ("shade:stellar:...")
@@ -50,9 +50,12 @@ interface ClientConfig {
   contractId?: string;    // required whenever 'pool' is enabled (no built-in default now — pass your deployed pool id)
   horizonUrl?: string;    // override the Horizon endpoint (account method)
   methods?: DeliveryMethod[];  // default: ['pool']
-  relayer?: string;       // default relayer URL for fee-bumped submissions
+  relayer?: string | string[];  // default relayer(s) for fee-bumped submissions
+  relayerSelection?: 'random' | 'first';  // multi-URL pick strategy (default 'random')
 }
 ```
+
+A `relayer` **list** enables BYO-relayer discovery: relayed submissions health-probe every candidate in parallel, route to a healthy one, and fail over on relayer faults — see [`RelayerPool`](#relayerpool). A single string behaves exactly as before (no probing, no new traffic). `relayerSelection` defaults to `'random'`, spreading users across the relayer set instead of herding onto the first entry.
 
 `network` resolves through a single `NETWORKS` table (`packages/sdk/src/soroban.ts`); adding a network there — e.g. mainnet (`public`) after the audit — widens the accepted type automatically. Today the only entry is `testnet`.
 
@@ -188,7 +191,7 @@ interface SendOpts {
 ```typescript
 interface ClaimOpts {
   keys: StealthKeys;          // required
-  relay?: string;             // fee-bumped submission
+  relay?: string | string[];  // fee-bumped submission; a list is probed + routed like ClientConfig.relayer
   merge?: boolean;            // account method: sweep via AccountMerge (default true)
   feePayer?: string;          // pool method: secret paying the Soroban fee
   asset?: string;             // pool method
@@ -316,6 +319,38 @@ Also exported: `challengeMessage(endpoint, fundingAccount, nonce, amount, bind?)
 
 ---
 
+## `RelayerPool`
+
+Health-probing selector and failover harness over a **list** of relayer URLs. The adapters use it internally whenever `relayer`/`relay` is a list; it is exported for apps that want direct control.
+
+```typescript
+import { RelayerPool } from '@shade/sdk';
+
+const pool = RelayerPool.from(['https://relay-a.example', 'https://relay-b.example'], {
+  network: 'testnet',          // /health must not contradict this
+  selection: 'random',         // default
+});
+
+const outcomes = await pool.probe();          // per-URL health or rejection reason
+const url = await pool.select(ctx);           // one healthy URL (throws NoHealthyRelayerError)
+const txHash = await pool.withRelayer(        // run with failover on relayer faults
+  (client) => client.relay(xdr, { fundingAccount, networkPassphrase }).then((r) => r.txHash),
+  { fundingAccount, fundingSigner },          // ctx: lets credit-gated relayers count as healthy
+);
+```
+
+**The health rule.** A candidate is healthy iff its `/health` reports `status: 'ok'`, its `network` doesn't contradict yours (an unreported network passes — only an explicit mismatch rejects), its `balance` is at least 1 XLM (`minBalanceXlm` overrides), and its credit gate is passable: `requireCredit === false`, **or** the call context carries `fundingAccount` + `fundingSigner`. A missing `requireCredit` counts as gated (fail-closed, matching the relayer's gating-on default).
+
+**Failover.** Probes run in parallel under one ~2.5s budget (cached 30s per pool). `withRelayer` makes at most **2 attempts** and fails over **only on relayer faults** — unreachable, 5xx, or a 10s attempt timeout; a 4xx (bad request, insufficient credit) or any non-transport error rethrows immediately, since it would only repeat. Failing over after an ambiguous timeout cannot double-spend: both attempts fee-bump the *same signed inner tx*, so its sequence number lets at most one land.
+
+**Single URL = pass-through.** A one-URL pool never probes and applies no timeouts — byte-identical to using `RelayerClient` directly, so single-relayer setups see no new traffic or failure modes.
+
+Note that **credit is per-relayer**: a funding account's balance lives at one relayer, so a failover target may 402 (`insufficient_credit`) — which correctly stops the call rather than retrying elsewhere. Fund the account at every relayer you list, or list relayers sharing a ledger.
+
+Also exported: `normalizeRelayList(relay?)` — the canonical `string | string[]` → clean-list normalization (`[]`/whitespace → `undefined`).
+
+---
+
 ## Typed errors
 
 All exported from `@shade/sdk` so apps can branch cleanly. Every error extends a shared **`ShadeError`** base and carries a stable **`code`** string (e.g. `method_required`, `transaction_timeout`) — branch on `e.code` when `instanceof` is unreliable across bundling/realm boundaries:
@@ -355,6 +390,9 @@ try {
 | `TransactionRetryableError` | RPC returned a non-terminal status — nothing landed, safe to retry (has `.retryable`) |
 | `TransactionTimeoutError` | Submission stayed PENDING past the timeout — carries `.txHash` and `.retryable = false`; the tx **may still land**, so poll the hash, do NOT blindly resubmit |
 | `ClaimAmountRequiresNoMergeError` | `claim({ amount })` given with an effective merge (account native) or on a token claim — refuses rather than silently sweeping the full balance |
+| `RelayerHttpError` | A relayer endpoint responded non-2xx — carries `.status` and the relayer's own `.relayerCode` (e.g. `insufficient_credit`) |
+| `RelayerNetworkError` | A relayer was unreachable at the transport level (DNS/refused/aborted/invalid body) |
+| `NoHealthyRelayerError` | No candidate in the relayer list is usable — `.candidates` maps every URL to its rejection reason |
 
 ---
 
