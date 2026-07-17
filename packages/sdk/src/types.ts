@@ -216,6 +216,73 @@ export interface ScanOpts {
 }
 
 /**
+ * Diagnostics for ONE slice of a segmented scan. The account method walks up
+ * to three segments per scan (Horizon pre-segment, indexer-covered span,
+ * Horizon tail) — or a single unbounded Horizon walk when no indexer applies —
+ * and reports each slice's throughput so operators can see where discovery
+ * work actually happened.
+ */
+export interface ScanSegmentMeta {
+  /** Which feed served this segment's transactions. */
+  source: 'indexer' | 'horizon';
+  /**
+   * The segment's position in the scan: the bounded Horizon walk before
+   * indexer coverage (`'pre'`), the indexer-covered span (`'indexer'`), the
+   * always-run Horizon tail (`'tail'`), or the single unbounded walk of a
+   * scan with no usable indexer (`'full'`).
+   */
+  role: 'pre' | 'indexer' | 'tail' | 'full';
+  /** Hash-memo txs that entered the matcher with a plausible 32-byte R. */
+  candidates: number;
+  /** Payments collected from this segment. */
+  matches: number;
+}
+
+/**
+ * Per-method scan diagnostics. Produced by the account method today, and
+ * strictly observability: the numbers describe how a scan discovered its
+ * payments, never which payments it finds — the Horizon tail bounds
+ * correctness regardless of what happens to the indexer segment.
+ */
+export interface MethodScanMeta {
+  /** True once at least one `/announcements` page was successfully consumed. */
+  indexerUsed: boolean;
+  /**
+   * Why a CONFIGURED indexer was skipped by the health guard (absent when no
+   * indexer is configured, or when it was used). `'stale'` means the indexer's
+   * self-reported lag exceeded `ClientConfig.indexerMaxLagSeconds`.
+   */
+  indexerSkipReason?:
+    | 'unhealthy'
+    | 'network_mismatch'
+    | 'no_coverage'
+    | 'stale'
+    | 'unreachable';
+  /**
+   * The indexer's self-reported lag when `/health` was read (`null` when the
+   * indexer did not report one). Absent when `/health` was never readable.
+   */
+  indexerLagSeconds?: number | null;
+  /**
+   * The post-segment `/health` re-check verdict (present whenever the scan
+   * entered the indexer branch). Anything but `'ok'` means the segment's
+   * results and adopted positions were DISCARDED and the Horizon tail
+   * re-walked the whole span — a gap recorded while the segment was being
+   * paged must not advance the client cursor past a hole.
+   */
+  postCheck?: 'ok' | 'unhealthy' | 'unreachable';
+  /**
+   * True when the final cursor came from indexer-supplied data, exceeded the
+   * chain head Horizon reports, and was clamped down to that head — a
+   * persisted cursor must never point past the chain, or one malicious feed
+   * response would blind every future scan.
+   */
+  cursorClamped?: boolean;
+  /** The scan's segments, in the order they ran. */
+  segments: ScanSegmentMeta[];
+}
+
+/**
  * Result of a cursor-aware scan — and of `StealthClient.balanceWithCursor`,
  * which returns the same shape with balance-view rows (claimed payments
  * dropped, native rows reporting the live remaining balance).
@@ -225,6 +292,11 @@ export interface ScanResult {
   payments: Payment[];
   /** Updated cursor to persist and pass to the next scan */
   cursor: ScanCursor;
+  /**
+   * Per-method scan diagnostics; populated by the account method today.
+   * Observability only — never affects which payments are found.
+   */
+  meta?: Partial<Record<DeliveryMethod, MethodScanMeta>>;
 }
 
 /** Options for claiming a detected payment. */
@@ -331,6 +403,16 @@ export interface ClientConfig {
    * finishes with a Horizon tail so indexer lag cannot hide a payment.
    */
   indexerUrl?: string;
+  /**
+   * Cap (seconds) on the indexer's self-reported `/health` lag before the
+   * account scan skips it entirely. Default 21600 (6 hours) — deliberately
+   * lenient: the Horizon tail already bounds correctness (a lagging indexer
+   * can never hide a payment), and skipping a merely-slow indexer would force
+   * cold scans back toward the full-history walk — so the cap exists only to
+   * disqualify operationally abandoned indexers. `Number.POSITIVE_INFINITY`
+   * disables the cap.
+   */
+  indexerMaxLagSeconds?: number;
   /** Delivery methods to enable. Default: ['pool'] */
   methods?: DeliveryMethod[];
   /**

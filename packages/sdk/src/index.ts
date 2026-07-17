@@ -137,6 +137,8 @@ export type {
   ScanCursor,
   ScanOpts,
   ScanResult,
+  ScanSegmentMeta,
+  MethodScanMeta,
   ClaimOpts,
   ClaimReceipt,
   TransactionSigner,

@@ -5,6 +5,7 @@ import type {
   Payment,
   ClaimReceipt,
   ClaimOpts,
+  MethodScanMeta,
   TransactionSigner,
 } from '../types.js';
 
@@ -54,13 +55,14 @@ export interface DeliveryAdapter {
    * @param opts - `suppressClaimedNative` drops swept accounts (balance view);
    *   `exhaustive` disables the account adapter's indexer fast cold start.
    *   Adapters ignore flags that do not apply to their method.
-   * @returns Detected payments and the next cursor to persist.
+   * @returns Detected payments, the next cursor to persist, and optional
+   *   per-scan diagnostics (observability only — see {@link MethodScanMeta}).
    */
   scan(
     keys: StealthKeys,
     cursor?: string,
     opts?: { suppressClaimedNative?: boolean; exhaustive?: boolean },
-  ): Promise<{ payments: Payment[]; cursor?: string }>;
+  ): Promise<{ payments: Payment[]; cursor?: string; meta?: MethodScanMeta }>;
 
   /**
    * Claim a previously discovered payment to a destination.

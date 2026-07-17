@@ -31,7 +31,7 @@ import type {
   HorizonClaimableBalance,
 } from '../horizon.js';
 import { RelayerClient } from '../relayer.js';
-import type { IndexerClient } from '../indexer.js';
+import type { IndexerClient, IndexerHealth } from '../indexer.js';
 import {
   RelayerPool,
   normalizeRelayList,
@@ -60,6 +60,8 @@ import type {
   Payment,
   ClaimReceipt,
   ClaimOpts,
+  MethodScanMeta,
+  ScanSegmentMeta,
 } from '../types.js';
 import type { DeliveryAdapter, AdapterSendParams } from './types.js';
 import { signTx } from './sign.js';
@@ -69,6 +71,16 @@ const HORIZON_PAGE_SIZE = 200;
 /** Indexer announcements page size (the service caps `limit` at 200). */
 const INDEXER_PAGE_SIZE = 200;
 
+/**
+ * Default cap (seconds) on the indexer's self-reported lag before the health
+ * guard skips it: 6 hours. Deliberately lenient — the Horizon tail already
+ * bounds correctness (a lagging indexer can never hide a payment), and
+ * skipping a merely-slow indexer would force cold scans back toward the
+ * full-history walk — so the cap only disqualifies operationally abandoned
+ * indexers. `Number.POSITIVE_INFINITY` disables the cap.
+ */
+const DEFAULT_INDEXER_MAX_LAG_SECONDS = 21_600;
+
 /** Decoded key material + flags threaded through one scan invocation. */
 interface ScanContext {
   viewPrivKey: Uint8Array;
@@ -77,10 +89,18 @@ interface ScanContext {
 }
 
 /**
+ * Mutable candidate/match counters for one scan segment, threaded through the
+ * walks so {@link MethodScanMeta} can report per-segment diagnostics without
+ * touching any walk/cursor semantics.
+ */
+type SegmentStats = Pick<ScanSegmentMeta, 'candidates' | 'matches'>;
+
+/**
  * The transaction fields the candidate matcher consumes — satisfied verbatim
- * by a Horizon transaction record AND by an indexer announcement (which omits
- * `source_account`; the token path then falls back to its asset+amount
- * claimable-balance binding).
+ * by a Horizon transaction record AND by an indexer announcement (which MAY
+ * carry `source_account` on newer feeds, in which case the token path binds
+ * its claimable balance sponsor-precisely exactly like the Horizon walk;
+ * older feeds omit it and fall back to the asset+amount binding).
  */
 interface CandidateTx {
   hash: string;
@@ -220,6 +240,7 @@ export class AccountAdapter implements DeliveryAdapter {
   private readonly rpcServer?: TransactionStatusSource;
   private readonly relayerSelection?: RelayerSelection;
   private readonly indexer?: IndexerClient;
+  private readonly indexerMaxLagSeconds: number;
 
   constructor(
     private readonly networkPassphrase: string,
@@ -230,11 +251,19 @@ export class AccountAdapter implements DeliveryAdapter {
       relayerSelection?: RelayerSelection;
       /** Optional discovery accelerator consumed by {@link scan}. */
       indexer?: IndexerClient;
+      /**
+       * Cap on the indexer's self-reported lag before the health guard skips
+       * it (default {@link DEFAULT_INDEXER_MAX_LAG_SECONDS}; see the rationale
+       * there). `Number.POSITIVE_INFINITY` disables the cap.
+       */
+      indexerMaxLagSeconds?: number;
     },
   ) {
     this.rpcServer = opts?.rpcServer;
     this.relayerSelection = opts?.relayerSelection;
     this.indexer = opts?.indexer;
+    this.indexerMaxLagSeconds =
+      opts?.indexerMaxLagSeconds ?? DEFAULT_INDEXER_MAX_LAG_SECONDS;
   }
 
   /**
@@ -423,27 +452,47 @@ export class AccountAdapter implements DeliveryAdapter {
    * fast-starts at the indexer's first covered position; payments predating
    * that coverage need `exhaustive: true`. Without an indexer the behavior is
    * exactly the original unbounded Horizon walk.
+   *
+   * Every path also returns `meta` — per-segment candidate/match counts plus
+   * the indexer guard's verdict. Strictly observability: the numbers describe
+   * how the scan ran, never which payments it finds.
    */
   async scan(
     keys: StealthKeys,
     cursor?: string,
     opts?: { suppressClaimedNative?: boolean; exhaustive?: boolean },
-  ): Promise<{ payments: Payment[]; cursor?: string }> {
+  ): Promise<{ payments: Payment[]; cursor?: string; meta: MethodScanMeta }> {
     const ctx: ScanContext = {
       viewPrivKey: new Uint8Array(Buffer.from(keys.viewPrivKey, 'hex')),
       spendPubKey: new Uint8Array(Buffer.from(keys.spendPubKey, 'hex')),
       suppressClaimedNative: opts?.suppressClaimedNative ?? false,
     };
     const payments: Payment[] = [];
+    const meta: MethodScanMeta = { indexerUsed: false, segments: [] };
 
     const indexer = this.indexer;
-    const coverage = indexer && (await this.indexerCoverage(indexer));
-    if (!indexer || !coverage) {
+    const coverage = indexer ? await this.indexerCoverage(indexer) : undefined;
+    if (!indexer || !coverage || !coverage.usable) {
       // No indexer (or one that failed the health guard): the plain unbounded
       // Horizon walk, byte-identical to the pre-indexer scan.
-      const finalCursor = await this.walkHorizon(cursor, undefined, ctx, payments);
-      return { payments, cursor: finalCursor };
+      if (coverage && !coverage.usable) {
+        meta.indexerSkipReason = coverage.reason;
+        if (coverage.lagSeconds !== undefined) {
+          meta.indexerLagSeconds = coverage.lagSeconds;
+        }
+      }
+      const stats: SegmentStats = { candidates: 0, matches: 0 };
+      const finalCursor = await this.walkHorizon(
+        cursor,
+        undefined,
+        ctx,
+        payments,
+        stats,
+      );
+      meta.segments.push({ source: 'horizon', role: 'full', ...stats });
+      return { payments, cursor: finalCursor, meta };
     }
+    meta.indexerLagSeconds = coverage.lagSeconds;
 
     // Fast cold start: with no client cursor the scan begins at the indexer's
     // first covered position rather than genesis. Documented tradeoff:
@@ -456,7 +505,9 @@ export class AccountAdapter implements DeliveryAdapter {
     // (startCursor, cursor], so the boundary tx comes from Horizon and only
     // from Horizon (/announcements serves strictly-greater tokens: no dup).
     if (begin === undefined || BigInt(begin) < BigInt(coverage.startCursor)) {
-      await this.walkHorizon(begin, coverage.startCursor, ctx, payments);
+      const preStats: SegmentStats = { candidates: 0, matches: 0 };
+      await this.walkHorizon(begin, coverage.startCursor, ctx, payments, preStats);
+      meta.segments.push({ source: 'horizon', role: 'pre', ...preStats });
     }
 
     // Indexer segment: consume pre-extracted announcements from wherever the
@@ -465,11 +516,23 @@ export class AccountAdapter implements DeliveryAdapter {
       begin !== undefined && BigInt(begin) > BigInt(coverage.startCursor)
         ? begin
         : coverage.startCursor;
+    // Snapshots for the post-segment health re-check below: where the segment
+    // started, and how many payments existed before it ran.
+    const segmentStart = cur;
+    const preSegmentPayments = payments.length;
+    const indexerStats: SegmentStats = { candidates: 0, matches: 0 };
     try {
       for (;;) {
         const page = await indexer.getAnnouncements(cur, INDEXER_PAGE_SIZE);
+        meta.indexerUsed = true;
         for (const record of page.records) {
-          await this.collectCandidate(record, record.operations, ctx, payments);
+          await this.collectCandidate(
+            record,
+            record.operations,
+            ctx,
+            payments,
+            indexerStats,
+          );
         }
         // Advance only AFTER the page's records are processed, so an
         // abandoned segment can never sit past unprocessed records. Adopt the
@@ -505,34 +568,100 @@ export class AccountAdapter implements DeliveryAdapter {
         throw err;
       }
     }
+    // Pushed on the fault path too: whatever the abandoned segment processed
+    // before the fault is real work worth reporting.
+    meta.segments.push({ source: 'indexer', role: 'indexer', ...indexerStats });
+
+    // Post-segment health re-check. The guard passed BEFORE the segment was
+    // consumed, but /announcements pages have no gap awareness: a hole the
+    // ingester recorded WHILE this scan was paging means served pages may
+    // have silently skipped it. Only a still-'ok' answer lets the scan keep
+    // the segment's payments and adopted positions; on anything else
+    // (degraded, unreachable — including a mid-segment fault with a dead
+    // indexer) both are discarded and the tail re-walks from where the
+    // segment started, so a mid-scan hole can never advance the client
+    // cursor past a payment. (The discarded payments are re-discovered by
+    // that same tail — Horizon is the source of truth.)
+    let tailFrom = cur;
+    try {
+      const post = await indexer.health();
+      meta.postCheck = post.status === 'ok' ? 'ok' : 'unhealthy';
+    } catch {
+      meta.postCheck = 'unreachable';
+    }
+    if (meta.postCheck !== 'ok') {
+      tailFrom = segmentStart;
+      payments.length = preSegmentPayments;
+    }
 
     // Horizon tail: ALWAYS runs — it covers indexer lag (and an abandoned
     // segment); when the indexer is at head it costs one short page.
-    const finalCursor = await this.walkHorizon(cur, undefined, ctx, payments);
-    return { payments, cursor: finalCursor };
+    const tailStats: SegmentStats = { candidates: 0, matches: 0 };
+    let finalCursor = await this.walkHorizon(
+      tailFrom,
+      undefined,
+      ctx,
+      payments,
+      tailStats,
+    );
+    meta.segments.push({ source: 'horizon', role: 'tail', ...tailStats });
+
+    // Clamp indexer-derived cursors to the chain head. When the tail saw
+    // nothing, `finalCursor` is whatever position was adopted from
+    // indexer-supplied data (its page cursors, or /health's startCursor on a
+    // cold start). Persisting a far-future token would blind every future
+    // scan — each would resume beyond the head and find nothing, forever, and
+    // nothing would prompt a --full-rescan. So on the empty-tail path the
+    // position is verified against the head Horizon itself reports and never
+    // persisted past it. One extra request, only on that path.
+    if (finalCursor !== undefined && finalCursor === tailFrom) {
+      const head = await this.horizon.getLatestTransactionToken();
+      if (head !== undefined && BigInt(head) < BigInt(finalCursor)) {
+        meta.cursorClamped = true;
+        finalCursor = head;
+      }
+    }
+    return { payments, cursor: finalCursor, meta };
   }
 
   /**
-   * Probe the configured indexer and return its coverage start when it is
-   * usable for THIS scan: `status === 'ok'`, same network as this adapter,
-   * and a non-null coverage interval. Any guard failure — including an
-   * unreachable /health — returns undefined and the scan silently stays on
-   * the pure Horizon walk (Horizon is the source of truth).
+   * Probe the configured indexer and classify whether it is usable for THIS
+   * scan: `status === 'ok'`, same network as this adapter, a non-null
+   * coverage interval, and self-reported lag within the configured cap. On
+   * any guard failure the scan stays on the pure Horizon walk (Horizon is the
+   * source of truth); the returned reason feeds {@link MethodScanMeta} so the
+   * otherwise-silent fallback is observable. A null/absent `lagSeconds` is
+   * NOT stale — lag cannot be measured then, and correctness is tail-bounded
+   * anyway.
    */
   private async indexerCoverage(
     indexer: IndexerClient,
-  ): Promise<{ startCursor: string } | undefined> {
-    try {
-      const h = await indexer.health();
-      if (h.status !== 'ok') return undefined;
-      if (h.network !== networkNameForPassphrase(this.networkPassphrase)) {
-        return undefined;
+  ): Promise<
+    | { usable: true; startCursor: string; lagSeconds: number | null }
+    | {
+        usable: false;
+        reason: NonNullable<MethodScanMeta['indexerSkipReason']>;
+        lagSeconds?: number | null;
       }
-      if (h.cursor == null || h.startCursor == null) return undefined;
-      return { startCursor: h.startCursor };
+  > {
+    let h: IndexerHealth;
+    try {
+      h = await indexer.health();
     } catch {
-      return undefined;
+      return { usable: false, reason: 'unreachable' };
     }
+    if (h.status !== 'ok') return { usable: false, reason: 'unhealthy' };
+    if (h.network !== networkNameForPassphrase(this.networkPassphrase)) {
+      return { usable: false, reason: 'network_mismatch' };
+    }
+    if (h.cursor == null || h.startCursor == null) {
+      return { usable: false, reason: 'no_coverage' };
+    }
+    const lagSeconds = typeof h.lagSeconds === 'number' ? h.lagSeconds : null;
+    if (lagSeconds !== null && lagSeconds > this.indexerMaxLagSeconds) {
+      return { usable: false, reason: 'stale', lagSeconds };
+    }
+    return { usable: true, startCursor: h.startCursor, lagSeconds };
   }
 
   /**
@@ -543,13 +672,15 @@ export class AccountAdapter implements DeliveryAdapter {
    * of the boundary tx, matching the indexer's open coverage interval
    * (startCursor, cursor] — and the walk returns `stopAtToken` at the first
    * tx beyond it. Otherwise returns the last seen paging token (the scan
-   * cursor), or `from` when nothing new was seen.
+   * cursor), or `from` when nothing new was seen. `stats` accumulates the
+   * segment's candidate/match counts (observability only).
    */
   private async walkHorizon(
     from: string | undefined,
     stopAtToken: string | undefined,
     ctx: ScanContext,
     payments: Payment[],
+    stats: SegmentStats,
   ): Promise<string | undefined> {
     let pageCursor = from;
     let lastToken = from;
@@ -571,6 +702,7 @@ export class AccountAdapter implements DeliveryAdapter {
           () => this.horizon.getTransactionOperations(tx.hash),
           ctx,
           payments,
+          stats,
         );
       }
 
@@ -593,18 +725,24 @@ export class AccountAdapter implements DeliveryAdapter {
    * behavior of never fetching operations for non-candidate txs). The memo
    * checks run here even for indexer-served records, so a corrupt feed entry
    * degrades to "not a candidate" rather than a bogus derivation.
+   *
+   * `stats.candidates` counts every tx that passes the memo-shape checks —
+   * BEFORE derivation, so Horizon- and indexer-served sources count
+   * identically — and `stats.matches` counts every payment pushed.
    */
   private async collectCandidate(
     tx: CandidateTx,
     ops: HorizonOp[] | (() => Promise<HorizonOp[]>),
     ctx: ScanContext,
     payments: Payment[],
+    stats: SegmentStats,
   ): Promise<void> {
     if (tx.memo_type !== 'hash' || !tx.memo) return;
     if (tx.successful === false) return;
 
     const ephemeralPubKey = new Uint8Array(Buffer.from(tx.memo, 'base64'));
     if (ephemeralPubKey.length !== 32) return;
+    stats.candidates++;
 
     let derivedAddress: string;
     try {
@@ -649,7 +787,10 @@ export class AccountAdapter implements DeliveryAdapter {
         !!cbMatch,
         ctx.suppressClaimedNative,
       );
-      if (payment) payments.push(payment);
+      if (payment) {
+        payments.push(payment);
+        stats.matches++;
+      }
     }
 
     if (cbMatch) {
@@ -660,7 +801,10 @@ export class AccountAdapter implements DeliveryAdapter {
         tx.hash,
         tx.source_account,
       );
-      if (payment) payments.push(payment);
+      if (payment) {
+        payments.push(payment);
+        stats.matches++;
+      }
     }
   }
 

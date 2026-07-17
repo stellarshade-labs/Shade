@@ -153,6 +153,21 @@ export class HorizonClient {
   }
 
   /**
+   * The paging token of the newest transaction this Horizon serves (one
+   * `order=desc&limit=1` page), or undefined on an empty network. The scan
+   * uses it to sanity-clamp cursors adopted from indexer-supplied data: a
+   * persisted scan cursor must never exceed the chain position Horizon
+   * itself reports, or a malicious feed could blind every future scan.
+   */
+  async getLatestTransactionToken(): Promise<string | undefined> {
+    const params = new URLSearchParams({ order: 'desc', limit: '1' });
+    const page = await this.getJson<HorizonPage<HorizonTx>>(
+      `/transactions?${params.toString()}`,
+    );
+    return page._embedded?.records?.[0]?.paging_token;
+  }
+
+  /**
    * Fetch the operations belonging to a single transaction.
    *
    * @param txHash - Transaction hash.

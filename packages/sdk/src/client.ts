@@ -116,6 +116,7 @@ export class StealthClient {
               rpcServer: this.server,
               relayerSelection: this.relayerSelection,
               indexer,
+              indexerMaxLagSeconds: config.indexerMaxLagSeconds,
             }),
           );
           break;
@@ -248,6 +249,9 @@ export class StealthClient {
     );
     const cursor: ScanCursor = { ...(opts?.cursor ?? {}) };
     const payments: Payment[] = [];
+    // Adapter-reported scan diagnostics, surfaced verbatim under the method's
+    // key — only for methods that reported any (observability only).
+    const meta: NonNullable<ScanResult['meta']> = {};
 
     for (const method of methods) {
       const adapter = this.getAdapter(method);
@@ -260,9 +264,10 @@ export class StealthClient {
         payments.push({ ...p, method });
       }
       cursor[method] = result.cursor;
+      if (result.meta) meta[method] = result.meta;
     }
 
-    return { payments, cursor };
+    return { payments, cursor, meta };
   }
 
   /**

@@ -22,6 +22,12 @@ export interface IndexerHealth {
   lagSeconds?: number | null;
   /** Total announcements held by the store. */
   announcements?: number;
+  /**
+   * Coverage holes (ledger ranges the indexer knows it skipped). A gapped
+   * indexer reports `status: 'degraded'` and is therefore skipped by the
+   * scan's health guard — listed here so operators can see WHAT is missing.
+   */
+  gaps?: Array<{ fromLedger: number; toLedger: number; detectedAt: string }>;
   /** Ingest-loop diagnostics (shape owned by the indexer service). */
   ingest?: unknown;
 }
@@ -40,6 +46,13 @@ export interface IndexerAnnouncement {
   memo_type: string;
   successful: boolean;
   created_at?: string;
+  /**
+   * Transaction-level source account, when the indexer has it. Enables the
+   * sponsor-precise claimable-balance binding without a per-tx Horizon
+   * round-trip; older feeds omit it and the scan falls back to the
+   * asset+amount binding.
+   */
+  source_account?: string;
   /** Verbatim Horizon operation records for this transaction. */
   operations: HorizonOp[];
 }

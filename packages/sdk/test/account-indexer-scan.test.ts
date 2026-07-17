@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { randomBytes } from '@noble/hashes/utils';
 import {
   generateMetaAddress,
@@ -7,9 +7,10 @@ import {
 } from '@shade/crypto';
 import { Networks, Keypair } from '@stellar/stellar-sdk';
 import { AccountAdapter } from '../src/methods/account.js';
+import { StealthClient } from '../src/client.js';
 import { HorizonClient, type FetchLike, type HorizonOp } from '../src/horizon.js';
 import { IndexerClient, type IndexerAnnouncement } from '../src/indexer.js';
-import type { StealthKeys, Payment } from '../src/types.js';
+import type { StealthKeys, Payment, MethodScanMeta } from '../src/types.js';
 
 const HORIZON = 'https://horizon.mock';
 const INDEXER = 'https://indexer.mock';
@@ -151,6 +152,7 @@ function toAnnouncement(f: Fixture): IndexerAnnouncement {
     memo_type: f.tx.memo_type,
     successful: f.tx.successful !== false,
     created_at: '2026-07-17T00:00:00Z',
+    source_account: f.tx.source_account,
     operations: f.ops,
   };
 }
@@ -177,6 +179,12 @@ function maxToken(a: string, b: string): string {
 interface IndexerRoute {
   /** /health body, or a behavior marker (transport reject / HTTP 500). */
   health: Record<string, unknown> | 'reject' | 'http500';
+  /**
+   * Per-call /health bodies overriding `health`: the Nth call gets the Nth
+   * entry, later calls repeat the last. Lets a test flip the answer between
+   * the pre-scan guard and the post-segment re-check.
+   */
+  healthSeq?: (Record<string, unknown> | 'reject' | 'http500')[];
   /** Ascending announcement records the /announcements route pages over. */
   announcements?: IndexerAnnouncement[];
   /** Global covered cursor reported on a short /announcements page. */
@@ -201,6 +209,7 @@ function makeRoutedFetch(opts: {
 }): { fetchFn: FetchLike; calls: string[] } {
   const calls: string[] = [];
   let announcementCalls = 0;
+  let healthCalls = 0;
   const byHash = new Map(opts.horizonTxs.map((f) => [f.tx.hash, f.ops]));
   const sortedTxs = [...opts.horizonTxs].sort((a, b) =>
     Number(BigInt(a.tx.paging_token) - BigInt(b.tx.paging_token)),
@@ -213,18 +222,21 @@ function makeRoutedFetch(opts: {
       const ix = opts.indexer;
       if (!ix) return { ok: false, status: 404, json: async () => ({}) };
       if (url.includes('/health')) {
-        if (ix.health === 'reject') {
+        healthCalls++;
+        const spec =
+          ix.healthSeq?.[Math.min(healthCalls, ix.healthSeq.length) - 1] ??
+          ix.health;
+        if (spec === 'reject') {
           throw new Error('getaddrinfo ENOTFOUND indexer.mock');
         }
-        if (ix.health === 'http500') {
+        if (spec === 'http500') {
           return {
             ok: false,
             status: 500,
             json: async () => ({ error: 'boom', code: 'boom' }),
           };
         }
-        const body = ix.health;
-        return { ok: true, status: 200, json: async () => body };
+        return { ok: true, status: 200, json: async () => spec };
       }
       if (url.includes('/announcements')) {
         announcementCalls++;
@@ -283,6 +295,18 @@ function makeRoutedFetch(opts: {
       const u = new URL(url);
       const cursor = u.searchParams.get('cursor');
       const limit = Number(u.searchParams.get('limit') ?? '200');
+      // Descending head probe (getLatestTransactionToken): newest first.
+      if (u.searchParams.get('order') === 'desc') {
+        const records = [...sortedTxs]
+          .reverse()
+          .slice(0, limit)
+          .map((f) => f.tx);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ _embedded: { records } }),
+        };
+      }
       const after = cursor ? BigInt(cursor) : -1n;
       const records = sortedTxs
         .filter((f) => BigInt(f.tx.paging_token) > after)
@@ -299,10 +323,14 @@ function makeRoutedFetch(opts: {
   return { fetchFn, calls };
 }
 
-function makeAdapter(fetchFn: FetchLike, withIndexer: boolean): AccountAdapter {
+function makeAdapter(
+  fetchFn: FetchLike,
+  withIndexer: boolean,
+  opts?: { indexerMaxLagSeconds?: number },
+): AccountAdapter {
   const horizon = new HorizonClient(HORIZON, fetchFn);
   const indexer = withIndexer ? new IndexerClient(INDEXER, fetchFn) : undefined;
-  return new AccountAdapter(NET, horizon, undefined, { indexer });
+  return new AccountAdapter(NET, horizon, undefined, { indexer, ...opts });
 }
 
 /** Count payments per delivering txHash — the no-dup/no-gap assertion tool. */
@@ -314,12 +342,16 @@ function countByTxHash(payments: Payment[]): Record<string, number> {
   return counts;
 }
 
-/** Horizon /transactions walk URLs in the call log, optionally cursor-less. */
+/**
+ * Horizon /transactions walk URLs in the call log, optionally cursor-less.
+ * The descending head probe (getLatestTransactionToken) is not a walk.
+ */
 function txWalkCalls(calls: string[], onlyGenesis = false): string[] {
   return calls.filter(
     (u) =>
       u.startsWith(HORIZON) &&
       u.includes('/transactions?') &&
+      !u.includes('order=desc') &&
       (!onlyGenesis || !u.includes('cursor=')),
   );
 }
@@ -342,7 +374,7 @@ describe('account scan with indexer', () => {
     });
     const adapter = makeAdapter(fetchFn, true);
 
-    const { payments, cursor } = await adapter.scan(keys);
+    const { payments, cursor, meta } = await adapter.scan(keys);
 
     // The covered payment came from the indexer, the lagging one from the
     // Horizon tail; the pre-coverage payment is skipped by the fast cold
@@ -351,6 +383,19 @@ describe('account scan with indexer', () => {
     expect(payments.find((p) => p.txHash === 'HASH_200')!.amount).toBe(42);
     expect(payments.find((p) => p.txHash === 'HASH_350')!.amount).toBe(7);
     expect(cursor).toBe('350');
+
+    // Meta mirrors the segmentation exactly: the indexer segment saw the
+    // covered payment plus the decoy (both plausible 32-byte-R candidates),
+    // the tail saw only the lagging payment. Lag comes from /health verbatim.
+    expect(meta).toEqual({
+      indexerUsed: true,
+      indexerLagSeconds: 2,
+      postCheck: 'ok',
+      segments: [
+        { source: 'indexer', role: 'indexer', candidates: 2, matches: 1 },
+        { source: 'horizon', role: 'tail', candidates: 1, matches: 1 },
+      ],
+    });
 
     // No global /transactions walk from genesis — the ONLY tx-feed traffic is
     // the single tail page resumed from the indexer's covered cursor.
@@ -384,7 +429,7 @@ describe('account scan with indexer', () => {
     });
     const adapter = makeAdapter(fetchFn, true);
 
-    const { payments, cursor } = await adapter.scan(keys, '10');
+    const { payments, cursor, meta } = await adapter.scan(keys, '10');
 
     expect(countByTxHash(payments)).toEqual({
       HASH_50: 1,
@@ -393,6 +438,19 @@ describe('account scan with indexer', () => {
       HASH_300: 1,
     });
     expect(cursor).toBe('300');
+    // The pre-segment's meta is pinned exactly: it processed the pre-coverage
+    // tx AND the boundary tx (candidates and matches both), before the
+    // indexer segment and tail counted theirs.
+    expect(meta).toEqual({
+      indexerUsed: true,
+      indexerLagSeconds: 2,
+      postCheck: 'ok',
+      segments: [
+        { source: 'horizon', role: 'pre', candidates: 2, matches: 2 },
+        { source: 'indexer', role: 'indexer', candidates: 1, matches: 1 },
+        { source: 'horizon', role: 'tail', candidates: 1, matches: 1 },
+      ],
+    });
 
     // The boundary tx was processed by the Horizon pre-segment (its ops were
     // fetched exactly once); the covered tx came inline from the indexer.
@@ -532,15 +590,19 @@ describe('account scan with indexer', () => {
     const baseline = await makeAdapter(base.fetchFn, false).scan(keys);
     expect(baseline.payments).toHaveLength(2);
 
-    const variants: Array<[string, IndexerRoute['health']]> = [
-      ['status not ok', healthOk({ status: 'starting' })],
-      ['network mismatch', healthOk({ network: 'public' })],
-      ['null cursor', healthOk({ cursor: null })],
-      ['null startCursor', healthOk({ startCursor: null })],
-      ['health 5xx', 'http500'],
-      ['health unreachable', 'reject'],
+    const variants: Array<
+      [string, IndexerRoute['health'], MethodScanMeta['indexerSkipReason']]
+    > = [
+      ['status not ok', healthOk({ status: 'starting' }), 'unhealthy'],
+      ['network mismatch', healthOk({ network: 'public' }), 'network_mismatch'],
+      ['null cursor', healthOk({ cursor: null }), 'no_coverage'],
+      ['null startCursor', healthOk({ startCursor: null }), 'no_coverage'],
+      ['health 5xx', 'http500', 'unreachable'],
+      ['health unreachable', 'reject', 'unreachable'],
+      // Lag beyond the DEFAULT 6h cap: skipped as operationally abandoned.
+      ['stale lag', healthOk({ lagSeconds: 999_999 }), 'stale'],
     ];
-    for (const [label, health] of variants) {
+    for (const [label, health, reason] of variants) {
       const { fetchFn, calls } = makeRoutedFetch({
         horizonTxs,
         indexer: { health, announcements: [toAnnouncement(late)], cursor: '250' },
@@ -553,6 +615,17 @@ describe('account scan with indexer', () => {
       // genesis, exactly like the no-indexer scan.
       expect(calls.some((u) => u.includes('/announcements')), label).toBe(false);
       expect(txWalkCalls(calls, true), label).toHaveLength(1);
+      // Meta names the guard that fired and reports the single full walk
+      // (candidates: both payments + the decoy; matches: the two payments).
+      expect(result.meta.indexerUsed, label).toBe(false);
+      expect(result.meta.indexerSkipReason, label).toBe(reason);
+      expect(result.meta.segments, label).toEqual([
+        { source: 'horizon', role: 'full', candidates: 3, matches: 2 },
+      ]);
+      if (reason === 'stale') {
+        // Only the stale guard has read a numeric lag by the time it fires.
+        expect(result.meta.indexerLagSeconds, label).toBe(999_999);
+      }
     }
   });
 
@@ -640,9 +713,268 @@ describe('account scan with indexer', () => {
       HASH_100: 1,
       HASH_200: 1,
     });
-    expect(fullRun.cursor).toBe('250');
+    // The indexer claims cursor 250 but this Horizon's head is 200: the
+    // persisted cursor is CLAMPED to the head — an indexer claim alone must
+    // never advance the cursor past what Horizon can corroborate. The next
+    // scan re-covers (200, 250] and the CLI payment cache dedups.
+    expect(fullRun.cursor).toBe('200');
     expect(txWalkCalls(full.calls, true)).toHaveLength(1);
     expect(full.calls.some((u) => u.includes('/announcements'))).toBe(true);
     expect(full.calls.some((u) => u.includes(`/transactions/${covered.tx.hash}/`))).toBe(false);
+    // Meta pins the pre-segment's counting exactly: both pre-coverage
+    // payments were candidates AND matches there, the covered span counted
+    // in the indexer segment, and the empty tail triggered the head clamp.
+    expect(fullRun.meta).toEqual({
+      indexerUsed: true,
+      indexerLagSeconds: 2,
+      postCheck: 'ok',
+      cursorClamped: true,
+      segments: [
+        { source: 'horizon', role: 'pre', candidates: 2, matches: 2 },
+        { source: 'indexer', role: 'indexer', candidates: 1, matches: 1 },
+        { source: 'horizon', role: 'tail', candidates: 0, matches: 0 },
+      ],
+    });
+  });
+
+  it('a malicious far-future feed cursor is clamped to the Horizon head — one response must not blind future scans', async () => {
+    const { keys, raw } = keysToHex();
+    const covered = mineNativeTx(raw, '200', '4.0000000');
+
+    const { fetchFn } = makeRoutedFetch({
+      horizonTxs: [covered],
+      indexer: {
+        health: healthOk({ startCursor: '100', cursor: '250' }),
+        announcements: [toAnnouncement(covered)],
+        // The short page reports a position far beyond the chain.
+        cursor: '9000000000000000000',
+      },
+    });
+    const adapter = makeAdapter(fetchFn, true);
+
+    const { payments, cursor, meta } = await adapter.scan(keys);
+
+    // The payment itself still lands, but the poisoned position does not:
+    // the persisted cursor is capped at the newest tx Horizon reports, so
+    // the NEXT scan still sees everything after it.
+    expect(countByTxHash(payments)).toEqual({ HASH_200: 1 });
+    expect(cursor).toBe('200');
+    expect(meta!.cursorClamped).toBe(true);
+    expect(meta!.postCheck).toBe('ok');
+  });
+
+  it('post-segment health flip to degraded DISCARDS the segment: the tail re-walks the span, no dups, no cursor from indexer data', async () => {
+    const { keys, raw } = keysToHex();
+    const covered = mineNativeTx(raw, '200', '4.0000000');
+    const lagging = mineNativeTx(raw, '300', '5.0000000');
+
+    const { fetchFn, calls } = makeRoutedFetch({
+      horizonTxs: [covered, lagging],
+      indexer: {
+        health: healthOk({ startCursor: '100', cursor: '250' }),
+        healthSeq: [
+          healthOk({ startCursor: '100', cursor: '250' }),
+          // A gap was recorded while the segment was being paged.
+          healthOk({ startCursor: '100', cursor: '250', status: 'degraded' }),
+        ],
+        announcements: [toAnnouncement(covered)],
+        cursor: '250',
+      },
+    });
+    const adapter = makeAdapter(fetchFn, true);
+
+    const { payments, cursor, meta } = await adapter.scan(keys);
+
+    // Both payments present EXACTLY once — the discarded segment's find was
+    // re-discovered by the Horizon tail, which re-walked from the segment's
+    // start instead of the adopted position.
+    expect(countByTxHash(payments)).toEqual({ HASH_200: 1, HASH_300: 1 });
+    expect(cursor).toBe('300');
+    expect(meta!.postCheck).toBe('unhealthy');
+    // The re-walk really came from Horizon: the covered tx needed its
+    // operations fetch after all (the indexer-served copy was thrown away).
+    expect(
+      calls.some((u) => u.includes(`/transactions/${covered.tx.hash}/operations`)),
+    ).toBe(true);
+    const tailSeg = meta!.segments.find((s) => s.role === 'tail')!;
+    expect(tailSeg).toEqual({
+      source: 'horizon',
+      role: 'tail',
+      candidates: 2,
+      matches: 2,
+    });
+  });
+
+  it('post-segment health UNREACHABLE discards the same way', async () => {
+    const { keys, raw } = keysToHex();
+    const covered = mineNativeTx(raw, '200', '4.0000000');
+
+    const { fetchFn } = makeRoutedFetch({
+      horizonTxs: [covered],
+      indexer: {
+        health: healthOk({ startCursor: '100', cursor: '250' }),
+        healthSeq: [healthOk({ startCursor: '100', cursor: '250' }), 'reject'],
+        announcements: [toAnnouncement(covered)],
+        cursor: '250',
+      },
+    });
+    const adapter = makeAdapter(fetchFn, true);
+
+    const { payments, cursor, meta } = await adapter.scan(keys);
+
+    expect(countByTxHash(payments)).toEqual({ HASH_200: 1 });
+    expect(meta!.postCheck).toBe('unreachable');
+    // Tail re-walked from the segment start and ended at the real head.
+    expect(cursor).toBe('200');
+  });
+
+  it('indexerMaxLagSeconds plumbing: a cap of 1 skips lag 2; Infinity uses lag 999999', async () => {
+    const { keys, raw } = keysToHex();
+    const covered = mineNativeTx(raw, '200', '4.0000000');
+
+    // Tight cap vs the fixture's lag of 2: skipped as stale, pure Horizon.
+    const tight = makeRoutedFetch({
+      horizonTxs: [covered],
+      indexer: {
+        health: healthOk({ lagSeconds: 2 }),
+        announcements: [toAnnouncement(covered)],
+        cursor: '300',
+      },
+    });
+    const tightRun = await makeAdapter(tight.fetchFn, true, {
+      indexerMaxLagSeconds: 1,
+    }).scan(keys);
+    expect(tightRun.meta.indexerUsed).toBe(false);
+    expect(tightRun.meta.indexerSkipReason).toBe('stale');
+    expect(tightRun.meta.indexerLagSeconds).toBe(2);
+    expect(tight.calls.some((u) => u.includes('/announcements'))).toBe(false);
+    expect(countByTxHash(tightRun.payments)).toEqual({ HASH_200: 1 });
+
+    // Infinity disables the cap entirely: an extreme lag is still consumed
+    // (the Horizon tail bounds correctness either way).
+    const inf = makeRoutedFetch({
+      horizonTxs: [covered],
+      indexer: {
+        health: healthOk({ lagSeconds: 999_999 }),
+        announcements: [toAnnouncement(covered)],
+        cursor: '300',
+      },
+    });
+    const infRun = await makeAdapter(inf.fetchFn, true, {
+      indexerMaxLagSeconds: Number.POSITIVE_INFINITY,
+    }).scan(keys);
+    expect(infRun.meta.indexerUsed).toBe(true);
+    expect(infRun.meta.indexerSkipReason).toBeUndefined();
+    expect(infRun.meta.indexerLagSeconds).toBe(999_999);
+    expect(inf.calls.some((u) => u.includes('/announcements'))).toBe(true);
+    expect(countByTxHash(infRun.payments)).toEqual({ HASH_200: 1 });
+  });
+
+  it('announcement source_account binds the sender-sponsored CB; without it the first-listed decoy wins', async () => {
+    const { keys, raw } = keysToHex();
+    const token = mineTokenTx(raw, '200');
+    const DECOY_SPONSOR = Keypair.random().publicKey();
+    const CB_DECOY_ID =
+      '00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffff02';
+    // Two live CBs with IDENTICAL asset+amount, differing only by sponsor.
+    // The decoy is listed FIRST so the asset+amount fallback would pick it.
+    const claimableBalancesByClaimant = {
+      [token.stealthAddress!]: [
+        {
+          id: CB_DECOY_ID,
+          asset: ASSET,
+          amount: '100.0000000',
+          sponsor: DECOY_SPONSOR,
+          claimants: [{ destination: token.stealthAddress }],
+        },
+        {
+          id: CB_ID,
+          asset: ASSET,
+          amount: '100.0000000',
+          sponsor: SENDER,
+          claimants: [{ destination: token.stealthAddress }],
+        },
+      ],
+    };
+    const indexer: IndexerRoute = {
+      health: healthOk({ startCursor: '100', cursor: '250' }),
+      announcements: [toAnnouncement(token)],
+      cursor: '250',
+    };
+
+    // Indexer-served WITH source_account: sponsor-precise bind to the real
+    // CB — with no per-tx Horizon operations round-trip.
+    const precise = makeRoutedFetch({
+      horizonTxs: [token],
+      claimableBalancesByClaimant,
+      indexer,
+    });
+    const preciseRun = await makeAdapter(precise.fetchFn, true).scan(keys);
+    expect(preciseRun.payments).toHaveLength(1);
+    expect(preciseRun.payments[0]!.claimableBalanceId).toBe(CB_ID);
+    expect(precise.calls.some((u) => u.includes('/operations'))).toBe(false);
+
+    // Control: the SAME announcement with source_account stripped (an older
+    // feed) falls back to asset+amount and binds the first-listed decoy —
+    // documenting exactly the ambiguity the field exists to remove.
+    const stripped = { ...toAnnouncement(token) };
+    delete stripped.source_account;
+    const legacy = makeRoutedFetch({
+      horizonTxs: [token],
+      claimableBalancesByClaimant,
+      indexer: { ...indexer, announcements: [stripped] },
+    });
+    const legacyRun = await makeAdapter(legacy.fetchFn, true).scan(keys);
+    expect(legacyRun.payments).toHaveLength(1);
+    expect(legacyRun.payments[0]!.claimableBalanceId).toBe(CB_DECOY_ID);
+  });
+
+  it('no-indexer scan meta: one full Horizon segment, indexerUsed false, no skip reason', async () => {
+    const { keys, raw } = keysToHex();
+    const mine = mineNativeTx(raw, '100', '5.0000000');
+    const { fetchFn } = makeRoutedFetch({ horizonTxs: [mine, decoyTx('150')] });
+
+    const { meta } = await makeAdapter(fetchFn, false).scan(keys);
+
+    expect(meta).toEqual({
+      indexerUsed: false,
+      segments: [{ source: 'horizon', role: 'full', candidates: 2, matches: 1 }],
+    });
+    expect(meta.indexerSkipReason).toBeUndefined();
+    expect(meta.indexerLagSeconds).toBeUndefined();
+  });
+
+  it('StealthClient.scanWithCursor surfaces the adapter meta under meta.account', async () => {
+    const { keys, raw } = keysToHex();
+    const covered = mineNativeTx(raw, '200', '4.0000000');
+    const { fetchFn } = makeRoutedFetch({
+      horizonTxs: [covered],
+      indexer: {
+        health: healthOk(),
+        announcements: [toAnnouncement(covered)],
+        cursor: '300',
+      },
+    });
+    // The client builds its own Horizon/Indexer clients on the global fetch.
+    vi.stubGlobal('fetch', fetchFn);
+    try {
+      const client = new StealthClient({
+        network: 'testnet',
+        methods: ['account'],
+        horizonUrl: HORIZON,
+        indexerUrl: INDEXER,
+      });
+      const result = await client.scanWithCursor(keys, { methods: ['account'] });
+
+      expect(result.payments).toHaveLength(1);
+      expect(result.meta?.account).toBeDefined();
+      expect(result.meta!.account!.indexerUsed).toBe(true);
+      expect(result.meta!.account!.segments.map((s) => s.role)).toEqual([
+        'indexer',
+        'tail',
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
