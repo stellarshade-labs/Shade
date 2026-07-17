@@ -196,6 +196,119 @@ describe('RateLimiter', () => {
     expect(nextFn).toHaveBeenCalled();
   });
 
+  it('Retry-After reports the REMAINING wait, not the full interval', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-07-17T00:00:00.000Z'));
+      const limiter = new RateLimiter(1, 1, 60000);
+      const middleware = limiter.middleware();
+
+      await middleware(mockReq as Request, mockRes as Response, nextFn);
+
+      // 45s into the interval the bucket refills in 15s — the header must
+      // say 15, not 60.
+      vi.setSystemTime(new Date('2026-07-17T00:00:45.000Z'));
+      await middleware(mockReq as Request, mockRes as Response, nextFn);
+      expect(mockRes.status).toHaveBeenCalledWith(429);
+      expect(mockRes.set).toHaveBeenCalledWith('Retry-After', '15');
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'Rate limit exceeded',
+        retryAfter: 15,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a non-IP XFF entry with trusted hops falls back to the socket address', async () => {
+    const originalHops = process.env.TRUST_PROXY_HOPS;
+    const originalTrust = process.env.TRUST_PROXY;
+    process.env.TRUST_PROXY_HOPS = '1';
+    delete process.env.TRUST_PROXY;
+    try {
+      const limiter = new RateLimiter(2, 2, 60000);
+      const middleware = limiter.middleware();
+
+      // Junk entries (each an unbounded attacker-chosen key if honored) must
+      // all collapse into the direct-connection bucket.
+      for (const junk of ['not-an-ip-'.repeat(50), 'other junk']) {
+        await middleware(
+          { ...mockReq, headers: { 'x-forwarded-for': junk } } as Request,
+          mockRes as Response,
+          nextFn,
+        );
+      }
+      await middleware(
+        { ...mockReq, headers: { 'x-forwarded-for': 'third junk' } } as Request,
+        mockRes as Response,
+        nextFn,
+      );
+      expect(nextFn).toHaveBeenCalledTimes(2);
+      expect(mockRes.status).toHaveBeenCalledWith(429);
+    } finally {
+      if (originalHops === undefined) delete process.env.TRUST_PROXY_HOPS;
+      else process.env.TRUST_PROXY_HOPS = originalHops;
+      if (originalTrust === undefined) delete process.env.TRUST_PROXY;
+      else process.env.TRUST_PROXY = originalTrust;
+    }
+  });
+
+  it('beyond the bucket cap, unseen clients share one overflow bucket; seen clients keep their own', async () => {
+    const originalHops = process.env.TRUST_PROXY_HOPS;
+    const originalTrust = process.env.TRUST_PROXY;
+    process.env.TRUST_PROXY_HOPS = '1';
+    delete process.env.TRUST_PROXY;
+    try {
+      const limiter = new RateLimiter(2, 2, 60000);
+      const middleware = limiter.middleware();
+
+      // Fill the map to MAX_TRACKED_BUCKETS with distinct valid-IP clients.
+      for (let i = 0; i < 10000; i++) {
+        const ip = `10.${(i >> 8) & 255}.${i & 255}.100`;
+        await middleware(
+          { ...mockReq, headers: { 'x-forwarded-for': ip } } as Request,
+          mockRes as Response,
+          nextFn,
+        );
+      }
+      expect(mockRes.status).not.toHaveBeenCalled();
+
+      // Two UNSEEN clients share the single overflow bucket…
+      for (const ip of ['172.16.0.1', '172.16.0.2']) {
+        await middleware(
+          { ...mockReq, headers: { 'x-forwarded-for': ip } } as Request,
+          mockRes as Response,
+          nextFn,
+        );
+      }
+      expect(mockRes.status).not.toHaveBeenCalled();
+      await middleware(
+        { ...mockReq, headers: { 'x-forwarded-for': '172.16.0.3' } } as Request,
+        mockRes as Response,
+        nextFn,
+      );
+      expect(mockRes.status).toHaveBeenCalledWith(429);
+
+      // …while an already-tracked client still draws from its own bucket.
+      const seenRes = {
+        status: vi.fn().mockReturnThis(),
+        json: vi.fn().mockReturnThis(),
+        set: vi.fn().mockReturnThis(),
+      };
+      await middleware(
+        { ...mockReq, headers: { 'x-forwarded-for': '10.0.0.100' } } as Request,
+        seenRes as unknown as Response,
+        nextFn,
+      );
+      expect(seenRes.status).not.toHaveBeenCalled();
+    } finally {
+      if (originalHops === undefined) delete process.env.TRUST_PROXY_HOPS;
+      else process.env.TRUST_PROXY_HOPS = originalHops;
+      if (originalTrust === undefined) delete process.env.TRUST_PROXY;
+      else process.env.TRUST_PROXY = originalTrust;
+    }
+  });
+
   it('should reset specific client', async () => {
     const middleware = rateLimiter.middleware();
 

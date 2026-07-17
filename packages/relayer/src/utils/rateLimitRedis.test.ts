@@ -89,31 +89,45 @@ describe.skipIf(!REDIS_URL)('RedisRateLimitStore (live)', () => {
     expect(tokens).toBe('0');
   });
 
-  it('reports retryAfterSec = ceil(interval/1000) on both allow and deny', async () => {
+  it('reports retryAfterSec 0 on allow, and the REMAINING wait (not the full interval) on deny', async () => {
     const store = new RedisRateLimitStore(redis, {
       capacity: 1,
       refillTokens: 1,
-      refillIntervalMs: 45000, // ceil(45000/1000) = 45
+      refillIntervalMs: 45000,
     });
     const client = newClient();
 
     const allowed = await store.take(client);
     expect(allowed.allowed).toBe(true);
-    expect(allowed.retryAfterSec).toBe(45);
+    expect(allowed.retryAfterSec).toBe(0);
 
+    // Denied immediately after the take: (almost) the full interval remains.
     const denied = await store.take(client);
     expect(denied.allowed).toBe(false);
     expect(denied.retryAfterSec).toBe(45);
+
+    // Backdate the refill stamp 30s: only ~15s remain — a compliant client
+    // must not be told to wait the full 45.
+    const r = Number(await redis.hget(keyFor(client), 'r'));
+    await redis.hset(keyFor(client), 'r', String(r - 30000));
+    const later = await store.take(client);
+    expect(later.allowed).toBe(false);
+    expect(later.retryAfterSec).toBeGreaterThanOrEqual(14);
+    expect(later.retryAfterSec).toBeLessThanOrEqual(15);
   });
 
-  it('rounds retryAfterSec up for a non-integer number of seconds', async () => {
+  it('rounds the remaining wait up to whole seconds', async () => {
     const store = new RedisRateLimitStore(redis, {
       capacity: 1,
       refillTokens: 1,
-      refillIntervalMs: 1500, // ceil(1500/1000) = 2
+      refillIntervalMs: 1500,
     });
     const client = newClient();
-    expect((await store.take(client)).retryAfterSec).toBe(2);
+    expect((await store.take(client)).retryAfterSec).toBe(0);
+    // Immediately denied: ~1500ms remain, reported as ceil → 2s.
+    const denied = await store.take(client);
+    expect(denied.allowed).toBe(false);
+    expect(denied.retryAfterSec).toBe(2);
   });
 
   it('refills tokens after one interval elapses (backdated lastRefill)', async () => {

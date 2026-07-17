@@ -1,10 +1,24 @@
 import { Request, Response, NextFunction } from 'express';
+import { isIP } from 'node:net';
 import { logger } from './logger.js';
 
 interface TokenBucket {
   tokens: number;
   lastRefill: number;
 }
+
+/**
+ * Hard cap on tracked in-memory buckets. Client ids are validated IPs, but an
+ * attacker spoofing X-Forwarded-For (or rotating real addresses) can still
+ * mint fresh ids per request; without a cap each one holds a Map entry until
+ * the stale sweep — an OOM vector. Beyond the cap, UNSEEN clients share one
+ * overflow bucket: flood traffic throttles collectively instead of growing
+ * memory, at the price of fairness for new clients during an active flood.
+ * (The Redis store bounds its keys with TTLs instead.)
+ */
+const MAX_TRACKED_BUCKETS = 10_000;
+/** The shared bucket key used once MAX_TRACKED_BUCKETS is reached. */
+const OVERFLOW_CLIENT_ID = ' overflow';
 
 /** Outcome of attempting to take one token from a client's bucket. */
 export interface RateLimitDecision {
@@ -71,11 +85,22 @@ export class MemoryRateLimitStore implements RateLimitStore {
   }
 
   async take(clientId: string): Promise<RateLimitDecision> {
-    const bucket = this.getBucket(clientId);
+    // Cardinality backstop: once the map is full, ids we have never seen
+    // collapse into the shared overflow bucket instead of allocating.
+    const key =
+      this.buckets.has(clientId) || this.buckets.size < MAX_TRACKED_BUCKETS
+        ? clientId
+        : OVERFLOW_CLIENT_ID;
+    const bucket = this.getBucket(key);
     if (bucket.tokens <= 0) {
+      // The real remaining wait, not the full interval: the bucket refills at
+      // lastRefill + refillInterval (getBucket just declined to refill, so
+      // that instant is in the future). Never zero — a denied client always
+      // waits at least a second.
+      const waitMs = bucket.lastRefill + this.refillInterval - Date.now();
       return {
         allowed: false,
-        retryAfterSec: Math.ceil(this.refillInterval / 1000),
+        retryAfterSec: Math.max(1, Math.ceil(waitMs / 1000)),
       };
     }
     bucket.tokens--;
@@ -156,8 +181,18 @@ class RateLimiter {
           // internal proxies appended and take the next: index length-hops. If the
           // client forged extra LEFT entries they are ignored; if the client sent
           // fewer entries than trusted hops, clamp to the leftmost present entry.
+          //
+          // The selected entry is only honored when it parses as a bare IP.
+          // When the origin is ALSO directly reachable (a misconfig with
+          // TRUST_PROXY_HOPS set — the header is then client-forged), this
+          // caps the damage: a non-IP value falls through to the socket
+          // address rather than becoming an attacker-chosen bucket key of
+          // unbounded size. Forged-but-valid IPs remain possible in that
+          // misconfig — deployment docs require the origin port to be
+          // reachable only via the proxy chain.
           const idx = Math.max(0, parts.length - hops);
-          return parts[idx]!;
+          const candidate = parts[idx]!;
+          if (isIP(candidate) !== 0) return candidate;
         }
       }
     }

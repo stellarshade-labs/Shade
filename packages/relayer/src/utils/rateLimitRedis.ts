@@ -51,8 +51,6 @@ local ttl = tonumber(ARGV[4])
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 
-local retryAfterSec = math.ceil(interval / 1000)
-
 local data = redis.call('HMGET', key, 't', 'r')
 local tokens
 local last
@@ -70,9 +68,14 @@ else
 end
 
 local allowed
+local retryAfterSec = 0
 if tokens <= 0 then
   -- Empty bucket: deny WITHOUT decrementing (matches MemoryRateLimitStore).
+  -- Retry-After is the REAL remaining wait, not the full interval: the bucket
+  -- refills at last + interval (the refill branch above did not fire, so that
+  -- instant is in the future). Never below one second.
   allowed = 0
+  retryAfterSec = math.max(1, math.ceil((last + interval - now) / 1000))
 else
   tokens = tokens - 1
   allowed = 1
