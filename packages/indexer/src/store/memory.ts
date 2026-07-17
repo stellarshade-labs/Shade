@@ -1,6 +1,7 @@
 import type {
   AnnouncementRecord,
   AnnouncementStore,
+  IngestGap,
   IngestState,
 } from './types.js';
 
@@ -11,6 +12,7 @@ import type {
  */
 export class MemoryAnnouncementStore implements AnnouncementStore {
   private readonly records = new Map<string, AnnouncementRecord>();
+  private readonly gaps = new Map<number, IngestGap>();
   private cursor: string | null = null;
   private startCursor: string | null = null;
   private lastCloseTime: string | null = null;
@@ -56,6 +58,25 @@ export class MemoryAnnouncementStore implements AnnouncementStore {
 
   async setStartCursor(cursor: string): Promise<void> {
     if (this.startCursor === null) this.startCursor = cursor;
+  }
+
+  async recordGap(
+    fromLedger: number,
+    toLedger: number,
+    detectedAt: string,
+  ): Promise<void> {
+    // Merge-by-fromLedger (mirrors the Postgres ON CONFLICT arm): only ever
+    // WIDEN toLedger and keep the FIRST detectedAt.
+    const existing = this.gaps.get(fromLedger);
+    if (existing) {
+      existing.toLedger = Math.max(existing.toLedger, toLedger);
+    } else {
+      this.gaps.set(fromLedger, { fromLedger, toLedger, detectedAt });
+    }
+  }
+
+  async getGaps(): Promise<IngestGap[]> {
+    return [...this.gaps.values()].sort((a, b) => a.fromLedger - b.fromLedger);
   }
 
   async count(): Promise<number> {

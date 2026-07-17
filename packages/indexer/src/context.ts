@@ -3,6 +3,13 @@ import { logger } from './utils/logger.js';
 /** Static, per-network indexer configuration. */
 export interface IndexerNetworkDefinition {
   horizonUrl: string;
+  /**
+   * The network's passphrase, compared against the Horizon root document by
+   * the continuity check so retention bounds from a wrong-network Horizon
+   * (e.g. a mistyped HORIZON_URL) can never record a false permanent gap.
+   * Plain constants on purpose — the indexer does not import stellar-sdk.
+   */
+  networkPassphrase: string;
 }
 
 /**
@@ -13,8 +20,10 @@ export interface IndexerNetworkDefinition {
 export const INDEXER_NETWORKS = {
   testnet: {
     horizonUrl: 'https://horizon-testnet.stellar.org',
+    networkPassphrase: 'Test SDF Network ; September 2015',
   },
-  // post-audit: public: { horizonUrl: 'https://horizon.stellar.org' },
+  // post-audit: public: { horizonUrl: 'https://horizon.stellar.org',
+  //   networkPassphrase: 'Public Global Stellar Network ; September 2015' },
 } satisfies Record<string, IndexerNetworkDefinition>;
 
 /**
@@ -60,4 +69,21 @@ export function horizonUrlFor(network: string): string {
     );
   }
   return def.horizonUrl;
+}
+
+/**
+ * The expected network passphrase for a network label (throws on unknown
+ * networks). NOT overridable by env: even a private Horizon (HORIZON_URL
+ * override) must serve the same chain the deployment claims to index.
+ */
+export function networkPassphraseFor(network: string): string {
+  const def = (INDEXER_NETWORKS as Record<string, IndexerNetworkDefinition>)[
+    network
+  ];
+  if (!def) {
+    throw new Error(
+      `Unsupported network '${network}'. Supported: ${Object.keys(INDEXER_NETWORKS).join(', ')}`,
+    );
+  }
+  return def.networkPassphrase;
 }

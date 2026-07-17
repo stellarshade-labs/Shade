@@ -6,6 +6,7 @@ import {
   createHealthHandler,
 } from './announcements.js';
 import { MemoryAnnouncementStore } from '../store/memory.js';
+import RateLimiter from '../utils/rateLimit.js';
 import type { AnnouncementRecord } from '../store/types.js';
 import type { IngesterStatus } from '../ingest.js';
 
@@ -25,6 +26,10 @@ const idleStatus: IngesterStatus = {
   lastPollAt: null,
   lastError: null,
   caughtUp: false,
+  resetSuspected: false,
+  lastContinuityOkAt: null,
+  continuityStale: false,
+  stalled: false,
 };
 
 function makeApp(store: MemoryAnnouncementStore, status: IngesterStatus = idleStatus) {
@@ -55,7 +60,15 @@ describe('GET /health', () => {
       lastCloseTime: null,
       lagSeconds: null,
       announcements: 0,
-      ingest: { lastPollAt: null, lastError: null },
+      gaps: [],
+      ingest: {
+        lastPollAt: null,
+        lastError: null,
+        resetSuspected: false,
+        lastContinuityOkAt: null,
+        continuityStale: false,
+        stalled: false,
+      },
     });
   });
 
@@ -69,6 +82,10 @@ describe('GET /health', () => {
       lastPollAt: '2026-07-17T12:00:00.000Z',
       lastError: 'horizon 429',
       caughtUp: true,
+      resetSuspected: false,
+      lastContinuityOkAt: '2026-07-17T12:00:00.000Z',
+      continuityStale: false,
+      stalled: false,
     };
     const res = await request(makeApp(store, status)).get('/health');
     expect(res.status).toBe(200);
@@ -82,7 +99,53 @@ describe('GET /health', () => {
     expect(res.body.ingest).toEqual({
       lastPollAt: '2026-07-17T12:00:00.000Z',
       lastError: 'horizon 429',
+      resetSuspected: false,
+      lastContinuityOkAt: '2026-07-17T12:00:00.000Z',
+      continuityStale: false,
+      stalled: false,
     });
+  });
+
+  it("degrades (never lies 'ok') when the store has a recorded gap", async () => {
+    const store = new MemoryAnnouncementStore();
+    await store.recordGap(11, 99, '2026-07-17T01:00:00.000Z');
+    const res = await request(makeApp(store)).get('/health');
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('degraded');
+    expect(res.body.gaps).toEqual([
+      { fromLedger: 11, toLedger: 99, detectedAt: '2026-07-17T01:00:00.000Z' },
+    ]);
+  });
+
+  it('degrades when a testnet reset is suspected', async () => {
+    const status: IngesterStatus = { ...idleStatus, resetSuspected: true };
+    const res = await request(makeApp(new MemoryAnnouncementStore(), status)).get(
+      '/health',
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('degraded');
+    expect(res.body.gaps).toEqual([]);
+    expect(res.body.ingest.resetSuspected).toBe(true);
+  });
+
+  it('degrades when the continuity check is not succeeding — gap/reset detection is effectively off', async () => {
+    const status: IngesterStatus = { ...idleStatus, continuityStale: true };
+    const res = await request(makeApp(new MemoryAnnouncementStore(), status)).get(
+      '/health',
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('degraded');
+    expect(res.body.ingest.continuityStale).toBe(true);
+  });
+
+  it("degrades when ingest is stalled — a frozen indexer must not report 'ok' forever", async () => {
+    const status: IngesterStatus = { ...idleStatus, stalled: true };
+    const res = await request(makeApp(new MemoryAnnouncementStore(), status)).get(
+      '/health',
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('degraded');
+    expect(res.body.ingest.stalled).toBe(true);
   });
 });
 
@@ -112,6 +175,39 @@ describe('GET /announcements', () => {
       },
     ]);
     expect(res.body.cursor).toBe('7');
+  });
+
+  it('serves source_account when stored and omits it on pre-field rows', async () => {
+    const store = new MemoryAnnouncementStore();
+    await store.insertBatch(
+      [record('1'), { ...record('2'), sourceAccount: 'GPAYERSOURCEACCOUNT' }],
+      '2',
+      '2026-07-17T00:00:00.000Z',
+    );
+    const res = await request(makeApp(store)).get('/announcements');
+    expect(res.status).toBe(200);
+    // res.json drops the undefined field → the old row matches the Horizon
+    // record shape with source_account simply absent.
+    expect(res.body.records[0]).not.toHaveProperty('source_account');
+    expect(res.body.records[1].source_account).toBe('GPAYERSOURCEACCOUNT');
+  });
+
+  it('a composed route answers 429 + Retry-After once the limiter is exhausted', async () => {
+    const app = express();
+    const limiter = new RateLimiter(2, 2, 60_000);
+    app.get(
+      '/announcements',
+      limiter.middleware(),
+      createAnnouncementsHandler(new MemoryAnnouncementStore()),
+    );
+
+    await request(app).get('/announcements').expect(200);
+    await request(app).get('/announcements').expect(200);
+
+    const res = await request(app).get('/announcements');
+    expect(res.status).toBe(429);
+    expect(res.headers['retry-after']).toBe('60');
+    expect(res.body).toEqual({ error: 'Rate limit exceeded', retryAfter: 60 });
   });
 
   it("a FULL page returns the last row's paging_token as the cursor", async () => {

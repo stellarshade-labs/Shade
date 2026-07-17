@@ -24,6 +24,8 @@ export interface HorizonTxRecord {
   memo?: string;
   successful?: boolean;
   created_at: string;
+  /** Transaction-level source account (Horizon serves it on every tx record). */
+  source_account?: string;
 }
 
 interface HorizonPage<T> {
@@ -38,6 +40,18 @@ export interface HorizonFeed {
   ): Promise<HorizonTxRecord[]>;
   getLatestTransactionToken(): Promise<string | undefined>;
   getOperations(txHash: string): Promise<unknown[]>;
+  /**
+   * Horizon's retention window, for the ingester's feed continuity check:
+   * `elderLedger` is the oldest ledger this Horizon can still serve,
+   * `latestLedger` the newest it has ingested. A field is omitted when Horizon
+   * does not report it, so callers can tell "unknown" from a real bound.
+   */
+  getFeedLedgerBounds(): Promise<{
+    elderLedger?: number;
+    latestLedger?: number;
+    /** The root document's network_passphrase, when it reports one. */
+    networkPassphrase?: string;
+  }>;
 }
 
 /** A thin, injectable-fetch Horizon REST client. */
@@ -93,5 +107,39 @@ export class HorizonClient implements HorizonFeed {
       `/transactions/${txHash}/operations?limit=200`,
     );
     return page._embedded?.records ?? [];
+  }
+
+  /** Retention bounds from the Horizon root document (see {@link HorizonFeed}). */
+  async getFeedLedgerBounds(): Promise<{
+    elderLedger?: number;
+    latestLedger?: number;
+    networkPassphrase?: string;
+  }> {
+    const root = await this.getJson<{
+      history_elder_ledger?: unknown;
+      history_latest_ledger?: unknown;
+      network_passphrase?: unknown;
+    }>('/');
+    const bounds: {
+      elderLedger?: number;
+      latestLedger?: number;
+      networkPassphrase?: string;
+    } = {};
+    if (
+      typeof root.history_elder_ledger === 'number' &&
+      Number.isFinite(root.history_elder_ledger)
+    ) {
+      bounds.elderLedger = root.history_elder_ledger;
+    }
+    if (
+      typeof root.history_latest_ledger === 'number' &&
+      Number.isFinite(root.history_latest_ledger)
+    ) {
+      bounds.latestLedger = root.history_latest_ledger;
+    }
+    if (typeof root.network_passphrase === 'string') {
+      bounds.networkPassphrase = root.network_passphrase;
+    }
+    return bounds;
   }
 }

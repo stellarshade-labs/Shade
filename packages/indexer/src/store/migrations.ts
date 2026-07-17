@@ -43,6 +43,22 @@ CREATE TABLE IF NOT EXISTS ingest_state (
 );
 `,
   },
+  // A4 P2: tx-level source_account on announcements (nullable — rows ingested
+  // before the column existed simply omit it) and the ingest_gaps table for
+  // the feed continuity check. `from_ledger` is the merge key (see
+  // AnnouncementStore.recordGap for the semantics).
+  {
+    version: 2,
+    sql: `
+ALTER TABLE announcements ADD COLUMN IF NOT EXISTS source_account TEXT;
+
+CREATE TABLE IF NOT EXISTS ingest_gaps (
+  from_ledger BIGINT PRIMARY KEY,
+  to_ledger   BIGINT NOT NULL,
+  detected_at TIMESTAMPTZ NOT NULL
+);
+`,
+  },
 ];
 
 /**

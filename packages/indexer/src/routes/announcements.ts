@@ -18,18 +18,35 @@ export interface HealthDeps {
   ingestStatus(): IngesterStatus;
 }
 
-/** GET /health — ingest progress, lag, and backend transparency. */
+/**
+ * GET /health — ingest progress, lag, gaps, and backend transparency.
+ *
+ * `status: 'degraded'` is a deliberate contract: SDK scan guards require
+ * status 'ok', so a compromised indexer is automatically skipped by clients
+ * and Horizon covers correctness. Degradation causes, each also exposed
+ * individually: any recorded gap, a suspected testnet reset, a continuity
+ * check that is not succeeding (`continuityStale` — gap/reset detection is
+ * effectively disabled, so coverage cannot be vouched for), and a stalled
+ * ingest loop (`stalled` — a frozen indexer must not report 'ok' forever).
+ * `gaps` is always present ([] when none).
+ */
 export function createHealthHandler(deps: HealthDeps) {
   return async (_req: Request, res: Response): Promise<void> => {
     const state = await deps.store.getIngestState();
     const announcements = await deps.store.count();
+    const gaps = await deps.store.getGaps();
     const ingest = deps.ingestStatus();
     const lagSeconds =
       state.lastCloseTime === null
         ? null
         : Math.round((Date.now() - Date.parse(state.lastCloseTime)) / 1000);
+    const degraded =
+      gaps.length > 0 ||
+      ingest.resetSuspected ||
+      ingest.continuityStale ||
+      ingest.stalled;
     res.json({
-      status: 'ok',
+      status: degraded ? 'degraded' : 'ok',
       network: deps.network,
       store: deps.storeKind,
       cursor: state.cursor,
@@ -37,7 +54,15 @@ export function createHealthHandler(deps: HealthDeps) {
       lastCloseTime: state.lastCloseTime,
       lagSeconds,
       announcements,
-      ingest: { lastPollAt: ingest.lastPollAt, lastError: ingest.lastError },
+      gaps,
+      ingest: {
+        lastPollAt: ingest.lastPollAt,
+        lastError: ingest.lastError,
+        resetSuspected: ingest.resetSuspected,
+        lastContinuityOkAt: ingest.lastContinuityOkAt,
+        continuityStale: ingest.continuityStale,
+        stalled: ingest.stalled,
+      },
     });
   };
 }
@@ -87,6 +112,9 @@ export function createAnnouncementsHandler(store: AnnouncementStore) {
       memo_type: 'hash',
       successful: true,
       created_at: row.closeTime,
+      // res.json drops undefined, so rows ingested before the field existed
+      // simply omit source_account — matching the Horizon record shape.
+      source_account: row.sourceAccount,
       operations: row.operations,
     }));
 

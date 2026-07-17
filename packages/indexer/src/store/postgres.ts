@@ -2,6 +2,7 @@ import type { Pool, PoolClient } from 'pg';
 import type {
   AnnouncementRecord,
   AnnouncementStore,
+  IngestGap,
   IngestState,
 } from './types.js';
 import { migrate } from './migrations.js';
@@ -13,6 +14,14 @@ interface AnnouncementRow {
   memo: string;
   close_time: Date;
   operations: unknown;
+  source_account: string | null;
+}
+
+/** Shape of an `ingest_gaps` row as `pg` marshals it. */
+interface IngestGapRow {
+  from_ledger: string;
+  to_ledger: string;
+  detected_at: Date;
 }
 
 /** Shape of the singleton `ingest_state` row as `pg` marshals it. */
@@ -72,8 +81,8 @@ export class PostgresAnnouncementStore implements AnnouncementStore {
     await this.tx(async (client) => {
       for (const record of records) {
         await client.query(
-          `INSERT INTO announcements (paging_token, tx_hash, memo, close_time, operations)
-             VALUES ($1, $2, $3, $4, $5::jsonb)
+          `INSERT INTO announcements (paging_token, tx_hash, memo, close_time, operations, source_account)
+             VALUES ($1, $2, $3, $4, $5::jsonb, $6)
              ON CONFLICT (paging_token) DO NOTHING`,
           [
             record.pagingToken,
@@ -81,6 +90,7 @@ export class PostgresAnnouncementStore implements AnnouncementStore {
             record.memo,
             record.closeTime,
             JSON.stringify(record.operations),
+            record.sourceAccount ?? null,
           ],
         );
       }
@@ -107,12 +117,12 @@ export class PostgresAnnouncementStore implements AnnouncementStore {
     const res =
       cursor === undefined
         ? await this.pool.query<AnnouncementRow>(
-            `SELECT paging_token::text AS paging_token, tx_hash, memo, close_time, operations
+            `SELECT paging_token::text AS paging_token, tx_hash, memo, close_time, operations, source_account
                FROM announcements ORDER BY announcements.paging_token ASC LIMIT $1`,
             [limit],
           )
         : await this.pool.query<AnnouncementRow>(
-            `SELECT paging_token::text AS paging_token, tx_hash, memo, close_time, operations
+            `SELECT paging_token::text AS paging_token, tx_hash, memo, close_time, operations, source_account
                FROM announcements WHERE paging_token > $2
               ORDER BY announcements.paging_token ASC LIMIT $1`,
             [limit, cursor],
@@ -123,6 +133,9 @@ export class PostgresAnnouncementStore implements AnnouncementStore {
       memo: row.memo,
       closeTime: row.close_time.toISOString(),
       operations: row.operations as unknown[],
+      // NULL (pre-migration rows) → undefined, so the record matches the
+      // memory backend and JSON serialization drops the field entirely.
+      sourceAccount: row.source_account ?? undefined,
     }));
   }
 
@@ -153,6 +166,37 @@ export class PostgresAnnouncementStore implements AnnouncementStore {
            WHERE ingest_state.start_cursor IS NULL`,
       [cursor],
     );
+  }
+
+  async recordGap(
+    fromLedger: number,
+    toLedger: number,
+    detectedAt: string,
+  ): Promise<void> {
+    // Merge-by-fromLedger (see AnnouncementStore.recordGap): the conflict arm
+    // only ever WIDENS to_ledger and deliberately leaves detected_at at the
+    // first detection time.
+    await this.pool.query(
+      `INSERT INTO ingest_gaps (from_ledger, to_ledger, detected_at)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (from_ledger) DO UPDATE
+           SET to_ledger = GREATEST(ingest_gaps.to_ledger, EXCLUDED.to_ledger)`,
+      [fromLedger, toLedger, detectedAt],
+    );
+  }
+
+  async getGaps(): Promise<IngestGap[]> {
+    // Ledger BIGINTs come back from `pg` as decimal strings; ledger sequences
+    // are uint32 so Number() is exact.
+    const res = await this.pool.query<IngestGapRow>(
+      `SELECT from_ledger, to_ledger, detected_at
+         FROM ingest_gaps ORDER BY from_ledger ASC`,
+    );
+    return res.rows.map((row) => ({
+      fromLedger: Number(row.from_ledger),
+      toLedger: Number(row.to_ledger),
+      detectedAt: row.detected_at.toISOString(),
+    }));
   }
 
   async count(): Promise<number> {

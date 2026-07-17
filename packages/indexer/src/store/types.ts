@@ -17,6 +17,25 @@ export interface AnnouncementRecord {
    * stealth address from R + the operation payload.
    */
   operations: unknown[];
+  /**
+   * Transaction-level source account, enabling the SDK's sponsor-precise
+   * claimable-balance binding. Absent on rows ingested before the field
+   * existed.
+   */
+  sourceAccount?: string;
+}
+
+/**
+ * A range of ledgers the ingester can never cover: Horizon's retention window
+ * advanced past the ingest cursor, so `[fromLedger, toLedger]` (inclusive) was
+ * dropped by Horizon before it was ingested. Surfaced via /health so clients
+ * fall back to Horizon for correctness.
+ */
+export interface IngestGap {
+  fromLedger: number;
+  toLedger: number;
+  /** When the hole was FIRST detected (ISO timestamp). */
+  detectedAt: string;
 }
 
 /** Persisted ingest progress (all Horizon paging_tokens as decimal strings). */
@@ -59,6 +78,20 @@ export interface AnnouncementStore {
   getIngestState(): Promise<IngestState>;
   /** Record the first covered feed position ONCE (no-op if already set). */
   setStartCursor(cursor: string): Promise<void>;
+  /**
+   * Record an unservable ledger range. Gaps are keyed by `fromLedger`:
+   * recording an existing `fromLedger` extends `toLedger` to the max of
+   * old/new and KEEPS the first `detectedAt` — a stalled cursor re-detects a
+   * widening hole as Horizon retention advances, and merging keeps one honest
+   * row instead of accumulating near-duplicates.
+   */
+  recordGap(
+    fromLedger: number,
+    toLedger: number,
+    detectedAt: string,
+  ): Promise<void>;
+  /** All recorded gaps, ordered by `fromLedger` ascending. */
+  getGaps(): Promise<IngestGap[]>;
   count(): Promise<number>;
   close(): Promise<void>;
 }

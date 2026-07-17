@@ -1,6 +1,10 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
-import { assertSupportedNetwork, horizonUrlFor } from './context.js';
+import {
+  assertSupportedNetwork,
+  horizonUrlFor,
+  networkPassphraseFor,
+} from './context.js';
 import { HorizonClient } from './horizon.js';
 import { createIngester } from './ingest.js';
 import { createAnnouncementStore } from './store/factory.js';
@@ -9,6 +13,7 @@ import {
   createHealthHandler,
 } from './routes/announcements.js';
 import { logger } from './utils/logger.js';
+import RateLimiter from './utils/rateLimit.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -29,17 +34,28 @@ app.use(express.json());
 
 app.use(logger.middleware());
 
-const NETWORK = process.env.NETWORK || 'testnet';
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3100;
-const INGEST_START = process.env.INGEST_START || 'now';
-const INGEST_INTERVAL_MS = (() => {
-  const raw = process.env.INGEST_INTERVAL_MS;
+/** Positive-integer env var; `fallback` when unset, non-numeric, or <= 0. */
+function positiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
   if (raw) {
     const n = Number.parseInt(raw, 10);
     if (Number.isFinite(n) && n > 0) return n;
   }
-  return 3000;
-})();
+  return fallback;
+}
+
+const NETWORK = process.env.NETWORK || 'testnet';
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3100;
+const INGEST_START = process.env.INGEST_START || 'now';
+const INGEST_INTERVAL_MS = positiveIntEnv('INGEST_INTERVAL_MS', 3000);
+const GAP_CHECK_INTERVAL_MS = positiveIntEnv('GAP_CHECK_INTERVAL_MS', 600000);
+// Rate-limit defaults (requests per minute per client IP): a cold client scan
+// legitimately pages the whole feed in a burst (200 records/page) and gets no
+// second chance mid-scan (the SDK treats a 429 as a fault and falls back to
+// Horizon), so the announcements default must be generous — the limiter is an
+// anti-abuse backstop, not a capacity control.
+const ANNOUNCEMENTS_RPM = positiveIntEnv('ANNOUNCEMENTS_RPM', 600);
+const HEALTH_RPM = positiveIntEnv('HEALTH_RPM', 120);
 
 /**
  * Wrap a possibly-async route handler so a rejected promise is forwarded to the
@@ -72,13 +88,25 @@ async function initIndexer() {
       horizon,
       store,
       intervalMs: INGEST_INTERVAL_MS,
+      gapCheckIntervalMs: GAP_CHECK_INTERVAL_MS,
+      expectedNetworkPassphrase: networkPassphraseFor(NETWORK),
       log: logger,
     });
     // Throws on an invalid INGEST_START (caught below → exit 1).
     await ingester.start(INGEST_START);
 
+    // Separate limiter instances so /health probes and feed paging draw from
+    // separate buckets — a paging client must not starve monitoring.
+    const healthLimiter = new RateLimiter(HEALTH_RPM, HEALTH_RPM, 60_000);
+    const announcementsLimiter = new RateLimiter(
+      ANNOUNCEMENTS_RPM,
+      ANNOUNCEMENTS_RPM,
+      60_000,
+    );
+
     app.get(
       '/health',
+      healthLimiter.middleware(),
       asyncHandler(
         createHealthHandler({
           network: NETWORK,
@@ -88,7 +116,11 @@ async function initIndexer() {
         }),
       ),
     );
-    app.get('/announcements', asyncHandler(createAnnouncementsHandler(store)));
+    app.get(
+      '/announcements',
+      announcementsLimiter.middleware(),
+      asyncHandler(createAnnouncementsHandler(store)),
+    );
 
     // Global error handler: any unexpected async rejection (Express 4 does not
     // catch rejected promises from async handlers on its own) is funneled here
@@ -109,6 +141,9 @@ async function initIndexer() {
         store: kind,
         ingestStart: INGEST_START,
         intervalMs: INGEST_INTERVAL_MS,
+        gapCheckIntervalMs: GAP_CHECK_INTERVAL_MS,
+        announcementsRpm: ANNOUNCEMENTS_RPM,
+        healthRpm: HEALTH_RPM,
       });
       console.log(`[Indexer] Server listening on port ${PORT}`);
       console.log(`[Indexer] Network: ${NETWORK} (${horizonUrl})`);

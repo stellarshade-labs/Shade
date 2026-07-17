@@ -156,6 +156,53 @@ export function describeAnnouncementStoreSpec(
       expect(await store.count()).toBe(3);
     });
 
+    it('round-trips sourceAccount; a record without one stays without one', async () => {
+      const store = await open();
+      await store.insertBatch(
+        [record('1', { sourceAccount: 'GSENDERSOURCEACCOUNT' }), record('2')],
+        '2',
+        '2026-07-17T00:00:00.000Z',
+      );
+      const [withSource, withoutSource] = await store.getAnnouncements(
+        undefined,
+        10,
+      );
+      expect(withSource!.sourceAccount).toBe('GSENDERSOURCEACCOUNT');
+      // Pre-field rows (or txs the backend stored as NULL) come back absent.
+      expect(withoutSource!.sourceAccount).toBeUndefined();
+    });
+
+    it('returns gaps ordered by fromLedger ascending', async () => {
+      const store = await open();
+      await store.recordGap(50, 60, '2026-07-17T00:00:02.000Z');
+      await store.recordGap(10, 20, '2026-07-17T00:00:01.000Z');
+      expect(await store.getGaps()).toEqual([
+        { fromLedger: 10, toLedger: 20, detectedAt: '2026-07-17T00:00:01.000Z' },
+        { fromLedger: 50, toLedger: 60, detectedAt: '2026-07-17T00:00:02.000Z' },
+      ]);
+    });
+
+    it('merges a re-recorded fromLedger: toLedger extends, first detectedAt wins', async () => {
+      const store = await open();
+      await store.recordGap(10, 20, '2026-07-17T00:00:01.000Z');
+      // A widening hole re-detected later extends the SAME row…
+      await store.recordGap(10, 35, '2026-07-17T00:00:02.000Z');
+      // …and a narrower re-report never shrinks recorded coverage.
+      await store.recordGap(10, 15, '2026-07-17T00:00:03.000Z');
+      expect(await store.getGaps()).toEqual([
+        { fromLedger: 10, toLedger: 35, detectedAt: '2026-07-17T00:00:01.000Z' },
+      ]);
+    });
+
+    it('keeps distinct fromLedgers as distinct gap rows', async () => {
+      const store = await open();
+      await store.recordGap(10, 20, '2026-07-17T00:00:01.000Z');
+      await store.recordGap(21, 30, '2026-07-17T00:00:02.000Z');
+      const gaps = await store.getGaps();
+      expect(gaps.map((g) => g.fromLedger)).toEqual([10, 21]);
+      expect(gaps.map((g) => g.toLedger)).toEqual([20, 30]);
+    });
+
     it('preserves operations verbatim (no field projection)', async () => {
       const store = await open();
       const operations = [
