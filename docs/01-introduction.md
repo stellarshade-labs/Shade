@@ -9,15 +9,16 @@ Shade gives every payment its own fresh, unlinkable address on Stellar. You publ
 
 This page explains what Shade is, the problem it solves, and who it's for. If you want to start using it, jump to [Getting Started](./05-getting-started.md).
 
-**Try it in three commands** (needs Node.js 20+, Docker, Stellar CLI and a Rust toolchain — the demo deploys the contract, runs a relayer, and walks a full send → scan → claim cycle on a local network):
+**Try it** (needs Node.js 20+, Stellar CLI and a Rust toolchain — generate and fund a testnet account, deploy the contract, then walk a full send → scan → claim cycle with the CLI on Stellar **testnet**):
 
 ```bash
 npm install
-docker compose up -d
-bash demo.sh
+stellar keys generate deployer --network testnet
+stellar keys fund deployer --network testnet
+bash contracts/deploy.sh --network testnet --source deployer
 ```
 
-Full setup in [Getting Started](./05-getting-started.md).
+Full setup in [Getting Started](./05-getting-started.md); the worked smoke flow is in [RESULTS-testnet-smoke](./RESULTS-testnet-smoke.md).
 
 ---
 
@@ -78,5 +79,5 @@ The protocol and this implementation have **not undergone an external cryptograp
 
 - [Core Concepts](./02-core-concepts.md) — DKSAP (the Dual-Key Stealth Address Protocol Shade is built on), view/spend keys, meta-addresses, view tags
 - [Architecture](./03-architecture.md) — the components and how data flows between them
-- [Getting Started](./05-getting-started.md) — run it locally
+- [Getting Started](./05-getting-started.md) — run it on testnet
 - [Security](./09-security.md) — threat model, assumptions, and limits

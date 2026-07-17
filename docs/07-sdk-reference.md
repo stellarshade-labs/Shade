@@ -46,13 +46,15 @@ new StealthClient(config: ClientConfig)
 
 ```typescript
 interface ClientConfig {
-  network: 'local' | 'testnet';
-  contractId?: string;    // required whenever 'pool' is enabled (default exists only for 'local')
+  network: 'testnet';     // effectively 'testnet' only today; the NETWORKS table is mainnet-extensible post-audit
+  contractId?: string;    // required whenever 'pool' is enabled (no built-in default now — pass your deployed pool id)
   horizonUrl?: string;    // override the Horizon endpoint (account method)
   methods?: DeliveryMethod[];  // default: ['pool']
   relayer?: string;       // default relayer URL for fee-bumped submissions
 }
 ```
+
+`network` resolves through a single `NETWORKS` table (`packages/sdk/src/soroban.ts`); adding a network there — e.g. mainnet (`public`) after the audit — widens the accepted type automatically. Today the only entry is `testnet`.
 
 Throws **`ContractIdRequiredError`** if `'pool'` is enabled and no contract id resolves — failing loudly here instead of surfacing an opaque Soroban error on the first pool call.
 
@@ -449,7 +451,7 @@ interface StealthDerivationWithSecret extends StealthDerivation {
 
 Errors: `InvalidPublicKey`, `InvalidScalar`, `InvalidMetaAddress`, `PointAtInfinity`.
 
-> **Critical.** `recoverStealthPrivateKey` returns a **raw scalar**, not a seed. Always sign with `signWithStealthKey`. See [Core Concepts](./02-core-concepts.md#the-math).
+> **Critical.** `recoverStealthPrivateKey` returns a **`StealthScalar` wrapper**, not a raw `Uint8Array`. Sign directly on it — `key.sign(message)` — verify with `key.publicKey()`, and `key.zeroize()` when done. Because the wrapper is not a `Uint8Array`, `Keypair.fromRawEd25519Seed(key)` is a **compile error**, so the old fund-loss footgun (feeding the raw scalar to a seed API, which hashes to a mismatched key) can't happen. The deprecated `recoverStealthPrivateKeyBytes()` still returns the old raw bytes for interop; `dangerouslyToRawBytes()` on the wrapper does the same — both carry the same seed-API warning. See [Core Concepts](./02-core-concepts.md#the-math).
 
 ---
 

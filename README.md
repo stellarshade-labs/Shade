@@ -55,30 +55,25 @@ The first implementation of stealth addresses on Stellar. Supports multi-token d
 ## Quick Start
 
 ```bash
-# Prerequisites: Node.js 20+, Docker, Stellar CLI, Rust toolchain
+# Prerequisites: Node.js 20+, Stellar CLI, Rust toolchain
 npm install
-
-# Start local Stellar network
-docker compose up -d
 
 # Build everything
 npm run build
 cd contracts && stellar contract build && cd ..
 
-# Run the full end-to-end demo
-bash demo.sh
+# Generate + fund a testnet account (repeat for any accounts you need)
+stellar keys generate deployer --network testnet
+stellar keys fund deployer --network testnet
+
+# Deploy the pool contract to testnet (writes the id to ~/.stealth/testnet-contract)
+bash contracts/deploy.sh --network testnet --source deployer
 ```
 
-The demo will:
-1. Deploy the stealth pool contract + native XLM SAC
-2. Start the privacy relayer service
-3. Generate stealth meta-addresses for Bob
-4. Alice deposits 100 XLM into the stealth pool
-5. Alice deposits 200 USDC into the stealth pool (multi-token)
-6. Bob scans and detects both deposits with his view key
-7. Bob withdraws XLM directly (fee-payer pays Soroban fee)
-8. Bob withdraws USDC via relayer (fee-bump for privacy)
-9. Verifies no on-chain link between Bob and stealth addresses
+Then drive a full send -> scan -> claim cycle with the CLI (below). The worked
+end-to-end smoke flow — deposit -> scan -> balance -> direct withdraw ->
+relayer fee-bumped withdraw, for both native XLM and a classic-asset (USDC) SAC —
+is captured in [docs/RESULTS-testnet-smoke.md](docs/RESULTS-testnet-smoke.md).
 
 ## SDK Usage
 
@@ -87,7 +82,7 @@ import { StealthClient } from '@shade/sdk';
 
 // `contractId` is required whenever the pool method is enabled (mandatory on testnet).
 const client = new StealthClient({
-  network: 'local',
+  network: 'testnet',
   contractId: 'CXXX...',
   methods: ['pool', 'account'],
 });
@@ -137,15 +132,16 @@ shade keygen --force                      # Required to OVERWRITE an existing ke
 shade address
 
 # Send — a delivery method is REQUIRED (pool = private, account = direct, auto = pick).
-# --network accepts only local or testnet (mainnet is rejected as unaudited).
+# --network defaults to testnet and only testnet is accepted (local was removed;
+# mainnet is rejected as unaudited).
 # Supply the secret via $SHADE_FROM_SECRET or the prompt so it never hits shell history.
-shade send <meta-address> 100 --method auto --network local
+shade send <meta-address> 100 --method auto --network testnet
 shade send <meta-address> 100 --method pool --from SXXX
 shade send <meta-address> 200 --method account --asset USDC:GISSUER
 
 # Scan + balance (pool AND account); balance shows the asset label (e.g. XLM, not the SAC C-address)
-shade scan --network local
-shade balance --network local
+shade scan --network testnet
+shade balance --network testnet
 
 # Claim a discovered payment to your real address (unified pool + account path)
 shade claim <stealth-addr> <destination> --relay http://localhost:3000        # account sweep
@@ -168,14 +164,16 @@ shade withdraw <stealth-addr> <destination> --fee-payer SXXX --asset USDC:GISSUE
 | `get_announcements_by_tag(tag, start, limit)` | Filter by view tag |
 | `get_announcement_count()` | Total announcement count |
 
-**Withdraw message format** (must match byte-for-byte between Rust and TypeScript):
+**Withdraw message format** (must match byte-for-byte between Rust and TypeScript) — a fixed 278-byte preimage:
 ```
-SHA256(stealth_pk(32) || token_strkey(56) || amount_be(16) || dest_strkey(56)
-       || nonce_be(8) || contract_strkey(56) || network_id(32))
+SHA256(domain_tag(22) || stealth_pk(32) || token_strkey(56) || amount_be(16)
+       || dest_strkey(56) || nonce_be(8) || contract_strkey(56) || network_id(32))
 ```
-The trailing contract address and 32-byte network id (SHA-256 of the network passphrase,
-= `env.ledger().network_id()` on-chain) bind the signature to a single deployment + network,
-preventing cross-deployment / cross-network signature replay.
+The leading 22-byte ASCII domain tag `SHADE-POOL-WITHDRAW-V1` (SH-3) separates a withdraw
+preimage from any other message a stealth key might sign. The trailing contract address and
+32-byte network id (SHA-256 of the network passphrase, = `env.ledger().network_id()` on-chain)
+bind the signature to a single deployment + network, preventing cross-deployment /
+cross-network signature replay.
 
 ## Relayer
 
@@ -202,11 +200,16 @@ POST /relay           # Submit XDR for fee-bump + broadcast
 
 ```bash
 npm run build                    # Build all TS packages
-npm run test                     # Run all TS tests (147 tests)
-cd contracts && cargo test       # Run Rust contract tests (10 tests)
-docker compose up -d             # Start local Stellar network
-bash demo.sh                     # Full end-to-end demo
+npm run test                     # Run all TS tests
+cd contracts && cargo test       # Run Rust contract tests
+
+# Generate + fund a testnet account, then deploy the contract to testnet
+stellar keys generate deployer --network testnet
+stellar keys fund deployer --network testnet
+bash contracts/deploy.sh --network testnet --source deployer
 ```
+
+The worked testnet smoke flow is in [docs/RESULTS-testnet-smoke.md](docs/RESULTS-testnet-smoke.md).
 
 ## Privacy Model
 
@@ -228,7 +231,7 @@ Stealth addresses hide the **identity** of the recipient, not the **flow** of fu
 ## Known Limitations
 
 - **Announcement reads must be paged:** Each announcement is its own keyed entry (`DataKey::Announcement(u64)`), so `deposit` is O(1) and storage has no `Vec` size ceiling. A single `get_announcements(start, limit)` response is still bounded by Soroban's return-size limit, so clients must page — the SDK pages at 200/request, and the CLI's `balance`/`withdraw` reuse `scan`'s paged fetch, so all three page the full announcement set.
-- **Testnet-validated, not audited:** Day-to-day development uses the Docker local network, and the **pool** method has been validated end-to-end on Stellar **testnet** (2026-07-17): deposit → scan → balance → direct withdraw → relayer fee-bumped withdraw, for both native XLM and a classic-asset (USDC) SAC. No testnet contract id is pinned — testnet resets quarterly, so deploy your own. Mainnet remains out of scope until an external audit.
+- **Testnet-validated, not audited:** Testnet is the current test network (there is no local Docker network anymore), and the **pool** method has been validated end-to-end on Stellar **testnet** (2026-07-17): deposit → scan → balance → direct withdraw → relayer fee-bumped withdraw, for both native XLM and a classic-asset (USDC) SAC. No testnet contract id is pinned — testnet resets quarterly, so deploy your own. Mainnet ("public") is a post-audit addition, out of scope until an external audit lands.
 - **Account-method discovery doesn't scale on public networks:** the account method's scan (and `balance`) walk the global Horizon transaction feed, so a cold scan for a fresh recipient is impractical on testnet/mainnet-sized histories. A Horizon indexer is the roadmap fix.
 - **No BIP-32/44:** HD derivation uses domain-separated SHA-256, not standard BIP-32 paths (those use secp256k1).
 - **No view key rotation:** Shared view keys cannot be revoked. Generate new keys to stop a viewer from seeing future payments.

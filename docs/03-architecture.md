@@ -108,10 +108,11 @@ Two different mechanisms, deliberately:
 
 ### The withdraw message
 
-The signed message must be byte-identical between Rust and TypeScript:
+The signed message must be byte-identical between Rust and TypeScript — a fixed **278-byte** preimage:
 
 ```text
-SHA256( stealth_pk(32)
+SHA256( domain_tag(22)          ‖ "SHADE-POOL-WITHDRAW-V1" ASCII
+      ‖ stealth_pk(32)
       ‖ token_strkey_ascii(56)
       ‖ amount_be_i128(16)
       ‖ dest_strkey_ascii(56)
@@ -120,7 +121,7 @@ SHA256( stealth_pk(32)
       ‖ network_id(32) )
 ```
 
-The trailing **contract address** and **network id** (= `SHA-256(network passphrase)`, matching the on-chain `env.ledger().network_id()`) bind the signature to a single deployment on a single network, preventing cross-deployment and cross-network replay.
+The leading 22-byte ASCII **domain tag** `SHADE-POOL-WITHDRAW-V1` (SH-3) separates a withdraw preimage from any other message a stealth key might sign. The trailing **contract address** and **network id** (= `SHA-256(network passphrase)`, matching the on-chain `env.ledger().network_id()`) bind the signature to a single deployment on a single network, preventing cross-deployment and cross-network replay.
 
 > **For developers.** Rust: `build_withdraw_message` in `contracts/registry/src/lib.rs`. TypeScript: `buildWithdrawMessage` in `packages/sdk/src/soroban.ts` (with 56-byte StrKey length assertions). A contract test (`test_withdraw_message_binds_contract_and_network`) proves a signature valid on deployment A is rejected on deployment B.
 

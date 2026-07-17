@@ -15,9 +15,10 @@ npm install @shade/sdk
 import { StealthClient } from '@shade/sdk';
 
 // `contractId` is REQUIRED whenever the pool method is enabled (mandatory on testnet
-// — the constructor throws ContractIdRequiredError otherwise).
+// — there is no built-in default, and the constructor throws ContractIdRequiredError
+// otherwise).
 const client = new StealthClient({
-  network: 'local',
+  network: 'testnet',
   contractId: 'CXXX...',
   methods: ['pool', 'account'],
   relayer: 'http://localhost:3000', // optional
@@ -141,12 +142,16 @@ The CLI stays secret-based (no Freighter in the terminal).
 
 ## Two fund-safety footguns
 
-- **The raw-scalar rule.** `recoverStealthPrivateKey` returns a **raw ed25519
-  scalar**, not a seed. It must be signed with `signWithStealthKey` — **never**
-  feed it to `Keypair.fromRawEd25519Seed()` (or any seed-based API), which
-  hashes it into a *different* key: the contract rejects the signature and the
-  funds become **permanently unwithdrawable**. `client.claim()` does the signing
-  correctly for you.
+- **The raw-scalar rule.** `recoverStealthPrivateKey` returns a **`StealthScalar`
+  wrapper** around the raw ed25519 scalar (not a seed). Sign directly on it —
+  `key.sign(message)` — verify with `key.publicKey()`, and `key.zeroize()` when
+  done. Because the wrapper is **not** a `Uint8Array`,
+  `Keypair.fromRawEd25519Seed(key)` is now a **compile error**, so the old
+  footgun — feeding the raw scalar to a seed-based API, which hashes it into a
+  *different* key and makes the funds **permanently unwithdrawable** — is gone.
+  The deprecated `recoverStealthPrivateKeyBytes()` (and `dangerouslyToRawBytes()`
+  on the wrapper) still return the old raw bytes for interop, carrying the same
+  seed-API warning. `client.claim()` does the signing correctly for you.
 - **Two types named `StealthKeys`.** `@shade/crypto` and `@shade/sdk` both
   export a type named `StealthKeys` with **different shapes**: crypto's holds
   raw `Uint8Array` private keys plus a nested `metaAddress` object; the SDK's

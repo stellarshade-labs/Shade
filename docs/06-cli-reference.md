@@ -23,7 +23,7 @@ This page documents every command's real arguments and flags.
 
 **Keystore path** resolves as: `--keystore <path>` → `$SHADE_KEYSTORE` → `~/.shade-keys.json`.
 
-**Networks:** `--network local` (default) or `--network testnet`. These are the **only** accepted values — anything else, notably `mainnet`, is rejected with an error (the contracts are unaudited, so mainnet is deliberately unsupported).
+**Networks:** `--network testnet` is the default and the **only** accepted value today — anything else, notably the removed `local` and the unaudited `mainnet`, is rejected with an error. Mainnet ("public") is a forward-looking, post-audit addition.
 
 ---
 
@@ -84,7 +84,7 @@ This is the safe answer to "I lost my meta-address" — as opposed to re-running
 Send to a stealth address derived from a meta-address.
 
 ```bash
-shade send <meta-address> <amount> --method auto --network local
+shade send <meta-address> <amount> --method auto --network testnet
 shade send <meta-address> 100 --method pool
 shade send <meta-address> 200 --method account --asset USDC:GISSUER
 ```
@@ -97,7 +97,7 @@ shade send <meta-address> 200 --method account --asset USDC:GISSUER
 | Flag | Description |
 |---|---|
 | `--method <method>` | **Required.** `pool` \| `account` \| `auto` |
-| `--network <network>` | Network to use (default: `local`) |
+| `--network <network>` | Network to use (default: `testnet`; only `testnet` accepted) |
 | `--from <secret>` | Sender secret key (prefer `$SHADE_FROM_SECRET` or the prompt) |
 | `--asset <asset>` | Asset to send (default: native XLM, or `CODE:ISSUER`) |
 | `--relay <url>` | Relayer URL (account-method fee-bump) |
@@ -114,13 +114,13 @@ The amount is parsed to exact stroops **before** any float math, so more than 7 
 Find payments sent to you, across **both** the pool and account methods.
 
 ```bash
-shade scan --network local
+shade scan --network testnet
 shade scan --full-rescan
 ```
 
 | Flag | Description |
 |---|---|
-| `--network <network>` | Network to use (default: `local`) |
+| `--network <network>` | Network to use (default: `testnet`; only `testnet` accepted) |
 | `--keystore <path>` | Keystore file path |
 | `--password <password>` | Keystore password (prompts on stderr if omitted for an encrypted keystore) |
 | `--since-ledger <ledger>` | Only scan announcements since this ledger |
@@ -136,12 +136,12 @@ shade scan --full-rescan
 Show your total balance across all discovered stealth payments.
 
 ```bash
-shade balance --network local
+shade balance --network testnet
 ```
 
 | Flag | Description |
 |---|---|
-| `--network <network>` | Network to use (default: `local`) |
+| `--network <network>` | Network to use (default: `testnet`; only `testnet` accepted) |
 | `--keystore <path>` | Keystore file path |
 | `--password <password>` | Keystore password (prompts if omitted) |
 
@@ -168,7 +168,7 @@ shade claim <stealth-addr> <destination> --sponsored --funding-account G...  # t
 
 | Flag | Description |
 |---|---|
-| `--network <network>` | Network to use (default: `local`) |
+| `--network <network>` | Network to use (default: `testnet`; only `testnet` accepted) |
 | `--keystore <path>` | Keystore file path |
 | `--password <password>` | Keystore password (prompts if omitted) |
 | `--merge` | Sweep the whole account via `AccountMerge` (account method) |
@@ -200,7 +200,7 @@ shade withdraw <stealth-addr> <destination> --fee-payer S... --asset USDC:GISSUE
 
 | Flag | Description |
 |---|---|
-| `--network <network>` | Network to use (default: `local`) |
+| `--network <network>` | Network to use (default: `testnet`; only `testnet` accepted) |
 | `--keystore <path>` | Keystore file path |
 | `--password <password>` | Keystore password (prompts if omitted) |
 | `--amount <amount>` | Amount to withdraw (default: full balance) |
