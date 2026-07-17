@@ -13,6 +13,7 @@ import { StrKey, nativeToScVal } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { loadKeystoreOrExit, resolveKeystorePath } from '../utils/keystore.js';
 import { assertNetwork } from '../utils/network.js';
+import { resolveIndexer } from '../utils/indexer.js';
 import { getContractBalance } from '../utils/soroban.js';
 import {
   getContractAddress,
@@ -47,6 +48,7 @@ async function scanAccountMethod(
   network: NetworkName,
   keys: StealthKeys,
   fullRescan: boolean,
+  indexerUrl?: string,
   log?: VerboseLog,
 ): Promise<AccountScanRow[]> {
   if (fullRescan) {
@@ -56,12 +58,19 @@ async function scanAccountMethod(
   }
   const cursor = loadHorizonCursor(network);
   log?.(`  account: resuming from cursor ${cursor ?? '(none — start of history)'}`);
+  if (indexerUrl) {
+    log?.(`  account: using indexer ${indexerUrl}`);
+  }
 
   const started = Date.now();
-  const client = new StealthClient({ network, methods: ['account'] });
+  const client = new StealthClient({ network, methods: ['account'], indexerUrl });
   const result = await client.scanWithCursor(keys, {
     methods: ['account'],
     cursor: { account: cursor },
+    // The cursor was cleared above, so this cold scan must also walk the
+    // pre-indexer Horizon history instead of fast-starting at the indexer's
+    // first covered position (no-op without an indexer).
+    exhaustive: fullRescan,
   });
   log?.(
     `  account: found ${result.payments.length} payment(s) in ${Date.now() - started}ms`,
@@ -217,6 +226,7 @@ export const scanCommand = new Command('scan')
   .option('--password <password>', 'Keystore password (prompts on stderr if omitted for an encrypted keystore)')
   .option('--since-ledger <ledger>', 'Only scan announcements since this ledger', parseInt)
   .option('--full-rescan', 'Reset the account-method Horizon cursor and rescan from genesis')
+  .option('--indexer <url>', 'Announcement indexer URL for fast account-method discovery — falls back to SHADE_INDEXER; Horizon remains the source of truth')
   .option('--verbose', 'Show detailed scan progress')
   .action(async (options) => {
     try {
@@ -303,6 +313,7 @@ export const scanCommand = new Command('scan')
           network,
           keys,
           !!options.fullRescan,
+          resolveIndexer(options.indexer),
           vlog,
         );
         for (const row of accountRows) {

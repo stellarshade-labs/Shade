@@ -14,6 +14,7 @@ import {
 } from '@shade/sdk';
 import { loadKeystoreOrExit, resolveKeystorePath } from '../utils/keystore.js';
 import { assertNetwork } from '../utils/network.js';
+import { resolveIndexer } from '../utils/indexer.js';
 import {
   getContractAddress,
   loadHorizonCursor,
@@ -62,8 +63,9 @@ function isNativeToken(token: string): boolean {
 export async function collectAccountBalances(
   network: NetworkName,
   keys: StealthKeys,
+  indexerUrl?: string,
 ): Promise<AccountBalanceRow[]> {
-  const client = new StealthClient({ network, methods: ['account'] });
+  const client = new StealthClient({ network, methods: ['account'], indexerUrl });
   const cursor = loadHorizonCursor(network);
   const { payments, cursor: advanced } = await client.balanceWithCursor(keys, {
     cursor: { account: cursor },
@@ -165,6 +167,7 @@ export const balanceCommand = new Command('balance')
   .option('--network <network>', 'Network to use', 'testnet')
   .option('--keystore <path>', 'Keystore file path (defaults to $SHADE_KEYSTORE or ~/.shade-keys.json)')
   .option('--password <password>', 'Keystore password (prompts on stderr if omitted for an encrypted keystore)')
+  .option('--indexer <url>', 'Announcement indexer URL for fast account-method discovery — falls back to SHADE_INDEXER; Horizon remains the source of truth')
   .action(async (options) => {
     try {
       const network = assertNetwork(options.network);
@@ -246,7 +249,11 @@ export const balanceCommand = new Command('balance')
           viewPubKey: keystore.viewPublicKey,
           viewPrivKey: keystore.viewPrivateKey,
         };
-        const accountRows = await collectAccountBalances(network, keys);
+        const accountRows = await collectAccountBalances(
+          network,
+          keys,
+          resolveIndexer(options.indexer),
+        );
         for (const row of accountRows) {
           const label = labelForToken(row.token, networkPassphrase);
           const prev = tokenBalances.get(label) || 0n;
