@@ -118,7 +118,7 @@ describe('client.balance() drops merged native accounts', () => {
       return { ok: false, status: 404, json: async () => ({}) };
     });
 
-    const client = new StealthClient({ network: 'local', methods: ['account'] });
+    const client = new StealthClient({ network: 'testnet', methods: ['account'] });
     const balances = await client.balance(keys);
 
     const addresses = balances.map((b) => b.stealthAddress);

@@ -5,7 +5,6 @@ import {
 } from '@shade/crypto';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { getNetworkConfig } from './soroban.js';
-import { numberToStroops } from './stroops.js';
 import { stealthKeysFromRaw } from './wallet.js';
 import { HorizonClient } from './horizon.js';
 import { PoolAdapter } from './methods/pool.js';
@@ -35,17 +34,6 @@ import type {
   ClaimReceipt,
 } from './types.js';
 
-/** Default contract addresses per network. */
-const DEFAULT_CONTRACTS: Record<string, string> = {
-  local: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGABAX',
-};
-
-/** Default Horizon endpoints per network. */
-const DEFAULT_HORIZON: Record<string, string> = {
-  local: 'http://localhost:8000',
-  testnet: 'https://horizon-testnet.stellar.org',
-};
-
 /**
  * High-level client for stealth payments on Stellar.
  *
@@ -56,7 +44,8 @@ const DEFAULT_HORIZON: Record<string, string> = {
  * @example
  * ```typescript
  * const client = new StealthClient({
- *   network: 'local',
+ *   network: 'testnet',
+ *   contractId: 'C...', // your deployed pool contract (required for 'pool')
  *   methods: ['pool', 'account'],
  * });
  *
@@ -78,7 +67,7 @@ export class StealthClient {
   private readonly relayer?: string;
 
   constructor(config: ClientConfig) {
-    this.contractId = config.contractId || DEFAULT_CONTRACTS[config.network] || '';
+    this.contractId = config.contractId || '';
     const netConfig = getNetworkConfig(config.network);
     this.networkPassphrase = netConfig.networkPassphrase;
     this.server = netConfig.server;
@@ -87,17 +76,16 @@ export class StealthClient {
       ? config.methods
       : ['pool'];
 
-    // The pool method cannot function without a contract id. There is only a
-    // built-in default for `local`, so a `testnet` client with pool enabled and
-    // no explicit contractId must fail loudly here instead of surfacing an
-    // opaque Soroban error on the first pool call.
+    // The pool method cannot function without a contract id, and there are no
+    // built-in defaults (pool deployments are per-operator), so a client with
+    // pool enabled and no explicit contractId must fail loudly here instead of
+    // surfacing an opaque Soroban error on the first pool call.
     if (this.enabledMethods.includes('pool') && !this.contractId) {
       throw new ContractIdRequiredError(config.network);
     }
 
-    const horizonUrl =
-      config.horizonUrl || DEFAULT_HORIZON[config.network] || DEFAULT_HORIZON.local;
-    const horizon = new HorizonClient(horizonUrl!);
+    const horizonUrl = config.horizonUrl || netConfig.horizonUrl;
+    const horizon = new HorizonClient(horizonUrl);
 
     this.adapters = new Map();
     for (const method of this.enabledMethods) {
@@ -270,10 +258,7 @@ export class StealthClient {
       stealthAddress: p.stealthAddress,
       token: p.token,
       amount: p.amount,
-      // Every built-in adapter sets amountStroops; the fallback only exists for
-      // the type system (Payment allows externally built rows to omit it) and
-      // converts the display amount exactly rather than guessing.
-      amountStroops: p.amountStroops ?? numberToStroops(p.amount).toString(),
+      amountStroops: p.amountStroops,
     }));
   }
 

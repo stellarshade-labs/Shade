@@ -1,5 +1,6 @@
 import { Transaction } from '@stellar/stellar-sdk';
 import type { FetchLike } from './horizon.js';
+import { waitForTransaction, type TransactionStatusSource } from './soroban.js';
 
 /**
  * Signs a canonical challenge message with the funding account's ed25519 key,
@@ -62,6 +63,15 @@ export interface RelayOpts {
    * inner tx on a credit-gated `/relay`; omit for the free/default path.
    */
   networkPassphrase?: string;
+  /**
+   * Do not trust the relayer's returned txHash at face value: poll it to a
+   * terminal on-chain status before resolving (SDK-TXHASH-TRUST). Requires an
+   * `rpcServer` in the {@link RelayerClient} constructor opts. Throws
+   * `TransactionTimeoutError` (carrying the txHash) if the poll window closes
+   * while the tx is still unseen/pending, or an error if it FAILED on-chain.
+   * Default `false`: resolve as soon as the relayer responds, exactly as before.
+   */
+  confirm?: boolean;
 }
 
 /** Options for {@link RelayerClient.sponsor}. */
@@ -124,23 +134,51 @@ export class RelayerClient {
   private readonly fetchFn: FetchLike;
   private readonly fundingSigner?: FundingSigner;
   private readonly fundingAccount?: string;
+  private readonly rpcServer?: TransactionStatusSource;
 
   /**
    * @param baseUrl - Relayer root URL. A trailing `/relay` is stripped so a
    *   bare relay URL (back-compat) resolves to the service root.
    * @param fetchFn - Injectable fetch (defaults to the global `fetch`).
    * @param opts - Optional default `fundingAccount` + `fundingSigner` used to
-   *   authenticate fee-spending requests against a credit-gated relayer.
+   *   authenticate fee-spending requests against a credit-gated relayer, and
+   *   an optional `rpcServer` (an `rpc.Server`, or any object with its
+   *   `getTransaction`) used to confirm-poll returned tx hashes when a call
+   *   sets `confirm: true`.
    */
   constructor(
     baseUrl: string,
     fetchFn?: FetchLike,
-    opts?: { fundingAccount?: string; fundingSigner?: FundingSigner },
+    opts?: {
+      fundingAccount?: string;
+      fundingSigner?: FundingSigner;
+      rpcServer?: TransactionStatusSource;
+    },
   ) {
     this.baseUrl = baseUrl.replace(/\/relay\/?$/, '').replace(/\/$/, '');
     this.fetchFn = fetchFn ?? (globalThis.fetch as unknown as FetchLike);
     this.fundingAccount = opts?.fundingAccount;
     this.fundingSigner = opts?.fundingSigner;
+    this.rpcServer = opts?.rpcServer;
+  }
+
+  /**
+   * Poll a relayer-returned txHash until it lands on-chain (SDK-TXHASH-TRUST).
+   * A relayer could return a fabricated or failed hash with a 200; polling to a
+   * terminal status is what turns "the relayer said so" into "the chain says
+   * so". Deliberately loud when no poll handle exists — silently skipping the
+   * confirmation a caller asked for would defeat its purpose. On timeout the
+   * underlying `waitForTransaction` throws `TransactionTimeoutError` carrying
+   * the txHash, so the caller can keep polling instead of blindly resubmitting.
+   */
+  private async confirmOnChain(txHash: string): Promise<void> {
+    if (!this.rpcServer) {
+      throw new Error(
+        'confirm: true requires an RPC handle: pass opts.rpcServer (an rpc.Server ' +
+          'for the same network) to the RelayerClient constructor.',
+      );
+    }
+    await waitForTransaction(this.rpcServer, txHash);
   }
 
   /**
@@ -205,7 +243,8 @@ export class RelayerClient {
    * Fee-bump and submit a signed transaction envelope.
    *
    * @param xdr - base64 signed transaction envelope.
-   * @param opts - Optional funding account to debit the fee against.
+   * @param opts - Optional funding account to debit the fee against, and
+   *   `confirm` to poll the returned hash to an on-chain terminal status.
    * @returns The submitted transaction hash.
    */
   async relay(xdr: string, opts?: RelayOpts): Promise<{ txHash: string }> {
@@ -224,11 +263,15 @@ export class RelayerClient {
       opts?.authAmount,
       innerTxHash,
     );
-    return this.post<{ txHash: string }>('/relay', {
+    const result = await this.post<{ txHash: string }>('/relay', {
       xdr,
       fundingAccount,
       ...(auth ?? {}),
     });
+    if (opts?.confirm) {
+      await this.confirmOnChain(result.txHash);
+    }
+    return result;
   }
 
   /**
@@ -276,6 +319,8 @@ export class RelayerClient {
    *
    * @param xdr - The stealth-co-signed transaction XDR.
    * @param args - The trusted claim inputs (and optional funding account).
+   *   `confirm: true` polls the returned hash to an on-chain terminal status
+   *   (requires `rpcServer` in the constructor opts).
    */
   async sponsorClaimSubmit(
     xdr: string,
@@ -289,6 +334,8 @@ export class RelayerClient {
       fundingSigner?: FundingSigner;
       /** Total (reserve + fee) the proof-of-control signature authorizes. */
       authAmount?: string;
+      /** Poll the returned txHash until it lands on-chain (see {@link RelayOpts.confirm}). */
+      confirm?: boolean;
     },
   ): Promise<{ txHash: string }> {
     const fundingAccount = args.fundingAccount ?? this.fundingAccount;
@@ -298,7 +345,7 @@ export class RelayerClient {
       args.fundingSigner,
       args.authAmount,
     );
-    return this.post<{ txHash: string }>('/sponsor-claim/submit', {
+    const result = await this.post<{ txHash: string }>('/sponsor-claim/submit', {
       xdr,
       stealthAddress: args.stealthAddress,
       asset: args.asset,
@@ -308,6 +355,10 @@ export class RelayerClient {
       fundingAccount,
       ...(auth ?? {}),
     });
+    if (args.confirm) {
+      await this.confirmOnChain(result.txHash);
+    }
+    return result;
   }
 
   /**

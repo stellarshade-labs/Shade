@@ -18,7 +18,7 @@ import { AccountAdapter } from '../src/methods/account.js';
 import { HorizonClient, type FetchLike } from '../src/horizon.js';
 import type { StealthKeys, Payment } from '../src/types.js';
 
-const NET = Networks.STANDALONE;
+const NET = Networks.TESTNET;
 const ISSUER = Keypair.random().publicKey();
 const ASSET = `USDC:${ISSUER}`;
 const DEST = Keypair.random().publicKey();
@@ -66,7 +66,7 @@ function makeCapturingHorizon(opts: {
     }
     return { ok: false, status: 404, json: async () => ({}) };
   };
-  return new HorizonClient('http://localhost:8000', fetchFn);
+  return new HorizonClient('https://horizon.mock', fetchFn);
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -209,6 +209,7 @@ describe('account claim: fundingAccount threading', () => {
       asset: ASSET,
       claimableBalanceId: CB_ID,
       amount: 100,
+      amountStroops: '1000000000',
       method: 'account',
     };
 

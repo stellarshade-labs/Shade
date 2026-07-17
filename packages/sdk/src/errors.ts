@@ -354,18 +354,44 @@ export class TransactionTimeoutError extends ShadeError {
 
 /**
  * Thrown by the {@link StealthClient} constructor when a pool-capable method is
- * enabled but no contract id could be resolved for the target network (there is
- * no built-in default outside `local`). Failing here — rather than deep inside a
+ * enabled but no contract id was supplied (there are no built-in defaults —
+ * pool deployments are per-operator). Failing here — rather than deep inside a
  * later Soroban call with an opaque error — makes the misconfiguration obvious:
- * pass `contractId` explicitly for `testnet`.
+ * pass `contractId` explicitly.
  */
 export class ContractIdRequiredError extends ShadeError {
   constructor(network: string) {
     super(
       'contract_id_required',
       `contractId is required for network '${network}'. Deploy the pool contract ` +
-        'and pass its C-address as ClientConfig.contractId (only `local` has a built-in default).',
+        'and pass its C-address as ClientConfig.contractId (there is no built-in default).',
     );
     this.name = 'ContractIdRequiredError';
+  }
+}
+
+/**
+ * Thrown by `getNetworkConfig` (and therefore the {@link StealthClient}
+ * constructor) when the requested network name is not in the `NETWORKS` table.
+ * The type system already restricts `network` to the supported names; this is
+ * the runtime guard for plain-JS callers and stale configs. The message lists
+ * the currently supported networks, so it stays accurate as new networks
+ * (e.g. `'public'` after the external audit) are added to the table.
+ */
+export class UnsupportedNetworkError extends ShadeError {
+  /** The unknown network name that was requested. */
+  readonly network: string;
+  /** The network names this SDK build supports. */
+  readonly supported: string[];
+  constructor(network: string, supported: string[]) {
+    super(
+      'unsupported_network',
+      `Unsupported network '${network}'. Supported: ${supported.join(', ')}. ` +
+        '(The local network has been removed — dev/test runs on testnet; ' +
+        'mainnet arrives after the external audit.)',
+    );
+    this.name = 'UnsupportedNetworkError';
+    this.network = network;
+    this.supported = supported;
   }
 }

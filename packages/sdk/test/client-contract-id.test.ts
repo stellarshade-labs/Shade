@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { StrKey } from '@stellar/stellar-sdk';
 import { StealthClient } from '../src/client.js';
-import { ContractIdRequiredError } from '../src/errors.js';
+import { ContractIdRequiredError, UnsupportedNetworkError } from '../src/errors.js';
 
 describe('StealthClient contractId validation', () => {
   it("throws for network 'testnet' with pool enabled and no contractId", () => {
@@ -27,14 +28,20 @@ describe('StealthClient contractId validation', () => {
         new StealthClient({
           network: 'testnet',
           methods: ['pool'],
-          contractId: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGABAX',
+          contractId: StrKey.encodeContract(Buffer.alloc(32)),
         }),
     ).not.toThrow();
   });
 
-  it('does NOT throw for local (built-in default contractId)', () => {
+  it("rejects the removed 'local' network with UnsupportedNetworkError (JS-caller guard)", () => {
+    // The type system already forbids this; the cast simulates a plain-JS
+    // caller (or a stale persisted config) still passing 'local'.
     expect(
-      () => new StealthClient({ network: 'local', methods: ['pool'] }),
-    ).not.toThrow();
+      () =>
+        new StealthClient({
+          network: 'local' as unknown as 'testnet',
+          methods: ['account'],
+        }),
+    ).toThrow(UnsupportedNetworkError);
   });
 });

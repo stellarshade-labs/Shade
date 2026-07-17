@@ -22,7 +22,7 @@ import {
 import { PoolAdapter } from '../src/methods/pool.js';
 import type { StealthKeys, Payment } from '../src/types.js';
 
-const NET = Networks.STANDALONE;
+const NET = Networks.TESTNET;
 const DEST = Keypair.random().publicKey();
 const BALANCE_STROOPS = 50_000_000n; // 5 XLM in the pool
 
@@ -70,6 +70,8 @@ function makeServer(opts: {
   stealth: { stealthPubKey: Uint8Array; ephemeralPubKey: Uint8Array; viewTag: number };
   tokenAddress: string;
   directSends: string[];
+  /** When set, records every getTransaction(hash) poll (confirm path). */
+  getTxCalls?: string[];
 }): rpc.Server {
   const announcement = xdr.ScVal.scvMap([
     new xdr.ScMapEntry({
@@ -127,7 +129,8 @@ function makeServer(opts: {
       opts.directSends.push(tx.toEnvelope().toXDR('base64'));
       return { status: 'SUCCESS', hash: 'DIRECT_HASH' };
     },
-    async getTransaction(): Promise<{ status: string }> {
+    async getTransaction(hash: string): Promise<{ status: string }> {
+      opts.getTxCalls?.push(hash);
       return { status: 'SUCCESS' };
     },
   } as unknown as rpc.Server;
@@ -166,6 +169,7 @@ describe('pool relayed withdraw goes through RelayerClient (SDK-POOLRELAY-AUTH)'
       ephemeralPubKey: Buffer.from(stealth.ephemeralPubKey).toString('hex'),
       token: tokenAddress,
       amount: 5,
+      amountStroops: BALANCE_STROOPS.toString(),
       method: 'pool',
     };
     const FUNDING = Keypair.random().publicKey();
@@ -218,6 +222,57 @@ describe('pool relayed withdraw goes through RelayerClient (SDK-POOLRELAY-AUTH)'
     expect(relayCalls[0]!.url).toBe('http://relayer.test/relay');
     // No fundingAccount supplied -> none serialized (free relayer path intact).
     expect('fundingAccount' in relayCalls[0]!.body).toBe(false);
+  });
+
+  it('confirm: true polls the relayer-returned hash on the RPC before returning (SDK-TXHASH-TRUST)', async () => {
+    vi.useFakeTimers();
+    try {
+      const { keys, stealth } = makeFixture();
+      const tokenAddress = Asset.native().contractId(NET);
+      const directSends: string[] = [];
+      const getTxCalls: string[] = [];
+      const server = makeServer({ stealth, tokenAddress, directSends, getTxCalls });
+      const adapter = new PoolAdapter(makeContractId(), NET, server);
+      const relayCalls = stubRelayerFetch();
+
+      const pending = adapter.withdraw(stealth.stealthAddress, DEST, {
+        keys,
+        feePayer: Keypair.random().secret(),
+        relay: 'http://relayer.test',
+        confirm: true,
+      });
+      // The confirm poll sleeps 1s before each getTransaction probe.
+      await vi.advanceTimersByTimeAsync(1_000);
+      const receipt = await pending;
+
+      expect(receipt.txHash).toBe('RELAYED_HASH');
+      expect(relayCalls).toHaveLength(1);
+      // The RELAYER'S hash was verified against the RPC — not trusted blindly.
+      expect(getTxCalls).toEqual(['RELAYED_HASH']);
+      expect(directSends).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('confirm off (default): the relayer response is returned without any RPC poll', async () => {
+    const { keys, stealth } = makeFixture();
+    const tokenAddress = Asset.native().contractId(NET);
+    const directSends: string[] = [];
+    const getTxCalls: string[] = [];
+    const server = makeServer({ stealth, tokenAddress, directSends, getTxCalls });
+    const adapter = new PoolAdapter(makeContractId(), NET, server);
+    stubRelayerFetch();
+
+    const receipt = await adapter.withdraw(stealth.stealthAddress, DEST, {
+      keys,
+      feePayer: Keypair.random().secret(),
+      relay: 'http://relayer.test',
+    });
+
+    expect(receipt.txHash).toBe('RELAYED_HASH');
+    // Exactly today's behavior: no confirmation polling unless asked for.
+    expect(getTxCalls).toHaveLength(0);
   });
 
   it('non-relay direct path is unchanged: submits to the RPC, never fetches', async () => {

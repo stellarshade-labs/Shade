@@ -18,6 +18,7 @@ export type { StealthKeys as RawStealthKeys } from '@shade/crypto';
 
 export {
   ShadeError,
+  UnsupportedNetworkError,
   MethodRequiredError,
   MethodNotEnabledError,
   MethodNotAvailableError,
@@ -46,7 +47,21 @@ export {
   formatStroops,
 } from './stroops.js';
 
-export { labelForToken, resolveTokenAddress } from './soroban.js';
+export {
+  NETWORKS,
+  getNetworkConfig,
+  labelForToken,
+  resolveTokenAddress,
+  createSimulationTx,
+  simulateReadOnly,
+  waitForTransaction,
+} from './soroban.js';
+export type {
+  NetworkName,
+  NetworkDefinition,
+  NetworkConfig,
+  TransactionStatusSource,
+} from './soroban.js';
 
 export { HorizonClient } from './horizon.js';
 export type {

@@ -65,7 +65,7 @@ describe('HorizonClient.getClaimableBalances paging (SDK-CBPAGE)', () => {
       };
     };
 
-    const horizon = new HorizonClient('http://localhost:8000', fetchFn);
+    const horizon = new HorizonClient('https://horizon.mock', fetchFn);
     const all = await horizon.getClaimableBalances(CLAIMANT);
 
     // Every record from every page, in order — the genuine one is NOT lost.
@@ -97,7 +97,7 @@ describe('HorizonClient.getClaimableBalances paging (SDK-CBPAGE)', () => {
             _links: {
               next: {
                 href:
-                  'http://localhost:8000/claimable_balances' +
+                  'https://horizon.mock/claimable_balances' +
                   `?claimant=${CLAIMANT}&cursor=NEXT123&limit=200`,
               },
             },
@@ -112,7 +112,7 @@ describe('HorizonClient.getClaimableBalances paging (SDK-CBPAGE)', () => {
       };
     };
 
-    const horizon = new HorizonClient('http://localhost:8000', fetchFn);
+    const horizon = new HorizonClient('https://horizon.mock', fetchFn);
     const all = await horizon.getClaimableBalances(CLAIMANT);
 
     expect(all).toHaveLength(PAGE + 1);
@@ -133,7 +133,7 @@ describe('HorizonClient.getClaimableBalances paging (SDK-CBPAGE)', () => {
       };
     };
 
-    const horizon = new HorizonClient('http://localhost:8000', fetchFn);
+    const horizon = new HorizonClient('https://horizon.mock', fetchFn);
     const all = await horizon.getClaimableBalances(CLAIMANT);
 
     expect(all).toHaveLength(PAGE);
@@ -154,7 +154,7 @@ describe('HorizonClient.getClaimableBalances paging (SDK-CBPAGE)', () => {
       };
     };
 
-    const horizon = new HorizonClient('http://localhost:8000', fetchFn);
+    const horizon = new HorizonClient('https://horizon.mock', fetchFn);
     const all = await horizon.getClaimableBalances(CLAIMANT);
 
     // 50-page defensive cap (10,000 records) — bounded, not infinite.
@@ -256,8 +256,8 @@ describe('account scan: genuine CB pushed past page 1 by claimant spam', () => {
       return { ok: false, status: 404, json: async () => ({}) };
     };
 
-    const horizon = new HorizonClient('http://localhost:8000', fetchFn);
-    const adapter = new AccountAdapter(Networks.STANDALONE, horizon);
+    const horizon = new HorizonClient('https://horizon.mock', fetchFn);
+    const adapter = new AccountAdapter(Networks.TESTNET, horizon);
     const { payments } = await adapter.scan(keys);
 
     expect(payments).toHaveLength(1);

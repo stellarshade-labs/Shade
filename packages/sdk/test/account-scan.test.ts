@@ -155,10 +155,10 @@ describe('account scan', () => {
     };
 
     const horizon = new HorizonClient(
-      'http://localhost:8000',
+      'https://horizon.mock',
       makeStubFetch({ transactions, operationsByTx }),
     );
-    const adapter = new AccountAdapter(Networks.STANDALONE, horizon);
+    const adapter = new AccountAdapter(Networks.TESTNET, horizon);
 
     const { payments, cursor } = await adapter.scan(keys);
 
@@ -202,10 +202,10 @@ describe('account scan', () => {
     };
 
     const horizon = new HorizonClient(
-      'http://localhost:8000',
+      'https://horizon.mock',
       makeStubFetch({ transactions, operationsByTx }),
     );
-    const adapter = new AccountAdapter(Networks.STANDALONE, horizon);
+    const adapter = new AccountAdapter(Networks.TESTNET, horizon);
     const { payments } = await adapter.scan(keys);
 
     expect(payments).toHaveLength(1);
@@ -265,10 +265,10 @@ describe('account scan', () => {
     };
 
     const horizon = new HorizonClient(
-      'http://localhost:8000',
+      'https://horizon.mock',
       makeStubFetch({ transactions, operationsByTx, claimableBalancesByClaimant }),
     );
-    const adapter = new AccountAdapter(Networks.STANDALONE, horizon);
+    const adapter = new AccountAdapter(Networks.TESTNET, horizon);
     const { payments } = await adapter.scan(keys);
 
     // The funding create_account (native 1.5001) is suppressed; only the one
@@ -344,10 +344,10 @@ describe('account scan', () => {
     };
 
     const horizon = new HorizonClient(
-      'http://localhost:8000',
+      'https://horizon.mock',
       makeStubFetch({ transactions, operationsByTx, claimableBalancesByClaimant }),
     );
-    const adapter = new AccountAdapter(Networks.STANDALONE, horizon);
+    const adapter = new AccountAdapter(Networks.TESTNET, horizon);
     const { payments } = await adapter.scan(keys);
 
     // Only the token claimable balance surfaces; the native funding leg is gone.
@@ -393,10 +393,10 @@ describe('account scan', () => {
     };
 
     const horizon = new HorizonClient(
-      'http://localhost:8000',
+      'https://horizon.mock',
       makeStubFetch({ transactions, operationsByTx }),
     );
-    const adapter = new AccountAdapter(Networks.STANDALONE, horizon);
+    const adapter = new AccountAdapter(Networks.TESTNET, horizon);
     const { payments } = await adapter.scan(keys);
 
     expect(payments).toHaveLength(1);
@@ -444,10 +444,10 @@ describe('account scan', () => {
     };
 
     const horizon = new HorizonClient(
-      'http://localhost:8000',
+      'https://horizon.mock',
       makeStubFetch({ transactions, operationsByTx, accountsByAddress }),
     );
-    const adapter = new AccountAdapter(Networks.STANDALONE, horizon);
+    const adapter = new AccountAdapter(Networks.TESTNET, horizon);
 
     // Without suppression the op amount surfaces (default hot path, no probe).
     const plain = await adapter.scan(keys);
@@ -494,10 +494,10 @@ describe('account scan', () => {
     // No accountsByAddress -> getAccount returns null (404). Suppression must
     // NOT drop the payment on an unknown/absent account: fall back to op amount.
     const horizon = new HorizonClient(
-      'http://localhost:8000',
+      'https://horizon.mock',
       makeStubFetch({ transactions, operationsByTx }),
     );
-    const adapter = new AccountAdapter(Networks.STANDALONE, horizon);
+    const adapter = new AccountAdapter(Networks.TESTNET, horizon);
 
     const { payments } = await adapter.scan(keys, undefined, {
       suppressClaimedNative: true,

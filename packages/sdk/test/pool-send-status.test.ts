@@ -20,7 +20,7 @@ import {
   TransactionTimeoutError,
 } from '../src/errors.js';
 
-const NET = Networks.STANDALONE;
+const NET = Networks.TESTNET;
 
 function makeMetaAddress(): string {
   const raw = generateMetaAddress();

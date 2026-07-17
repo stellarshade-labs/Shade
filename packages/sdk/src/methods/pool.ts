@@ -258,6 +258,14 @@ export class PoolAdapter implements DeliveryAdapter {
       feePayerAddress?: string;
       /** App funding account to debit against (credit-gated relayers). */
       fundingAccount?: string;
+      /**
+       * Relayed submissions only: poll the relayer-returned txHash until it is
+       * actually on-chain before returning (SDK-TXHASH-TRUST), surfacing a
+       * `TransactionTimeoutError` (with the hash) if it never lands. Default
+       * `false`: trust the relayer's response, exactly as before. The direct
+       * (non-relay) path already confirms via `resolveSendResult` regardless.
+       */
+      confirm?: boolean;
     },
   ): Promise<{ txHash: string; amount: number }> {
     if (!StrKey.isValidEd25519PublicKey(stealthAddress)) {
@@ -418,7 +426,11 @@ export class PoolAdapter implements DeliveryAdapter {
     // A hand-rolled bare `{xdr}` POST would make a credit-gated relayer reject
     // every pool withdrawal with 402 insufficient_credit. The RelayerClient
     // accepts both a service-root URL and a bare `.../relay` URL (back-compat).
-    const relayerClient = opts.relay ? new RelayerClient(opts.relay) : undefined;
+    // The adapter's own RPC server doubles as the confirm-poll handle so
+    // `confirm: true` verifies the relayer's txHash against the same network.
+    const relayerClient = opts.relay
+      ? new RelayerClient(opts.relay, undefined, { rpcServer: this.server })
+      : undefined;
     const submit = async (
       signed: StellarSdk.Transaction,
     ): Promise<string> => {
@@ -428,6 +440,7 @@ export class PoolAdapter implements DeliveryAdapter {
           {
             fundingAccount: opts.fundingAccount,
             networkPassphrase: this.networkPassphrase,
+            confirm: opts.confirm,
           },
         );
         return txHash;

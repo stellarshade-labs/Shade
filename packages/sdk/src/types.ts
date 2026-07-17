@@ -1,3 +1,5 @@
+import type { NetworkName } from './soroban.js';
+
 /**
  * A delivery method describes HOW a stealth payment reaches its recipient.
  * - `'pool'`  — deposit into the Soroban pool contract (default, private, any SAC token).
@@ -78,15 +80,15 @@ export interface Payment {
   amount: number;
   /**
    * Exact amount as a decimal `bigint` count of stroops (1e-7 units), serialized
-   * as a string. ALWAYS set by the SDK's scan adapters, alongside {@link amount},
-   * so callers that need exactness above ~9.007e8 XLM (where a float can no
-   * longer represent every stroop) can avoid the lossy `number`. Optional in the
-   * type only for payments constructed OUTSIDE the SDK (e.g. rehydrated from an
-   * older cache); set it whenever you build a `Payment` by hand — claims prefer
-   * it over the lossy `number`. The `number` field is retained for display and
-   * backwards compatibility.
+   * as a string. ALWAYS set alongside {@link amount}, so callers that need
+   * exactness above ~9.007e8 XLM (where a float can no longer represent every
+   * stroop) can avoid the lossy `number`. The SDK's scan adapters populate it on
+   * every payment; when building a `Payment` by hand (or rehydrating one from an
+   * older cache that predates this field), compute it from the exact on-chain
+   * amount — claims prefer it over the lossy `number`. The `number` field is
+   * retained for display and backwards compatibility.
    */
-  amountStroops?: string;
+  amountStroops: string;
   /** Which delivery method surfaced this payment */
   method: DeliveryMethod;
   /** Transaction hash that delivered the payment (when known) */
@@ -261,8 +263,8 @@ export interface ClaimReceipt {
 
 /** Client configuration. */
 export interface ClientConfig {
-  /** Network to connect to */
-  network: 'local' | 'testnet';
+  /** Network to connect to (a key of the SDK's `NETWORKS` table) */
+  network: NetworkName;
   /** Override the default contract ID for the stealth pool */
   contractId?: string;
   /** Override the Horizon REST endpoint (used by the account method) */

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Keypair } from '@stellar/stellar-sdk';
+import { Keypair, StrKey } from '@stellar/stellar-sdk';
 import { StealthClient } from '../src/client.js';
 import {
   ShadeError,
@@ -26,11 +26,15 @@ import {
 } from '../src/errors.js';
 import { SppAdapter } from '../src/methods/spp.js';
 
+// A structurally valid pool contract id — these tests never reach the network,
+// but a pool-enabled client requires one (there is no built-in default).
+const CONTRACT_ID = StrKey.encodeContract(Buffer.alloc(32));
+
 describe('send method resolution', () => {
   const keys = StealthClient.keygen();
 
   it('throws MethodRequiredError (a coded ShadeError) when no method is given', async () => {
-    const client = new StealthClient({ network: 'local', methods: ['pool', 'account'] });
+    const client = new StealthClient({ network: 'testnet', contractId: CONTRACT_ID, methods: ['pool', 'account'] });
     const err = await client
       // @ts-expect-error deliberately omitting the (now required) opts
       .send(keys.metaAddress, 100, 'SXXX')
@@ -41,7 +45,7 @@ describe('send method resolution', () => {
   });
 
   it("'auto' picks 'account' for native amount > 1 when account enabled", async () => {
-    const client = new StealthClient({ network: 'local', methods: ['pool', 'account'] });
+    const client = new StealthClient({ network: 'testnet', contractId: CONTRACT_ID, methods: ['pool', 'account'] });
     // account adapter will fail at network I/O; we only assert it routed to account
     // by checking the rejection is NOT MethodNotEnabledError (would mean it fell
     // back to a disabled method) and NOT MinimumAmountError (amount 2 > 1 clears
@@ -55,7 +59,7 @@ describe('send method resolution', () => {
   });
 
   it("'auto' picks 'pool' when amount <= 1", async () => {
-    const client = new StealthClient({ network: 'local', methods: ['pool'] });
+    const client = new StealthClient({ network: 'testnet', contractId: CONTRACT_ID, methods: ['pool'] });
     // pool enabled, account not — auto with amount 1 must resolve to pool (enabled),
     // so it must NOT throw MethodNotEnabledError.
     const err = await client
@@ -65,7 +69,7 @@ describe('send method resolution', () => {
   });
 
   it("'auto' falls back to 'pool' when account not enabled even for amount > 1", async () => {
-    const client = new StealthClient({ network: 'local', methods: ['pool'] });
+    const client = new StealthClient({ network: 'testnet', contractId: CONTRACT_ID, methods: ['pool'] });
     const err = await client
       .send(keys.metaAddress, 100, 'GARBAGE_SECRET', { method: 'auto' })
       .catch((e) => e);
@@ -73,7 +77,7 @@ describe('send method resolution', () => {
   });
 
   it('throws MethodNotEnabledError for a disabled method', async () => {
-    const client = new StealthClient({ network: 'local', methods: ['pool'] });
+    const client = new StealthClient({ network: 'testnet', contractId: CONTRACT_ID, methods: ['pool'] });
     await expect(
       client.send(keys.metaAddress, 100, 'SXXX', { method: 'account' }),
     ).rejects.toBeInstanceOf(MethodNotEnabledError);
@@ -104,6 +108,7 @@ describe('spp adapter', () => {
           ephemeralPubKey: '00',
           token: 'native',
           amount: 1,
+          amountStroops: '10000000',
           method: 'spp',
         },
         'GDEST',

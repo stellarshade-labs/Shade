@@ -154,10 +154,10 @@ describe('Fix #1: attacker CB cannot mask the real token payment', () => {
     };
 
     const horizon = new HorizonClient(
-      'http://localhost:8000',
+      'https://horizon.mock',
       makeStubFetch({ transactions, operationsByTx, claimableBalancesByClaimant }),
     );
-    const adapter = new AccountAdapter(Networks.STANDALONE, horizon);
+    const adapter = new AccountAdapter(Networks.TESTNET, horizon);
     const { payments } = await adapter.scan(keys);
 
     expect(payments).toHaveLength(1);
@@ -228,10 +228,10 @@ describe('Fix #3: balance reports live remaining after a partial claim', () => {
     };
 
     const horizon = new HorizonClient(
-      'http://localhost:8000',
+      'https://horizon.mock',
       makeStubFetch({ transactions, operationsByTx, accountsByAddress }),
     );
-    const adapter = new AccountAdapter(Networks.STANDALONE, horizon);
+    const adapter = new AccountAdapter(Networks.TESTNET, horizon);
 
     // Discovery scan (no suppression): reports the original per-tx op amount.
     const discovery = await adapter.scan(keys);
@@ -293,9 +293,9 @@ describe('Fix #3: balance reports live remaining after a partial claim', () => {
     vi.stubGlobal('fetch', stub);
 
     const client = new StealthClient({
-      network: 'local',
+      network: 'testnet',
       methods: ['account'],
-      horizonUrl: 'http://localhost:8000',
+      horizonUrl: 'https://horizon.mock',
     });
     const balances = await client.balance(keys);
 
@@ -355,10 +355,10 @@ describe('Fix #5: CB predicates and muxed destinations', () => {
     };
 
     const horizon = new HorizonClient(
-      'http://localhost:8000',
+      'https://horizon.mock',
       makeStubFetch({ transactions, operationsByTx, claimableBalancesByClaimant }),
     );
-    const adapter = new AccountAdapter(Networks.STANDALONE, horizon);
+    const adapter = new AccountAdapter(Networks.TESTNET, horizon);
     const { payments } = await adapter.scan(keys);
     expect(payments).toHaveLength(0);
   });
@@ -409,10 +409,10 @@ describe('Fix #5: CB predicates and muxed destinations', () => {
     };
 
     const horizon = new HorizonClient(
-      'http://localhost:8000',
+      'https://horizon.mock',
       makeStubFetch({ transactions, operationsByTx, claimableBalancesByClaimant }),
     );
-    const adapter = new AccountAdapter(Networks.STANDALONE, horizon);
+    const adapter = new AccountAdapter(Networks.TESTNET, horizon);
     const { payments } = await adapter.scan(keys);
     expect(payments).toHaveLength(1);
     expect(payments[0]!.claimableBalanceId).toBe(REAL_CB_ID);
@@ -451,10 +451,10 @@ describe('Fix #5: CB predicates and muxed destinations', () => {
     };
 
     const horizon = new HorizonClient(
-      'http://localhost:8000',
+      'https://horizon.mock',
       makeStubFetch({ transactions, operationsByTx }),
     );
-    const adapter = new AccountAdapter(Networks.STANDALONE, horizon);
+    const adapter = new AccountAdapter(Networks.TESTNET, horizon);
     const { payments } = await adapter.scan(keys);
     expect(payments).toHaveLength(1);
     expect(payments[0]!.stealthAddress).toBe(mine.stealthAddress);

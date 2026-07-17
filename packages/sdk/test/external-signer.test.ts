@@ -28,7 +28,7 @@ import { HorizonClient, type FetchLike } from '../src/horizon.js';
 import { FeePayerAddressRequiredError } from '../src/errors.js';
 import type { StealthKeys, Payment, TransactionSigner } from '../src/types.js';
 
-const NET = Networks.STANDALONE;
+const NET = Networks.TESTNET;
 
 function makeKeys(): StealthKeys {
   const raw = generateMetaAddress();
@@ -152,7 +152,7 @@ function makeCapturingHorizon(opts: {
     }
     return { ok: false, status: 404, json: async () => ({}) };
   };
-  return new HorizonClient('http://localhost:8000', fetchFn);
+  return new HorizonClient('https://horizon.mock', fetchFn);
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -219,13 +219,14 @@ describe('external signing: pool claim requires feePayerAddress', () => {
     const keys = makeKeys();
     // rpc server is never reached — the guard fires before any I/O.
     const server = {} as unknown as import('@stellar/stellar-sdk').rpc.Server;
-    const adapter = new PoolAdapter('CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGABAX', NET, server);
+    const adapter = new PoolAdapter(makeContractId(), NET, server);
 
     const payment: Payment = {
       stealthAddress: Keypair.random().publicKey(),
       ephemeralPubKey: '00'.repeat(32),
       token: 'native',
       amount: 1,
+      amountStroops: '10000000',
       method: 'pool',
     };
 
@@ -280,6 +281,7 @@ describe('external signing: pool claim routes the fee-payer leg through the sign
       ephemeralPubKey: '00'.repeat(32),
       token: tokenAddress,
       amount: 5,
+      amountStroops: '50000000',
       method: 'pool',
     };
 

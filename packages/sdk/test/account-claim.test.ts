@@ -25,7 +25,7 @@ import {
 } from '../src/errors.js';
 import type { StealthKeys, Payment } from '../src/types.js';
 
-const NET = Networks.STANDALONE;
+const NET = Networks.TESTNET;
 const DEST = Keypair.random().publicKey();
 const RELAYER = Keypair.random().publicKey();
 const ISSUER = Keypair.random().publicKey();
@@ -96,7 +96,7 @@ function makeCapturingHorizon(opts: {
     }
     return { ok: false, status: 404, json: async () => ({}) };
   };
-  return new HorizonClient('http://localhost:8000', fetchFn);
+  return new HorizonClient('https://horizon.mock', fetchFn);
 }
 
 /** Parse a captured base64 envelope XDR into a Transaction to inspect ops. */
@@ -182,6 +182,7 @@ describe('account claim: native', () => {
       ephemeralPubKey: ephemeralPubKeyHex,
       token: 'native',
       amount: 5,
+      amountStroops: '50000000',
       method: 'account',
     };
 
@@ -212,6 +213,7 @@ describe('account claim: native', () => {
       ephemeralPubKey: ephemeralPubKeyHex,
       token: 'native',
       amount: 10,
+      amountStroops: '100000000',
       method: 'account',
     };
 
@@ -242,6 +244,7 @@ describe('account claim: native', () => {
       ephemeralPubKey: ephemeralPubKeyHex,
       token: 'native',
       amount: 5,
+      amountStroops: '50000000',
       method: 'account',
     };
 
@@ -271,6 +274,7 @@ describe('account claim: amount misuse is loud, never a silent full sweep', () =
       ephemeralPubKey: ephemeralPubKeyHex,
       token: 'native',
       amount: 10,
+      amountStroops: '100000000',
       method: 'account',
     };
     return { keys, adapter, payment, submitted };
@@ -316,6 +320,7 @@ describe('account claim: amount misuse is loud, never a silent full sweep', () =
       asset: ASSET,
       claimableBalanceId: CB_ID,
       amount: 100,
+      amountStroops: '1000000000',
       method: 'account',
     };
 
@@ -371,6 +376,7 @@ describe('account claim: token self-funded', () => {
       asset: ASSET,
       claimableBalanceId: CB_ID,
       amount: 100,
+      amountStroops: '1000000000',
       method: 'account',
     };
 
@@ -453,6 +459,7 @@ describe('account claim: token self-funded', () => {
       asset: ASSET,
       claimableBalanceId: CB_ID,
       amount: 100,
+      amountStroops: '1000000000',
       method: 'account',
     };
 
@@ -481,6 +488,7 @@ describe('account claim: token self-funded', () => {
       asset: ASSET,
       claimableBalanceId: CB_ID,
       amount: 100,
+      amountStroops: '1000000000',
       method: 'account',
     };
 
@@ -562,6 +570,7 @@ describe('account claim: token sponsored', () => {
       asset: ASSET,
       claimableBalanceId: CB_ID,
       amount: 100,
+      amountStroops: '1000000000',
       method: 'account',
     };
 
@@ -622,6 +631,7 @@ describe('account claim: token sponsored', () => {
       asset: ASSET,
       claimableBalanceId: CB_ID,
       amount: 100,
+      amountStroops: '1000000000',
       method: 'account',
     };
 

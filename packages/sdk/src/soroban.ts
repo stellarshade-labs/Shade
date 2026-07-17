@@ -8,30 +8,65 @@ import {
 } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { sha256 } from '@noble/hashes/sha256';
-import { TransactionRetryableError, TransactionTimeoutError } from './errors.js';
+import {
+  TransactionRetryableError,
+  TransactionTimeoutError,
+  UnsupportedNetworkError,
+} from './errors.js';
 
-/** Network configuration resolved from a network name. */
-export interface NetworkConfig {
+/** Static endpoints and passphrase for one supported Stellar network. */
+export interface NetworkDefinition {
   networkPassphrase: string;
   rpcUrl: string;
+  horizonUrl: string;
+  allowHttp: boolean;
+}
+
+/**
+ * The single source of truth for the networks this SDK can talk to. Adding a
+ * network is ONE new entry here: {@link NetworkName} (and with it every
+ * `ClientConfig.network` union across the SDK and its consumers) widens
+ * automatically.
+ */
+export const NETWORKS = {
+  testnet: {
+    networkPassphrase: Networks.TESTNET,
+    rpcUrl: 'https://soroban-testnet.stellar.org',
+    horizonUrl: 'https://horizon-testnet.stellar.org',
+    allowHttp: false,
+  },
+  // post-audit (mainnet): uncomment and fill in the production RPC endpoint.
+  // public: {
+  //   networkPassphrase: Networks.PUBLIC,
+  //   rpcUrl: '<soroban mainnet rpc>',
+  //   horizonUrl: 'https://horizon.stellar.org',
+  //   allowHttp: false,
+  // },
+} as const satisfies Record<string, NetworkDefinition>;
+
+/** The names of the currently supported networks (today: `'testnet'`). */
+export type NetworkName = keyof typeof NETWORKS;
+
+/** Network configuration resolved from a network name. */
+export interface NetworkConfig extends NetworkDefinition {
   server: StellarSdk.rpc.Server;
 }
 
-/** Build network config from a network name. */
-export function getNetworkConfig(network: 'local' | 'testnet'): NetworkConfig {
-  const networkPassphrase = network === 'local'
-    ? Networks.STANDALONE
-    : Networks.TESTNET;
-
-  const rpcUrl = network === 'local'
-    ? 'http://localhost:8000/soroban/rpc'
-    : 'https://soroban-testnet.stellar.org';
-
-  const server = new StellarSdk.rpc.Server(rpcUrl, {
-    allowHttp: network === 'local',
-  });
-
-  return { networkPassphrase, rpcUrl, server };
+/**
+ * Build network config (endpoints + a connected RPC server) from a network
+ * name. Unknown names throw {@link UnsupportedNetworkError} — the type system
+ * already prevents them, but plain-JS callers and stale configs need the
+ * runtime guard too.
+ */
+export function getNetworkConfig(network: NetworkName): NetworkConfig {
+  const def = NETWORKS[network];
+  if (!def) {
+    throw new UnsupportedNetworkError(network, Object.keys(NETWORKS));
+  }
+  return {
+    ...def,
+    server: new StellarSdk.rpc.Server(def.rpcUrl, { allowHttp: def.allowHttp }),
+  };
 }
 
 /** Create a dummy transaction for read-only contract simulation. */
@@ -114,6 +149,15 @@ export function labelForToken(
 }
 
 /**
+ * The minimal transaction-status surface of `rpc.Server` needed to poll a tx
+ * hash to a terminal status. Structural, so confirm-polling callers (e.g. the
+ * `RelayerClient` confirm option) can inject a real server or a test stub.
+ */
+export interface TransactionStatusSource {
+  getTransaction(hash: string): Promise<{ status: string }>;
+}
+
+/**
  * Poll for transaction confirmation. Throws on failure or timeout.
  *
  * The timeout is a typed {@link TransactionTimeoutError} carrying the tx hash:
@@ -123,7 +167,7 @@ export function labelForToken(
  * double-send funds.
  */
 export async function waitForTransaction(
-  server: StellarSdk.rpc.Server,
+  server: TransactionStatusSource,
   hash: string,
 ): Promise<void> {
   let attempts = 0;

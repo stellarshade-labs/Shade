@@ -79,6 +79,7 @@ describe('StealthSession', () => {
       ephemeralPubKey: 'ab'.repeat(32),
       token: 'native',
       amount: 42,
+      amountStroops: '420000000',
       method: 'account',
       txHash: 'HASH',
     };

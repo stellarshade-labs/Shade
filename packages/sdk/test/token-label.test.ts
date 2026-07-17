@@ -3,7 +3,7 @@ import { Asset, Networks } from '@stellar/stellar-sdk';
 import { labelForToken } from '../src/soroban.js';
 
 describe('labelForToken', () => {
-  const passphrase = Networks.STANDALONE;
+  const passphrase = Networks.TESTNET;
 
   it("maps the native SAC contract address to 'XLM'", () => {
     const nativeSac = Asset.native().contractId(passphrase);
@@ -29,8 +29,8 @@ describe('labelForToken', () => {
   });
 
   it('does not treat the native SAC of one network as native on another', () => {
-    const localNative = Asset.native().contractId(Networks.STANDALONE);
-    // On testnet the native SAC id differs, so the local id is not recognized.
-    expect(labelForToken(localNative, Networks.TESTNET)).toBe(localNative);
+    const publicNative = Asset.native().contractId(Networks.PUBLIC);
+    // On testnet the native SAC id differs, so the mainnet id is not recognized.
+    expect(labelForToken(publicNative, Networks.TESTNET)).toBe(publicNative);
   });
 });
