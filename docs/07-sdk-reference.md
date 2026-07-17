@@ -50,6 +50,7 @@ interface ClientConfig {
   contractId?: string;    // required whenever 'pool' is enabled (no built-in default now — pass your deployed pool id)
   horizonUrl?: string;    // override the Horizon endpoint (account method)
   indexerUrl?: string;    // announcement-indexer URL — account-method discovery accelerator
+  indexerMaxLagSeconds?: number;  // skip indexers self-reporting more lag (default 21600 = 6 h; null lag is never stale)
   methods?: DeliveryMethod[];  // default: ['pool']
   relayer?: string | string[];  // default relayer(s) for fee-bumped submissions
   relayerSelection?: 'random' | 'first';  // multi-URL pick strategy (default 'random')
@@ -98,6 +99,8 @@ scanWithCursor(keys: StealthKeys, opts?: ScanOpts): Promise<ScanResult>
 `scan` is the simple form. `scanWithCursor` returns an updated per-method cursor to persist and pass to the next call for incremental discovery.
 
 With `indexerUrl` configured, the account phase is **segmented**: a bounded Horizon pre-segment covers anything before the indexer's coverage window, the covered span consumes the indexer's pre-extracted announcements, and a Horizon tail **always** runs from the final cursor — an indexer fault mid-segment abandons the segment and the tail covers the rest from the last good cursor (cursors are Horizon `paging_token`s, interchangeable both ways). A **cold** scan (no cursor) fast-starts at the indexer's coverage start; pass `ScanOpts.exhaustive: true` to instead walk the full Horizon history from genesis and pick up payments that predate the indexer's coverage (a no-op without an indexer, where the walk is always exhaustive).
+
+Two defenses run after the covered span: the scan **re-checks `/health`** (a gap recorded while the segment was being consumed discards its results and the tail re-walks the whole span), and a final cursor that came from indexer-supplied positions with an empty tail is **clamped to the head Horizon itself reports** — one malicious far-future cursor cannot blind future scans. Both outcomes are visible in `ScanResult.meta`.
 
 ### `balance`
 
@@ -179,7 +182,19 @@ interface ScanOpts   {
   cursor?: ScanCursor;
   exhaustive?: boolean;  // cold scan with an indexer: walk from genesis instead of fast-starting at its coverage
 }
-interface ScanResult { payments: Payment[]; cursor: ScanCursor; }
+interface ScanResult {
+  payments: Payment[];
+  cursor: ScanCursor;
+  meta?: Partial<Record<DeliveryMethod, MethodScanMeta>>;  // per-method scan diagnostics (account today)
+}
+interface MethodScanMeta {
+  indexerUsed: boolean;
+  indexerSkipReason?: 'unhealthy' | 'network_mismatch' | 'no_coverage' | 'stale' | 'unreachable';
+  indexerLagSeconds?: number | null;
+  postCheck?: 'ok' | 'unhealthy' | 'unreachable';  // post-segment /health re-check; non-'ok' = segment discarded
+  cursorClamped?: boolean;                         // indexer-claimed position exceeded the Horizon head
+  segments: { source: 'indexer' | 'horizon'; role: 'pre' | 'indexer' | 'tail' | 'full'; candidates: number; matches: number }[];
+}
 ```
 
 > **Precision.** `amount` is a `number` for display and backwards compatibility. Above ~9.007e8 XLM a double cannot represent every stroop — use `amountStroops` whenever exactness matters. The SDK itself derives token payout strings from the exact stroop count, never the lossy double.
