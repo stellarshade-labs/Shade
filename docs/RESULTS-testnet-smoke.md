@@ -1,7 +1,8 @@
 # Testnet E2E Smoke — Phase 1 (post-audit: local removal + B-list + A5)
 
-Date: 2026-07-17 · Branch `post-audit/a1-a2` · Network: testnet (SDF).
-Reconstructs the evidence file HANDOFF.md references (the prior one was session-temp).
+Date: 2026-07-17 · Network: testnet (SDF).
+Worked testnet smoke-flow evidence for the post-audit changes (the earlier run's
+notes were session-temporary and not committed).
 Contract redeployed because SH-3 changed the withdraw preimage (consensus-breaking).
 
 ## Environment
