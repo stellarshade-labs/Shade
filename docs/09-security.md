@@ -13,7 +13,7 @@ What Shade protects, what it explicitly does not, and what you must not rely on 
 
 The protocol and this implementation have **not undergone an external cryptographic audit**. An audit is on the roadmap. Treat the library as production-track but pre-audit, and **do not handle mainnet value**.
 
-Testnet is the current test network, and there is no CI pipeline. The **pool** method has been validated end-to-end on Stellar **testnet** (2026-07-17): deposit → scan → balance → direct withdraw → relayer fee-bumped withdraw, for both native XLM and a classic-asset (USDC) SAC. No testnet contract id is pinned (testnet resets quarterly — deploy your own). The **account** method is unexercised at public-network scale: its scan (and `balance`) walk the global Horizon transaction feed, so a cold scan for a fresh recipient is impractical there — a Horizon indexer is the roadmap fix.
+Testnet is the current test network, and there is no CI pipeline. The **pool** method has been validated end-to-end on Stellar **testnet** (2026-07-17): deposit → scan → balance → direct withdraw → relayer fee-bumped withdraw, for both native XLM and a classic-asset (USDC) SAC. No testnet contract id is pinned (testnet resets quarterly — deploy your own). The **account** method's cold-scan bottleneck — its scan (and `balance`) walk the global Horizon transaction feed — is addressed by the [announcement indexer](./03-architecture.md#the-announcement-indexer), validated on testnet the same day: a fresh recipient's cold scan found its payment in 631 ms via a local indexer, the payment was claimed on-chain, and a scan against a dead indexer degraded silently to the Horizon walk. Without an indexer, a cold account scan remains impractical at public-network scale.
 
 ## Threat model
 
@@ -31,6 +31,7 @@ Testnet is the current test network, and there is no CI pipeline. The **pool** m
 | **Small-subgroup attacks** | `validatePoint` accepts only on-curve, **torsion-free** points, rejecting the identity and small-order points on every path that touches `R`, `K_view`, `K_spend`. |
 | **Announcement spam** | Deposit and announcement are atomic — no deposit, no announcement. |
 | **Malicious relayer (sponsored claim)** | The client re-derives the expected operation list from its own trusted inputs and refuses to sign a mismatch (`SponsoredClaimMismatchError`). |
+| **Malicious indexer (account discovery)** | An indexer can *hide* payments (an availability failure) but cannot *fabricate* them: the client derives the stealth address from `R` itself and re-verifies on-chain at claim. It serves no address- or R-keyed queries, so the operator cannot link keys to requests; every scan ends with a Horizon tail and falls back to Horizon on any fault. |
 | **Tampered session storage** | On unlock, public keys are re-derived from the decrypted private scalars and compared (`SessionIntegrityError`). |
 
 ### What Shade does NOT protect

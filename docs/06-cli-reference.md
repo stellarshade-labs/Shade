@@ -15,6 +15,8 @@ This page documents every command's real arguments and flags.
 
 **Secrets.** Every secret resolves in this order: **inline flag → environment variable → non-echoing stderr prompt**. Flags exist for scripting but leak into shell history and `ps` output — prefer the env var or the prompt.
 
+**Prompts fail loudly without stdin.** If stdin closes before a prompt is answered (piped input, CI), the command exits **1** with `stdin closed before input was received — pass the value via its flag or environment variable instead`. Previously node drained its event loop and silently exited **0** mid-command as if it had succeeded — in non-interactive contexts, supply every needed value via its flag or env var.
+
 | Variable | Used by |
 |---|---|
 | `SHADE_FROM_SECRET` | `send` (sender secret) |
@@ -25,6 +27,8 @@ This page documents every command's real arguments and flags.
 **Keystore path** resolves as: `--keystore <path>` → `$SHADE_KEYSTORE` → `~/.shade-keys.json`.
 
 **Relayers.** `--relay` (on `claim` and `withdraw`) is **repeatable and comma-separated** — `--relay https://a,https://b` and `--relay https://a --relay https://b` both work — and falls back to the comma-separated **`SHADE_RELAYERS`** env var when omitted. With more than one URL the client health-probes all candidates in parallel, routes to a healthy one (random by default, spreading users across the set), and fails over on relayer faults; `--verbose` prints the chosen relayer. When none is usable, the error lists every candidate with its rejection reason. See [Relayer → Choosing a relayer](./08-relayer.md#choosing-a-relayer).
+
+**Indexer.** `--indexer <url>` (on `scan` and `balance`) points account-method discovery at an [announcement indexer](./03-architecture.md#the-announcement-indexer) and falls back to the **`SHADE_INDEXER`** env var when omitted (flag wins; a single URL, no list). Horizon remains the source of truth: the scan verifies the indexer's health first, always finishes with a Horizon tail, and degrades silently to the plain Horizon walk on any indexer fault. `scan --verbose` reports the indexer in use.
 
 **Networks:** `--network testnet` is the default and the **only** accepted value today — anything else, notably the removed `local` and the unaudited `mainnet`, is rejected with an error. Mainnet ("public") is a forward-looking, post-audit addition.
 
@@ -118,6 +122,7 @@ Find payments sent to you, across **both** the pool and account methods.
 
 ```bash
 shade scan --network testnet
+shade scan --indexer http://localhost:3100
 shade scan --full-rescan
 ```
 
@@ -127,10 +132,11 @@ shade scan --full-rescan
 | `--keystore <path>` | Keystore file path |
 | `--password <password>` | Keystore password (prompts on stderr if omitted for an encrypted keystore) |
 | `--since-ledger <ledger>` | Only scan announcements since this ledger |
-| `--full-rescan` | Reset the account-method Horizon cursor and rescan from genesis |
-| `--verbose` | Show detailed scan progress |
+| `--full-rescan` | Reset the account-method Horizon cursor and rescan from genesis — with an indexer configured, also requests the exhaustive pre-indexer walk |
+| `--indexer <url>` | Announcement indexer URL for fast account-method discovery — falls back to `$SHADE_INDEXER`; Horizon remains the source of truth |
+| `--verbose` | Show detailed scan progress (cursor, indexer in use, per-phase timings) |
 
-**Cursors.** The account method persists a Horizon paging cursor and its discovered payments to `~/.stealth/`, so a later `claim` can resolve a payment without a full rescan. `--full-rescan` clears both.
+**Cursors.** The account method persists a Horizon paging cursor and its discovered payments to `~/.stealth/`, so a later `claim` can resolve a payment without a full rescan. `--full-rescan` clears both — and, with an indexer configured, additionally walks the **pre-indexer history**: a cold scan otherwise fast-starts at the indexer's coverage start, so a payment predating that coverage is found only by `--full-rescan`. See [Architecture → The announcement indexer](./03-architecture.md#the-announcement-indexer).
 
 ---
 
@@ -147,6 +153,7 @@ shade balance --network testnet
 | `--network <network>` | Network to use (default: `testnet`; only `testnet` accepted) |
 | `--keystore <path>` | Keystore file path |
 | `--password <password>` | Keystore password (prompts if omitted) |
+| `--indexer <url>` | Announcement indexer URL for fast account-method discovery — falls back to `$SHADE_INDEXER`; Horizon remains the source of truth |
 
 Balances are aggregated per token in stroops and displayed with a readable asset label (`XLM` rather than the native SAC `C...` address).
 

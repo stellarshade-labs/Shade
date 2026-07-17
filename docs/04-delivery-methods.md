@@ -19,7 +19,7 @@ The same meta-address works with more than one "delivery method" — the mechani
 | **Where funds sit** | Shared Soroban **pool contract**, keyed by your stealth key | A one-time real Stellar **account** / claimable balance | — |
 | **New account created?** | **No** — no ~1 XLM reserve locked | **Yes** — ~1 XLM base reserve required | — |
 | **Assets** | Any SAC token (XLM, USDC, …) | Native XLM, or any classic/SAC asset (as a claimable balance) | — |
-| **Discovery** | Contract **announcements** + **view-tag** fast path (~2×) | **Horizon** paging for the ephemeral key in a `MemoHash`, then destination match (no view tag) | — |
+| **Discovery** | Contract **announcements** + **view-tag** fast path (~2×) | **Horizon** paging for the ephemeral key in a `MemoHash`, then destination match (no view tag) — an optional **announcement indexer** makes cold scans fast | — |
 | **Claim** | Signature-verified `withdraw` — **no Stellar account needed** | Sign with the recovered stealth key, or a relayer-sponsored payout | — |
 | **Cost profile** | Soroban invocation fee (~0.01 XLM) | ~1 XLM reserve (native) or ~1.5 XLM fronted (token) | — |
 
@@ -52,6 +52,14 @@ Money goes to a real, one-time Stellar account. The ephemeral key `R` travels in
 > **Muxed (`M...`) addresses are handled.** A muxed address shares one underlying `G...` account across many virtual sub-accounts. During scanning, every destination is normalized to its underlying ed25519 account id before comparison, so a payment addressed to the **muxed form** of your stealth address still matches the derived `G...` address and is discovered normally. This applies to `create_account` / `payment` destinations **and** to `create_claimable_balance` claimants. Plain `G...` inputs (and anything unparseable) pass through unchanged, so ordinary matching is unaffected.
 >
 > **For developers.** `normalizeDestination` in `packages/sdk/src/methods/account.ts`, via `MuxedAccount.fromAddress(address, '0').baseAccount().accountId()`. Note this normalizes for **matching only** — Shade never *derives* a muxed stealth address; the sender always creates a plain `G...` one-time account.
+
+### Discovery and the announcement indexer
+
+Because there is no view tag, **every hash-memo transaction on the network is a discovery candidate** — an unassisted scan walks the global Horizon transaction feed client-side, which makes a cold scan for a fresh recipient take minutes (and grow with the network). The fix is the **announcement indexer** (`packages/indexer`): a standalone service that walks the feed server-side **once for everyone**, keeps only hash-memo candidates with their operations, and serves them as a compact feed the client filters **locally** — it deliberately answers no address- or R-keyed queries, so the operator cannot link keys to requests. Point the SDK at one with `ClientConfig.indexerUrl`, or the CLI with `--indexer` / `SHADE_INDEXER`.
+
+**Trust model:** the indexer can *hide* payments but cannot *fabricate* them — the client derives the stealth address from `R` itself and everything is re-verified on-chain at claim. Horizon remains the source of truth: the scan falls back to the pure Horizon walk automatically when the indexer is unreachable, unhealthy, or faults mid-scan, and it **always finishes with a Horizon tail** so indexer lag cannot hide a payment.
+
+**One caveat to know:** with an indexer configured, a **cold** scan (no saved cursor) fast-starts at the indexer's coverage start rather than genesis. A payment older than the indexer's coverage is found only by the exhaustive walk — CLI `--full-rescan`, SDK `ScanOpts.exhaustive`. See [Architecture → The announcement indexer](./03-architecture.md#the-announcement-indexer) for endpoints, configuration, and running one.
 
 ### Native XLM
 

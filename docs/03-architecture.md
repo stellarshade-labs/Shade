@@ -1,11 +1,11 @@
 ---
 title: Architecture
-description: "Shade's components: the Soroban pool contract, the crypto core, the SDK, the CLI and the relayer — plus the data flow for a full send, scan and claim cycle."
+description: "Shade's components: the Soroban pool contract, the crypto core, the SDK, the CLI, the relayer and the announcement indexer — plus the data flow for a full send, scan and claim cycle."
 ---
 
 # Shade Architecture
 
-Shade is a monorepo of four TypeScript packages plus one Soroban contract. This page maps each component to its job, then walks the data flow for a full send → scan → claim cycle.
+Shade is a monorepo of five TypeScript packages plus one Soroban contract. This page maps each component to its job, then walks the data flow for a full send → scan → claim cycle.
 
 ---
 
@@ -26,13 +26,13 @@ Shade is a monorepo of four TypeScript packages plus one Soroban contract. This 
                                     |
                   +-----------------+-----------------+
                   |                                   |
-          +-------v--------+                 +--------v---------+
-          | packages/sdk   |                 | packages/relayer |
-          | (StealthClient)|                 | (fee-bump /      |
-          |                |                 |  sponsor /       |
-          | pool | account |                 |  credit)         |
-          | adapters       |                 |                  |
-          +-------+--------+                 +--------+---------+
+          +-------v--------+                 +--------v---------+  +------------------+
+          | packages/sdk   |                 | packages/relayer |  | packages/indexer |
+          | (StealthClient)|                 | (fee-bump /      |  | (announcement    |
+          |                |                 |  sponsor /       |  |  candidate feed  |
+          | pool | account |                 |  credit)         |  |  from Horizon)   |
+          | adapters       |                 |                  |  |                  |
+          +-------+--------+                 +--------+---------+  +------------------+
                   |                                   |
           +-------v--------+                          |
           | packages/cli   |                          |
@@ -51,7 +51,7 @@ Shade is a monorepo of four TypeScript packages plus one Soroban contract. This 
                   +-----------------------------------+
 ```
 
-**Reading the diagram:** `crypto` is the dependency-free core everything builds on. The `sdk` wraps all network I/O behind delivery-method adapters. The `cli` is a reference consumer. The `relayer` is a standalone service that never imports `crypto` — it only handles transaction envelopes and credit accounting. Everything on the `pool` path terminates at the Soroban contract.
+**Reading the diagram:** `crypto` is the dependency-free core everything builds on. The `sdk` wraps all network I/O behind delivery-method adapters. The `cli` is a reference consumer. The `relayer` is a standalone service that never imports `crypto` — it only handles transaction envelopes and credit accounting. The `indexer` is a second standalone service: it watches Horizon's transaction feed and serves the account method's [announcement-candidate feed](#the-announcement-indexer) — no `crypto` (or even `@stellar/stellar-sdk`) dependency, and it never touches the contract. Everything on the `pool` path terminates at the Soroban contract.
 
 | Package | Role | Key dependency note |
 |---|---|---|
@@ -59,6 +59,7 @@ Shade is a monorepo of four TypeScript packages plus one Soroban contract. This 
 | `@shade/sdk` | `StealthClient` — hides all Horizon/Soroban I/O behind `send`/`scan`/`claim`. Delivery adapters, typed errors, encrypted sessions, relayer client. | Depends on `@shade/crypto` + `@stellar/stellar-sdk`. |
 | `@shade/cli` | The `shade` reference command-line tool. | Delegates the `account` method to the SDK; builds `pool` invocations inline. |
 | `@shade/relayer` | Express service: fee-bump, sponsored claims, credit ledger. | Standalone — no `@shade/crypto` dependency. |
+| `@shade/indexer` | Express service: ingests Horizon's transaction feed once for everyone and serves the account method's announcement-candidate feed. | Standalone — no `@shade/crypto` **or** `@stellar/stellar-sdk` dependency; builds and runs alone. |
 | `contracts/registry` | The Soroban pool contract (`StealthPoolContract`), Rust / `soroban-sdk`. | Single contract; calls SAC tokens for transfers. |
 
 ## The pool contract
@@ -174,10 +175,56 @@ The SDK resolves an asset string to its SAC address with `resolveTokenAddress`, 
 The `account` method never touches the contract:
 
 - **Send** — a classic transaction with the ephemeral `R` in a 32-byte `MemoHash`. Native XLM lands via `CreateAccount`/`Payment`; a token lands as a `CreateClaimableBalance` naming the stealth address as claimant.
-- **Scan** — page Horizon transactions; for each hash-memo tx, decode the memo as a candidate `R`, derive the stealth address, and look for an operation whose destination matches. The destination match **is** the verification — no view tag needed.
+- **Scan** — page Horizon transactions; for each hash-memo tx, decode the memo as a candidate `R`, derive the stealth address, and look for an operation whose destination matches. The destination match **is** the verification — no view tag needed. With an [indexer](#the-announcement-indexer) configured, the covered span of that walk consumes the indexer's pre-extracted candidate feed instead (operations inlined — no per-tx round-trip), and a Horizon tail always runs last.
 - **Claim** — sign with the recovered stealth key: `AccountMerge` (full sweep) or `Payment` (partial) for XLM; `ChangeTrust` + `ClaimClaimableBalance` (+ optional exit) for a token, or a relayer-sponsored claim.
 
-> **Ecosystem note.** The `account` method depends on Horizon paging. Stellar's official docs now describe **Horizon as deprecated in favour of Stellar RPC**, and Stellar RPC is explicitly *not* a historical indexer. A dedicated indexer for account-method scans is on the project's roadmap.
+> **Ecosystem note.** The `account` method depends on Horizon paging. Stellar's official docs now describe **Horizon as deprecated in favour of Stellar RPC**, and Stellar RPC is explicitly *not* a historical indexer. The dedicated indexer for account-method scans has shipped — [the announcement indexer](#the-announcement-indexer), next.
+
+## The announcement indexer
+
+The `account` method publishes **no view tag** — the transaction's `MemoHash` *is* the ephemeral key `R`. Every hash-memo transaction on the network is therefore a discovery candidate, and the original scan walked the **global Horizon transaction feed client-side**: minutes for a cold scan on testnet, unbounded as a network grows.
+
+The **announcement indexer** (`packages/indexer`, a standalone service like the relayer) moves that walk server-side, **once for everyone**. It polls Horizon `/transactions?order=asc`, keeps **only** successful hash-memo transactions — their operation records stored **verbatim** — and serves them as a compact candidate feed the client filters **locally**. There is deliberately **no address- or R-keyed query**: any such query would let the operator link your keys to your requests.
+
+### Trust model
+
+**An indexer can *hide* payments; it cannot *fabricate* them.** A candidate only becomes "your payment" after the client itself derives the stealth address from `R`, and everything is re-verified on-chain at claim time. The indexer is an **availability optimization** — **Horizon remains the source of truth**:
+
+- The scan probes the indexer's `/health` first and silently stays on the pure Horizon walk when the indexer is unreachable, unhealthy, or on the wrong network.
+- Every scan **finishes with a Horizon tail** from the final cursor, so indexer lag cannot hide a payment.
+- An indexer fault **mid-scan** degrades automatically to the Horizon walk from the last good cursor.
+- Cursors are Horizon `paging_token`s, so indexer and Horizon cursors are **interchangeable in both directions**.
+
+### Cold scans and coverage
+
+With no saved cursor and a healthy indexer, a scan **fast-starts at the indexer's coverage start** (`startCursor` from `/health`) instead of genesis. The documented trade-off: a payment predating the indexer's coverage is found only by the **exhaustive walk** — CLI `--full-rescan`, SDK `ScanOpts.exhaustive` — which walks the pre-indexer prefix on Horizon from genesis (the indexer still serves the covered span).
+
+### Endpoints
+
+| Endpoint | What it returns |
+|---|---|
+| `GET /health` | `status`, `network`, `store` (`postgres`\|`memory`), `cursor`, `startCursor`, `lastCloseTime`, `lagSeconds`, `announcements` (count), `ingest` (`lastPollAt`, `lastError`) |
+| `GET /announcements?cursor=&limit=` | Hash-memo candidate records (Horizon transaction shape, `operations` inlined verbatim) strictly after `cursor`; `limit` capped at 200. The response `cursor` resumes paging, jumping to the indexer's global position once the feed is drained |
+
+### Configuration
+
+All configuration is environment variables — `packages/indexer/.env.example` is the annotated list:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `NETWORK` | `testnet` | Target network; unknown values (incl. the removed `local`) refuse to boot (exit 1) |
+| `PORT` | `3100` | Listen port |
+| `HORIZON_URL` | per-network table | Horizon override (tests, private Horizons) |
+| `DATABASE_URL` | — | Postgres backing announcements + the ingest cursor (durable across restarts). **Set-but-unreachable → exit 1** — never a silent memory fallback. Unset → **in-memory store**: announcements are lost on restart and re-ingested from `INGEST_START` |
+| `PGPOOL_MAX` | `5` | Max Postgres pool connections (free tiers cap low) |
+| `PGSSL` | — | `true` forces TLS even without `sslmode=require` in the URL |
+| `INGEST_START` | `now` | Where a **fresh** store starts ingesting: `now`, `genesis`, or a decimal Horizon paging token. Applies only before any cursor is persisted — the stored position always wins |
+| `INGEST_INTERVAL_MS` | `3000` | Poll interval between ingest ticks (a cold catch-up drains the whole backlog within a single tick regardless) |
+| `CORS_ORIGIN` | `*` | Allowed origin — permissive **on purpose** here, unlike the relayer: the candidate feed is public data anyone can read off Horizon |
+
+> **Ingest guarantee.** The cursor **never advances past a transaction whose operations fetch failed** — the tick aborts before that page is written and the next tick retries from the same cursor. An announcement silently skipped would be a hidden payment.
+
+Run it with `npm run dev` in `packages/indexer` (or `npm run build` + `npm run start`); point clients at it via the SDK's `indexerUrl` or the CLI's `--indexer` / `SHADE_INDEXER`.
 
 ## Where the critical logic lives
 
@@ -189,6 +236,8 @@ The `account` method never touches the contract:
 | Malicious-relayer defence | `packages/sdk/src/methods/account.ts` (`verifySponsoredClaimXdr`) |
 | Small-subgroup / torsion rejection | `packages/crypto/src/ed25519.ts` (`validatePoint`) |
 | Credit accounting, idempotency | `packages/relayer/src/ledger.ts` |
+| Indexer fallback + Horizon-tail scan segmentation | `packages/sdk/src/methods/account.ts` (`scan`) |
+| Ingest never-skip cursor invariant | `packages/indexer/src/ingest.ts` |
 
 ---
 

@@ -95,6 +95,16 @@ npm run relayer:dev
 
 Then pass `--relay http://localhost:3000` to `claim`/`withdraw`. See [Relayer](./08-relayer.md) for endpoints, credit gating, and deployment.
 
+## Running the indexer (optional)
+
+The announcement indexer makes account-method discovery fast — it walks the global Horizon transaction feed once for everyone, so a cold scan no longer has to:
+
+```bash
+cd packages/indexer && npm run dev    # NETWORK=testnet, port 3100
+```
+
+Then pass `--indexer http://localhost:3100` to `scan`/`balance` (or set `SHADE_INDEXER`). Horizon remains the source of truth — a scan falls back to the plain Horizon walk automatically if the indexer is down. See [Architecture → The announcement indexer](./03-architecture.md#the-announcement-indexer) for the trust model, endpoints, and configuration.
+
 ## Using the SDK instead
 
 ```typescript
@@ -134,7 +144,7 @@ cd contracts && cargo test   # Rust contract tests only
 
 `testnet` is the only accepted network today. Mainnet ("public") is a forward-looking, post-audit addition. Fund a testnet account with friendbot before using it.
 
-> **Status note.** Testnet is the current test network. The **pool** method has been validated end-to-end on Stellar **testnet** (2026-07-17): deposit → scan → balance → direct withdraw → relayer fee-bumped withdraw, for both native XLM and a classic-asset (USDC) SAC. No testnet contract id is pinned — testnet **resets quarterly**, so deploy your own and save it as shown above. The **account** method's discovery does **not** scale on a public network: its scan (and `balance`) walk the global Horizon transaction feed, so a cold scan for a fresh recipient is impractical — a Horizon indexer is the roadmap fix. There is no CI. Mainnet is **out of scope** until an external audit lands. See [Security](./09-security.md).
+> **Status note.** Testnet is the current test network. The **pool** method has been validated end-to-end on Stellar **testnet** (2026-07-17): deposit → scan → balance → direct withdraw → relayer fee-bumped withdraw, for both native XLM and a classic-asset (USDC) SAC. No testnet contract id is pinned — testnet **resets quarterly**, so deploy your own and save it as shown above. The **account** method's cold discovery is served by the **announcement indexer**, validated the same day on testnet: a fresh recipient's cold scan found its payment in **631 ms** via a local indexer (where the unassisted global-feed walk took minutes), the discovered payment was claimed on-chain, and a scan against a dead indexer degraded silently to the Horizon walk. Without an indexer configured, a cold account scan still walks the global Horizon transaction feed — impractical for a fresh recipient on a busy network. There is no CI. Mainnet is **out of scope** until an external audit lands. See [Security](./09-security.md).
 
 ---
 

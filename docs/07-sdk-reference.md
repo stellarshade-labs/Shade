@@ -49,6 +49,7 @@ interface ClientConfig {
   network: 'testnet';     // effectively 'testnet' only today; the NETWORKS table is mainnet-extensible post-audit
   contractId?: string;    // required whenever 'pool' is enabled (no built-in default now — pass your deployed pool id)
   horizonUrl?: string;    // override the Horizon endpoint (account method)
+  indexerUrl?: string;    // announcement-indexer URL — account-method discovery accelerator
   methods?: DeliveryMethod[];  // default: ['pool']
   relayer?: string | string[];  // default relayer(s) for fee-bumped submissions
   relayerSelection?: 'random' | 'first';  // multi-URL pick strategy (default 'random')
@@ -56,6 +57,8 @@ interface ClientConfig {
 ```
 
 A `relayer` **list** enables BYO-relayer discovery: relayed submissions health-probe every candidate in parallel, route to a healthy one, and fail over on relayer faults — see [`RelayerPool`](#relayerpool). A single string behaves exactly as before (no probing, no new traffic). `relayerSelection` defaults to `'random'`, spreading users across the relayer set instead of herding onto the first entry.
+
+`indexerUrl` points `scan`/`balance` at an [announcement indexer](./03-architecture.md#the-announcement-indexer), so the account method consumes its pre-extracted candidate feed (operations inlined — no per-tx Horizon round-trip) instead of walking every Horizon transaction. Horizon remains the source of truth: the scan verifies the indexer's `/health` coverage first, falls back to the pure Horizon walk automatically when the indexer is unreachable, unhealthy, or on the wrong network, and always finishes with a Horizon tail so indexer lag cannot hide a payment.
 
 `network` resolves through a single `NETWORKS` table (`packages/sdk/src/soroban.ts`); adding a network there — e.g. mainnet (`public`) after the audit — widens the accepted type automatically. Today the only entry is `testnet`.
 
@@ -93,6 +96,8 @@ scanWithCursor(keys: StealthKeys, opts?: ScanOpts): Promise<ScanResult>
 ```
 
 `scan` is the simple form. `scanWithCursor` returns an updated per-method cursor to persist and pass to the next call for incremental discovery.
+
+With `indexerUrl` configured, the account phase is **segmented**: a bounded Horizon pre-segment covers anything before the indexer's coverage window, the covered span consumes the indexer's pre-extracted announcements, and a Horizon tail **always** runs from the final cursor — an indexer fault mid-segment abandons the segment and the tail covers the rest from the last good cursor (cursors are Horizon `paging_token`s, interchangeable both ways). A **cold** scan (no cursor) fast-starts at the indexer's coverage start; pass `ScanOpts.exhaustive: true` to instead walk the full Horizon history from genesis and pick up payments that predate the indexer's coverage (a no-op without an indexer, where the walk is always exhaustive).
 
 ### `balance`
 
@@ -169,7 +174,11 @@ interface ClaimReceipt { txHash: string; amount: number; method: DeliveryMethod;
 interface WithdrawReceipt { txHash: string; amount: number; }
 
 interface ScanCursor { pool?: string; account?: string; spp?: string; }
-interface ScanOpts   { methods?: DeliveryMethod[]; cursor?: ScanCursor; }
+interface ScanOpts   {
+  methods?: DeliveryMethod[];
+  cursor?: ScanCursor;
+  exhaustive?: boolean;  // cold scan with an indexer: walk from genesis instead of fast-starting at its coverage
+}
 interface ScanResult { payments: Payment[]; cursor: ScanCursor; }
 ```
 
@@ -307,13 +316,16 @@ const { status } = await relayer.health();
 
 | Method | Purpose |
 |---|---|
-| `health()` | Status, balance, address |
+| `health()` | Status, balance, address, advertised fee/reserve figures (`RelayerHealth`) |
 | `relay(xdr, opts?)` | Fee-bump and submit a signed envelope |
 | `sponsor(address, opts?)` | Create a stealth account from the relayer's balance |
 | `sponsorClaimPrepare(args)` | Build the sponsored claim tx (returns unsigned XDR) |
 | `sponsorClaimSubmit(xdr, args)` | Co-sign + submit a sponsored claim |
+| `sponsoredReserveEstimateStroops()` | The relayer's advertised sponsor-claim reserve (`RelayerHealth.sponsoredReserveEstimate`, a 7-dp XLM string like `'1.0000000'`) parsed to exact stroops — `undefined` when not advertised, unparsable, or `/health` is unreachable |
 | `creditClaim(fundingAccount, txHash)` | Top up credit by proving an XLM payment |
 | `creditBalance(fundingAccount)` | Read a credit balance |
+
+A **credit-gated sponsored claim** signs its proof-of-control over the exact total the relayer debits: the prepared tx's fee **plus** the sponsored-reserve estimate. The SDK prefers the estimate the relayer advertises in `/health` and falls back to its own mirrored 1 XLM constant when `sponsoredReserveEstimateStroops()` returns `undefined` — so a relayer-side change to the estimate no longer breaks gated claims, and a `/health` fault never breaks the claim itself.
 
 Also exported: `challengeMessage(endpoint, fundingAccount, nonce, amount, bind?)` — the canonical proof-of-control message, which must match the relayer byte-for-byte. See [Relayer](./08-relayer.md).
 
@@ -348,6 +360,27 @@ const txHash = await pool.withRelayer(        // run with failover on relayer fa
 Note that **credit is per-relayer**: a funding account's balance lives at one relayer, so a failover target may 402 (`insufficient_credit`) — which correctly stops the call rather than retrying elsewhere. Fund the account at every relayer you list, or list relayers sharing a ledger.
 
 Also exported: `normalizeRelayList(relay?)` — the canonical `string | string[]` → clean-list normalization (`[]`/whitespace → `undefined`).
+
+---
+
+## `IndexerClient`
+
+Thin HTTP client for the [announcement indexer](./03-architecture.md#the-announcement-indexer) — the account method's discovery accelerator. The account adapter uses it internally whenever `ClientConfig.indexerUrl` is set; it is exported for apps that want the feed directly.
+
+```typescript
+import { IndexerClient } from '@shade/sdk';
+
+const indexer = new IndexerClient('http://localhost:3100');   // (baseUrl, fetchFn?, { timeoutMs? }) — 10 s default timeout
+const { cursor, startCursor } = await indexer.health();
+const page = await indexer.getAnnouncements(startCursor ?? undefined, 200);
+```
+
+| Method | Purpose |
+|---|---|
+| `health()` | The coverage window (`cursor`, `startCursor`), `network`, `store` backend, `lagSeconds`, ingest diagnostics (`IndexerHealth`) |
+| `getAnnouncements(cursor?, limit?)` | One page of candidates strictly after `cursor` (`AnnouncementsPage`; the service caps `limit` at 200) — records carry their Horizon operation records inlined verbatim |
+
+Every failure is typed so the scan can treat it as "fall back to the Horizon walk", never as a lost payment: transport failures and timeouts throw **`IndexerNetworkError`** (code `indexer_network_error`); non-2xx responses throw **`IndexerHttpError`** (code `indexer_http_error`), carrying the HTTP `.status` and the indexer's own `.indexerCode` from its `{ error, code }` body. Also exported: the `IndexerHealth`, `IndexerAnnouncement`, and `AnnouncementsPage` types.
 
 ---
 
@@ -393,6 +426,8 @@ try {
 | `RelayerHttpError` | A relayer endpoint responded non-2xx — carries `.status` and the relayer's own `.relayerCode` (e.g. `insufficient_credit`) |
 | `RelayerNetworkError` | A relayer was unreachable at the transport level (DNS/refused/aborted/invalid body) |
 | `NoHealthyRelayerError` | No candidate in the relayer list is usable — `.candidates` maps every URL to its rejection reason |
+| `IndexerHttpError` | An indexer endpoint responded non-2xx — carries `.status` and the indexer's own `.indexerCode`; the scan treats it as "fall back to the Horizon walk" |
+| `IndexerNetworkError` | An indexer was unreachable at the transport level (DNS/refused/timeout/invalid body) — same Horizon fallback |
 
 ---
 

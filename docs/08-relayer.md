@@ -32,7 +32,7 @@ Selection among healthy candidates is **random by default** — deliberate, so a
 
 | Endpoint | What it does |
 |---|---|
-| `GET /health` | Status, network, relayer address, balance, `requireCredit`, `maxRelayFeeXlm`, `store` (`postgres`\|`json`), `sharedState` (`redis`\|`memory`) |
+| `GET /health` | Status, network, relayer address, balance, `requireCredit`, `maxRelayFeeXlm`, `sponsoredReserveEstimate`, `store` (`postgres`\|`json`), `sharedState` (`redis`\|`memory`) |
 | `POST /relay` | Fee-bump and submit a signed transaction |
 | `POST /sponsor` | Create a stealth account (funded `CreateAccount` from the relayer) |
 | `POST /sponsor-claim/prepare` | Build an unsigned sponsored-claim transaction |
@@ -116,7 +116,7 @@ shade-relayer:v1:{endpoint}:{fundingAccount}:{nonce}:{amount}[:{bind}]
 
 The signed message binds the endpoint, the account, the nonce, and the exact **amount** authorized. On `/relay`, `bind` is additionally the **inner transaction hash**, so an intercepted `{nonce, signature}` cannot be paired with a different inner XDR of the same fee.
 
-On `/relay` the signed amount is a **fee ceiling**: the client authorizes "debit up to the relayer's advertised `maxRelayFeeXlm` for THIS inner tx", and the relayer debits only the **actual** fee (rejecting anything above the ceiling with `fee_exceeds_authorization`). On `/sponsor-claim/submit` the amount is the **exact** total the relayer will charge — the prepared tx's fee plus the 1 XLM sponsored-reserve estimate.
+On `/relay` the signed amount is a **fee ceiling**: the client authorizes "debit up to the relayer's advertised `maxRelayFeeXlm` for THIS inner tx", and the relayer debits only the **actual** fee (rejecting anything above the ceiling with `fee_exceeds_authorization`). On `/sponsor-claim/submit` the amount is the **exact** total the relayer will charge — the prepared tx's fee plus the sponsored-reserve estimate. That reserve component is advertised in `/health` as **`sponsoredReserveEstimate`** (`'1.0000000'`): clients prefer the advertised value over their own mirrored constant when computing the total they sign, so changing the estimate relayer-side no longer breaks gated sponsored claims — and a `/health` fault just falls back to the mirrored constant, never breaking the claim itself.
 
 The SDK and CLI handle all of this automatically once they hold a funding signer:
 
