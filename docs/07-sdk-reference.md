@@ -312,13 +312,14 @@ Also exported: `challengeMessage(endpoint, fundingAccount, nonce, amount, bind?)
 
 ## Typed errors
 
-All exported from `@shade/sdk` so apps can branch cleanly:
+All exported from `@shade/sdk` so apps can branch cleanly. Every error extends a shared **`ShadeError`** base and carries a stable **`code`** string (e.g. `method_required`, `transaction_timeout`) — branch on `e.code` when `instanceof` is unreliable across bundling/realm boundaries:
 
 ```typescript
 import { MethodRequiredError, ContractIdRequiredError, NoBalanceError,
          AnnouncementNotFoundError, StealthAccountNotFoundError,
          DestinationTrustlineError, FeePayerRequiredError,
-         SponsoredClaimMismatchError } from '@shade/sdk';
+         TransactionTimeoutError, ClaimAmountRequiresNoMergeError,
+         SponsoredClaimMismatchError, ShadeError } from '@shade/sdk';
 
 try {
   await client.claim(payment, dest, { keys });
@@ -346,6 +347,8 @@ try {
 | `FeePayerAddressRequiredError` | `signTransaction` set on a pool claim without `feePayerAddress` |
 | `EntryArchivedRestoringError` | Entry archived and the automatic restore failed (funds safe; retry) |
 | `TransactionRetryableError` | RPC returned a non-terminal status — nothing landed, safe to retry (has `.retryable`) |
+| `TransactionTimeoutError` | Submission stayed PENDING past the timeout — carries `.txHash` and `.retryable = false`; the tx **may still land**, so poll the hash, do NOT blindly resubmit |
+| `ClaimAmountRequiresNoMergeError` | `claim({ amount })` given with an effective merge (account native) or on a token claim — refuses rather than silently sweeping the full balance |
 
 ---
 
@@ -442,7 +445,7 @@ interface StealthDerivationWithSecret extends StealthDerivation {
 > | Encoding | `Uint8Array` (raw bytes) | `string` (hex) |
 > | Fields | `spendPrivKey`, `viewPrivKey`, `metaAddress` (an object) | `metaAddress` (a `shade:stellar:` string), `spendPubKey`, `spendPrivKey`, `viewPubKey`, `viewPrivKey` |
 >
-> `StealthClient.keygen()` returns the **SDK** shape; `generateMetaAddress()` returns the **crypto** shape. Passing one where the other is expected will not type-check — convert explicitly (the SDK does this with `Buffer.from(bytes).toString('hex')` and `Buffer.from(hex, 'hex')`).
+> `StealthClient.keygen()` returns the **SDK** shape; `generateMetaAddress()` returns the **crypto** shape. Passing one where the other is expected will not type-check. Convert the crypto shape with the exported **`stealthKeysFromRaw(raw)`** helper, and import the crypto type under a distinct name via the re-export **`RawStealthKeys`**, so mixed-use code has one unambiguous import site.
 
 Errors: `InvalidPublicKey`, `InvalidScalar`, `InvalidMetaAddress`, `PointAtInfinity`.
 

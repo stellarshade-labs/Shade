@@ -85,7 +85,7 @@ The relayer is metered so it isn't a free-for-all:
 3. The relayer checks Horizon: the transaction succeeded, is sourced by that funding account, contains native payment ops **to the relayer** whose op-source is the funding account, and hasn't already been claimed. It sums every qualifying payment op and credits that amount.
 4. From then on the relayer serves that app's requests, drawing the credit down.
 
-Credit gating is switched on with **`RELAYER_REQUIRE_CREDIT=1`**.
+Credit gating is **on by default on non-local networks** (testnet/mainnet) and off on `local` for development. Set **`RELAYER_REQUIRE_CREDIT=0` or `=1`** to override the default explicitly.
 
 ### Proof of control
 
@@ -124,11 +124,11 @@ Client identity comes from the direct IP by default. `X-Forwarded-For` is only t
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `RELAYER_SECRET` | — | Relayer secret key. **If unset, a random keypair is generated** (unfunded) and logged. |
+| `RELAYER_SECRET` | — | Relayer secret key. Unset on `local` → a random keypair is generated (dev only); **unset on a non-local network now fails fast** (a random unfunded key can't pay fees). |
 | `NETWORK` | `local` | `local` → standalone + `localhost:8000`; otherwise testnet |
 | `PORT` | `3000` | Listen port |
-| `RELAYER_REQUIRE_CREDIT` | `0` | `1` → require prepaid credit for `/relay` and `/sponsor-claim/submit` |
-| `CREDIT_LEDGER_PATH` | `./data/credit-ledger.json` | Ledger file path |
+| `RELAYER_REQUIRE_CREDIT` | non-local: `1`, local: `0` | Require prepaid credit for `/relay` and `/sponsor-claim/submit`. Defaults **on** for testnet/mainnet, **off** for local; set `0`/`1` to override. |
+| `CREDIT_LEDGER_PATH` | `./data/credit-ledger.json` | Ledger file path. **On a non-local network, point this at a mounted persistent volume** — the default is ephemeral on Railway (see warning below). |
 | `TRUST_PROXY_HOPS` | `0` | Trusted reverse-proxy hops, counted from the right |
 | `TRUST_PROXY` | — | Legacy: `true` → 1 hop |
 | `SPONSOR_MAX_XLM` | `5` | Cap on `/sponsor` starting balance |
@@ -163,11 +163,11 @@ Step-by-step lives in `packages/relayer/README.md`.
 
 Read these before running a relayer with real value:
 
-1. **The default configuration is unauthenticated.** With `RELAYER_REQUIRE_CREDIT=0` (the shipped default), `/relay` and `/sponsor-claim/submit` perform **no authentication** — anyone can make the relayer pay fees (and front ~1 XLM reserves) for any conforming transaction, bounded only by an in-memory per-IP rate limit. Across many IPs this is a hot-wallet drain vector. **Set `RELAYER_REQUIRE_CREDIT=1` for any deployment that holds meaningful funds.** (`/sponsor` is fail-closed and always authenticated.)
-2. **The ledger file is not durable on ephemeral filesystems.** On Railway, a redeploy or restart wipes credit balances *and* the consumed-tx records — meaning a previously claimed deposit could be re-claimed afterwards. Fine for a testnet demo; a durable store (Postgres/Redis) is the production fix and is on the roadmap.
+1. **Authentication is on by default on non-local networks.** `/relay` and `/sponsor-claim/submit` require credit whenever `RELAYER_REQUIRE_CREDIT` is unset on testnet/mainnet (it defaults on); on `local` it defaults off for development. If you explicitly set `RELAYER_REQUIRE_CREDIT=0` on a funded deployment, those endpoints perform **no authentication** — anyone can make the relayer pay fees (and front ~1 XLM reserves) for any conforming transaction, bounded only by an in-memory per-IP rate limit, which across many IPs is a hot-wallet drain vector. **Do not disable credit on a deployment that holds meaningful funds.** (`/sponsor` is fail-closed and always authenticated.)
+2. **The ledger file is not durable on ephemeral filesystems.** On Railway, a redeploy or restart wipes credit balances *and* the consumed-tx records — meaning a previously claimed deposit could be re-claimed afterwards. The relayer now **warns loudly at startup** when credit is enabled on a non-local network and `CREDIT_LEDGER_PATH` looks ephemeral (unset or under `./data`); point it at a mounted persistent volume. A durable external store (Postgres/Redis) is the full production fix and is on the roadmap.
 3. **Challenge nonces and rate-limit buckets are in-memory and single-node.** Horizontal scaling breaks both the rate limit and the single-use nonce guarantee; a restart invalidates all outstanding nonces.
 4. **`/sponsor-claim/prepare` is unauthenticated** and performs 2–3 Horizon lookups per call — a cheap amplification surface, protected only by the rate limit.
-5. **`CORS_ORIGIN` defaults to `*`**, and an unset `RELAYER_SECRET` silently boots an unfunded random keypair rather than failing fast.
+5. **`CORS_ORIGIN` defaults to `*`** (the relayer now warns at startup when it is `*` on a non-local network — set it to your app origin). An unset `RELAYER_SECRET` now **fails fast on non-local networks** instead of silently booting an unfunded random keypair (a random key is still allowed on `local`).
 
 ---
 
