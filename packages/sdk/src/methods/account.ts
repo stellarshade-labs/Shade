@@ -31,6 +31,7 @@ import type {
   HorizonClaimableBalance,
 } from '../horizon.js';
 import { RelayerClient } from '../relayer.js';
+import type { TransactionStatusSource } from '../soroban.js';
 import {
   MinimumAmountError,
   ClaimAmountError,
@@ -65,6 +66,16 @@ const TOKEN_ACCOUNT_STARTING_BALANCE = '1.5001';
  * a partial claim: 2x the base reserve = 1.0 XLM.
  */
 const ACCOUNT_RESERVE_STROOPS = 10_000_000n;
+
+/**
+ * Mirror of the relayer's `SPONSORED_RESERVE_ESTIMATE` ('1.0000000' XLM): the
+ * reserve component a credit-gated relayer adds to the prepared tx's fee when
+ * verifying the sponsor-claim proof-of-control signature. Unlike `/relay`
+ * (which authorizes a fee CEILING), sponsor-claim verifies the EXACT total
+ * `tx.fee + this` — any other signed amount is rejected 401. Follow-up: the
+ * relayer should advertise this via `/health` instead of being mirrored here.
+ */
+const SPONSORED_RESERVE_ESTIMATE_STROOPS = 10_000_000n;
 
 function isNativeAsset(asset?: string): boolean {
   return !asset || asset === 'native' || asset === 'XLM';
@@ -167,14 +178,15 @@ export function computeReceiverStealthAddress(
  */
 export class AccountAdapter implements DeliveryAdapter {
   readonly method = 'account' as const;
-  private readonly relayerClient?: RelayerClient;
+  private readonly rpcServer?: TransactionStatusSource;
 
   constructor(
     private readonly networkPassphrase: string,
     private readonly horizon: HorizonClient,
     private readonly relayer?: string,
+    opts?: { rpcServer?: TransactionStatusSource },
   ) {
-    if (relayer) this.relayerClient = new RelayerClient(relayer);
+    this.rpcServer = opts?.rpcServer;
   }
 
   /**
@@ -814,7 +826,12 @@ export class AccountAdapter implements DeliveryAdapter {
     destination: string,
     payoutAmount: string,
   ): Promise<ClaimReceipt> {
-    const client = this.relayerClient ?? new RelayerClient(relay);
+    // Built per call so the client carries THIS call's funding signer and the
+    // confirm-poll handle; prepare and submit intentionally hit the same URL.
+    const client = new RelayerClient(relay, undefined, {
+      fundingSigner: opts.fundingSigner,
+      rpcServer: this.rpcServer,
+    });
     const asset = payment.asset ?? payment.token;
 
     const balanceId = payment.claimableBalanceId;
@@ -847,6 +864,14 @@ export class AccountAdapter implements DeliveryAdapter {
     stealthPrivKey.zeroize();
     tx.addSignature(payment.stealthAddress, Buffer.from(sig).toString('base64'));
 
+    // A gated relayer verifies the proof-of-control signature over the EXACT
+    // total it debits — the prepared tx's fee plus the sponsored-reserve
+    // estimate — recomputed server-side from the same tx, so this must match
+    // byte-for-byte (see packages/relayer/src/routes/sponsorClaim.ts).
+    const authAmount = formatStroops(
+      BigInt(tx.fee) + SPONSORED_RESERVE_ESTIMATE_STROOPS,
+    );
+
     const { txHash } = await client.sponsorClaimSubmit(
       tx.toEnvelope().toXDR('base64'),
       {
@@ -856,6 +881,9 @@ export class AccountAdapter implements DeliveryAdapter {
         destination,
         amount: payoutAmount,
         fundingAccount: opts.fundingAccount,
+        fundingSigner: opts.fundingSigner,
+        authAmount,
+        confirm: opts.confirm,
       },
     );
     return { txHash, amount, method: 'account' };
@@ -1032,9 +1060,19 @@ export class AccountAdapter implements DeliveryAdapter {
   private async submit(xdr: string, opts: ClaimOpts): Promise<string> {
     const relay = opts.relay ?? this.relayer;
     if (relay) {
-      const client = this.relayerClient ?? new RelayerClient(relay);
+      // Built per call — a per-call opts.relay must win over the ctor relayer,
+      // and the client must carry THIS call's funding signer — mirroring the
+      // pool withdraw path. The passphrase binds the inner-tx hash into the
+      // proof-of-control signature (REL-01); authAmount is auto-fetched from
+      // /health maxRelayFeeXlm by the RelayerClient.
+      const client = new RelayerClient(relay, undefined, {
+        fundingSigner: opts.fundingSigner,
+        rpcServer: this.rpcServer,
+      });
       const { txHash } = await client.relay(xdr, {
         fundingAccount: opts.fundingAccount,
+        networkPassphrase: this.networkPassphrase,
+        confirm: opts.confirm,
       });
       return txHash;
     }

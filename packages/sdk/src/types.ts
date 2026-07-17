@@ -254,6 +254,20 @@ export interface ClaimOpts {
    */
   fundingAccount?: string;
   /**
+   * Signer proving control of {@link fundingAccount}: a credit-gated relayer
+   * requires a fresh challenge nonce signed by the funding account before it
+   * debits credit (proof-of-control; without it every gated relay /
+   * sponsor-claim submit is rejected 401 `missing_auth`). Omit for non-gated
+   * relayers.
+   */
+  fundingSigner?: FundingSigner;
+  /**
+   * Relayed submissions only: poll the relayer-returned txHash until it is
+   * on-chain before returning (SDK-TXHASH-TRUST), surfacing a
+   * `TransactionTimeoutError` (with the hash) if it never lands.
+   */
+  confirm?: boolean;
+  /**
    * External signer for the FEE-PAYER leg (Freighter-style). When set on a pool
    * claim, the caller passes the fee payer's PUBLIC key via
    * {@link ClaimOpts.feePayerAddress} where a secret is normally expected (in

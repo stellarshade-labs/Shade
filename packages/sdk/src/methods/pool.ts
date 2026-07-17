@@ -236,6 +236,8 @@ export class PoolAdapter implements DeliveryAdapter {
       signTransaction: opts.signTransaction,
       feePayerAddress: opts.feePayerAddress,
       fundingAccount: opts.fundingAccount,
+      fundingSigner: opts.fundingSigner,
+      confirm: opts.confirm,
     });
     return { txHash: receipt.txHash, amount: receipt.amount, method: 'pool' };
   }

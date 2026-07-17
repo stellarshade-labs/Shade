@@ -99,7 +99,11 @@ export class StealthClient {
         case 'account':
           this.adapters.set(
             'account',
-            new AccountAdapter(this.networkPassphrase, horizon, this.relayer),
+            new AccountAdapter(this.networkPassphrase, horizon, this.relayer, {
+              // Confirm-poll handle for relayed claims (`confirm: true`): the
+              // Soroban RPC's getTransaction resolves classic tx hashes too.
+              rpcServer: this.server,
+            }),
           );
           break;
         case 'spp':

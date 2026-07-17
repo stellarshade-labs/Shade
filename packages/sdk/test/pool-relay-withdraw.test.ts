@@ -279,6 +279,64 @@ describe('pool relayed withdraw goes through RelayerClient (SDK-POOLRELAY-AUTH)'
     expect(sigOk).toBe(true);
   });
 
+  it('claim() forwards fundingSigner into the withdraw relay auth (ClaimOpts threading)', async () => {
+    const { keys, stealth } = makeFixture();
+    const tokenAddress = Asset.native().contractId(NET);
+    const directSends: string[] = [];
+    const server = makeServer({ stealth, tokenAddress, directSends });
+    const adapter = new PoolAdapter(makeContractId(), NET, server);
+
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal(
+      'fetch',
+      async (url: string, init?: { method?: string; body?: string }) => {
+        const body = init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : {};
+        calls.push({ url, body });
+        if (url.endsWith('/health')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ status: 'ok', requireCredit: true, maxRelayFeeXlm: 0.1 }),
+          };
+        }
+        if (url.includes('/credit/challenge')) {
+          return { ok: true, status: 200, json: async () => ({ nonce: 'NONCE123' }) };
+        }
+        if (url.endsWith('/relay')) {
+          return { ok: true, status: 200, json: async () => ({ txHash: 'RELAYED_HASH' }) };
+        }
+        return { ok: false, status: 404, json: async () => ({ error: 'not found' }) };
+      },
+    );
+
+    const fundingKp = Keypair.random();
+    const payment: Payment = {
+      stealthAddress: stealth.stealthAddress,
+      ephemeralPubKey: Buffer.from(stealth.ephemeralPubKey).toString('hex'),
+      token: tokenAddress,
+      amount: 5,
+      amountStroops: BALANCE_STROOPS.toString(),
+      method: 'pool',
+    };
+    // Through claim() — the ClaimOpts entry point — not withdraw() directly:
+    // locks the fundingSigner/confirm forwarding that used to be dropped.
+    const receipt = await adapter.claim(payment, DEST, {
+      keys,
+      feePayer: Keypair.random().secret(),
+      relay: 'http://relayer.test',
+      fundingAccount: fundingKp.publicKey(),
+      fundingSigner: async (message) => fundingKp.sign(Buffer.from(message)),
+    });
+    expect(receipt.txHash).toBe('RELAYED_HASH');
+
+    const relayCall = calls.find((c) => c.url.endsWith('/relay'));
+    expect(relayCall).toBeDefined();
+    expect(relayCall!.body.fundingAccount).toBe(fundingKp.publicKey());
+    expect(relayCall!.body.nonce).toBe('NONCE123');
+    expect(typeof relayCall!.body.signature).toBe('string');
+    expect(relayCall!.body.authAmount).toBe('0.1000000');
+  });
+
   it('accepts a bare .../relay URL without doubling the path (back-compat)', async () => {
     const { keys, stealth } = makeFixture();
     const tokenAddress = Asset.native().contractId(NET);
