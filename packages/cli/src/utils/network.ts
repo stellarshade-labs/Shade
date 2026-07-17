@@ -1,22 +1,30 @@
 import chalk from 'chalk';
 import { decodeMetaAddress } from '@shade/crypto';
+import type { NetworkName } from '@shade/sdk';
+
+/**
+ * The networks this CLI accepts today. Mainnet ('public') is added here — and
+ * in the SDK's `NETWORKS` table — after the external audit.
+ */
+export const SUPPORTED_NETWORKS: NetworkName[] = ['testnet'];
 
 /**
  * Validate the transport `--network` flag, exiting on anything unsupported.
  *
- * Previously commands did `options.network as 'local' | 'testnet'` and every
- * non-'local' value fell through to the testnet branch, so `--network mainnet`
- * silently built a TESTNET transaction. Only the two supported values pass;
- * anything else (notably 'mainnet') prints an error and exits.
+ * Previously commands did `options.network as ...` casts and unknown values
+ * fell through to the testnet branch, so `--network mainnet` silently built a
+ * TESTNET transaction. Only members of {@link SUPPORTED_NETWORKS} pass;
+ * anything else (notably 'mainnet' and the removed 'local') prints an error
+ * and exits.
  */
-export function assertNetwork(value: string): 'local' | 'testnet' {
-  if (value === 'local' || value === 'testnet') {
-    return value;
+export function assertNetwork(value: string): NetworkName {
+  if ((SUPPORTED_NETWORKS as string[]).includes(value)) {
+    return value as NetworkName;
   }
   console.error(
     chalk.red(
-      `Error: unsupported network '${value}'. Supported: local, testnet. ` +
-        '(mainnet is not yet supported — the contracts are unaudited.)',
+      `Error: unsupported network '${value}'. Supported: ${SUPPORTED_NETWORKS.join(', ')}. ` +
+        "('local' has been removed — dev/test runs on testnet; mainnet arrives after the external audit.)",
     ),
   );
   process.exit(1);

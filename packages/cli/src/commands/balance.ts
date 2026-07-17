@@ -5,57 +5,20 @@ import {
   formatStroops,
   numberToStroops,
   labelForToken,
+  getNetworkConfig,
   type StealthKeys,
 } from '@shade/sdk';
-import { Networks, Contract, nativeToScVal } from '@stellar/stellar-sdk';
-import * as StellarSdk from '@stellar/stellar-sdk';
 import { loadKeystoreOrExit, resolveKeystorePath } from '../utils/keystore.js';
 import { assertNetwork } from '../utils/network.js';
 import { getContractAddress } from '../utils/config.js';
+import { getContractBalance } from '../utils/soroban.js';
 import { fetchAnnouncements } from './scan.js';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 
-function createSimulationTx(
-  operation: StellarSdk.xdr.Operation,
-  networkPassphrase: string
-): StellarSdk.Transaction {
-  return new StellarSdk.TransactionBuilder(
-    new StellarSdk.Account('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF', '0'),
-    { fee: '100', networkPassphrase }
-  )
-    .addOperation(operation)
-    .setTimeout(30)
-    .build();
-}
-
-async function getContractBalance(
-  contractId: string,
-  stealthPk: Uint8Array,
-  tokenAddress: string,
-  server: StellarSdk.rpc.Server,
-  networkPassphrase: string,
-): Promise<bigint> {
-  const contract = new Contract(contractId);
-  const op = contract.call(
-    'get_balance',
-    nativeToScVal(Buffer.from(stealthPk)),
-    new StellarSdk.Address(tokenAddress).toScVal(),
-  );
-
-  const sim = await server.simulateTransaction(
-    createSimulationTx(op, networkPassphrase)
-  );
-
-  if (StellarSdk.rpc.Api.isSimulationSuccess(sim) && sim.result?.retval) {
-    return BigInt(StellarSdk.scValToNative(sim.result.retval));
-  }
-  return 0n;
-}
-
 export const balanceCommand = new Command('balance')
   .description('Show total balance across all stealth payments')
-  .option('--network <network>', 'Network to use', 'local')
+  .option('--network <network>', 'Network to use', 'testnet')
   .option('--keystore <path>', 'Keystore file path (defaults to $SHADE_KEYSTORE or ~/.shade-keys.json)')
   .option('--password <password>', 'Keystore password (prompts on stderr if omitted for an encrypted keystore)')
   .action(async (options) => {
@@ -69,17 +32,7 @@ export const balanceCommand = new Command('balance')
         process.exit(1);
       }
 
-      const networkPassphrase = network === 'local'
-        ? Networks.STANDALONE
-        : Networks.TESTNET;
-
-      const rpcUrl = network === 'local'
-        ? 'http://localhost:8000/soroban/rpc'
-        : 'https://soroban-testnet.stellar.org';
-
-      const server = new StellarSdk.rpc.Server(rpcUrl, {
-        allowHttp: network === 'local',
-      });
+      const { server, networkPassphrase } = getNetworkConfig(network);
 
       console.log(chalk.cyan('Scanning for stealth payments...'));
 

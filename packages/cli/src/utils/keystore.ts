@@ -335,12 +335,40 @@ export async function loadKeystore(
 
       const privateData = JSON.parse(decrypted.toString('utf8'));
 
-      return {
+      const keystore: Keystore = {
         spendPublicKey: parsed.spendPublicKey,
         viewPublicKey: parsed.viewPublicKey,
         spendPrivateKey: privateData.spendPrivateKey,
         viewPrivateKey: privateData.viewPrivateKey
       };
+
+      // F19: a successful decrypt with a weaker-than-hardened KDF (the
+      // LEGACY_KDF fallback for pre-v2 envelopes) proves we hold both the
+      // password and the plaintext — transparently re-save with the hardened
+      // work factor so the at-rest file stops being brute-forceable at the old
+      // cost. Strictly best-effort: a rewrap failure only logs and NEVER fails
+      // the load (the caller already has a fully decrypted keystore).
+      if (kdf.N < HARDENED_KDF.N) {
+        try {
+          await saveKeystore(filepath, keystore, password);
+          console.error(
+            chalk.gray(
+              `Keystore re-encrypted with hardened KDF params (scrypt N=${HARDENED_KDF.N}) at ${filepath}`,
+            ),
+          );
+        } catch (rewrapError: unknown) {
+          const msg =
+            rewrapError instanceof Error ? rewrapError.message : String(rewrapError);
+          console.error(
+            chalk.yellow(
+              `Warning: could not re-encrypt keystore with hardened KDF params: ${msg} ` +
+                '(the keystore still loads and remains unchanged on disk)',
+            ),
+          );
+        }
+      }
+
+      return keystore;
     } else {
       return parsed as Keystore;
     }

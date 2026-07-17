@@ -1,5 +1,12 @@
 import { Command } from 'commander';
-import { StealthClient, type StealthKeys, type Payment } from '@shade/sdk';
+import {
+  StealthClient,
+  parseStroops,
+  formatStroops,
+  numberToStroops,
+  type StealthKeys,
+  type Payment,
+} from '@shade/sdk';
 import { StrKey } from '@stellar/stellar-sdk';
 import {
   loadKeystoreOrExit,
@@ -8,50 +15,49 @@ import {
 import { assertNetwork } from '../utils/network.js';
 import { resolveSecret } from '../utils/secrets.js';
 import { findHorizonPayment } from '../utils/config.js';
-import { withdrawCommand } from './withdraw.js';
+import { runPoolWithdraw } from './withdraw.js';
 import chalk from 'chalk';
 
 /**
- * Delegate a pool-method claim to the existing `withdraw` flow. A stealth
- * address with no discovered account-method payment is assumed to be a pool
- * deposit — the withdraw command re-derives the announcement, recovers the
- * stealth key, and submits the ed25519-signed pool withdrawal.
+ * Parse a partial-claim `--amount` through the same exact-stroops path `send`
+ * and `withdraw` use: `parseStroops` rejects non-numeric input and amounts
+ * with more than 7 decimal places up front, and the returned whole-unit number
+ * is re-derived from the exact stroop count instead of `parseFloat`-ing
+ * arbitrary input.
+ *
+ * The SDK's `ClaimOpts.amount` is a `number` that gets re-derived to stroops
+ * internally (`numberToStroops`), so as a final guard the parsed value is
+ * round-tripped here: any amount that would not survive that conversion
+ * exactly (sub-microlumen values stringify exponentially; astronomically large
+ * ones exceed float stroop precision) is rejected up front rather than
+ * claiming a different amount than requested.
+ *
+ * @throws {Error} When the amount is not a non-negative decimal, has >7dp, or
+ *   cannot be represented exactly as the SDK's numeric claim amount.
  */
-async function claimViaPool(
-  stealthAddress: string,
-  destination: string,
-  options: {
-    network: string;
-    relay?: string;
-    feePayer?: string;
-    asset?: string;
-    keystore?: string;
-    password?: string;
-    verbose?: boolean;
-  },
-): Promise<void> {
-  const argv = [
-    'node',
-    'stealth',
-    stealthAddress,
-    destination,
-    '--network',
-    options.network,
-  ];
-  if (options.asset) argv.push('--asset', options.asset);
-  if (options.feePayer) argv.push('--fee-payer', options.feePayer);
-  if (options.relay) argv.push('--relay', options.relay);
-  if (options.keystore) argv.push('--keystore', options.keystore);
-  if (options.password !== undefined) argv.push('--password', options.password);
-  if (options.verbose) argv.push('--verbose');
-  await withdrawCommand.parseAsync(argv);
+export function parseClaimAmount(amount: string): number {
+  const stroops = parseStroops(amount);
+  const parsed = Number(formatStroops(stroops));
+  let roundTrip: bigint | undefined;
+  try {
+    roundTrip = numberToStroops(parsed);
+  } catch {
+    roundTrip = undefined;
+  }
+  if (roundTrip !== stroops) {
+    throw new Error(
+      `Amount "${amount}" cannot be represented exactly as a numeric claim ` +
+        'amount — adjust it (values below 0.000001 whole units lose exactness).',
+    );
+  }
+  return parsed;
 }
 
 export const claimCommand = new Command('claim')
   .description('Claim a discovered stealth payment to a destination address')
   .argument('<stealth-address>', 'Stealth address holding the funds')
   .argument('<destination>', 'Destination Stellar address (G...)')
-  .option('--network <network>', 'Network to use', 'local')
+  .option('--network <network>', 'Network to use', 'testnet')
   .option('--keystore <path>', 'Keystore file path (defaults to $SHADE_KEYSTORE or ~/.shade-keys.json)')
   .option('--password <password>', 'Keystore password (prompts on stderr if omitted for an encrypted keystore)')
   .option('--merge', 'Sweep the whole account via AccountMerge (account method)')
@@ -96,7 +102,9 @@ export const claimCommand = new Command('claim')
           'SHADE_FEE_PAYER',
           chalk.white('Enter fee-payer secret (S...): '),
         );
-        await claimViaPool(stealthAddress, destination, {
+        await runPoolWithdraw({
+          stealthAddress,
+          destination,
           network,
           relay: options.relay,
           feePayer,
@@ -130,6 +138,9 @@ export const claimCommand = new Command('claim')
         asset: cached.asset,
         claimableBalanceId: cached.claimableBalanceId,
         amount: cached.amount,
+        // Exact stroops from the scan cache (normalized on load for caches
+        // written before the field existed) — required by the SDK Payment.
+        amountStroops: cached.amountStroops,
         method: 'account',
         txHash: cached.txHash,
       };
@@ -154,13 +165,24 @@ export const claimCommand = new Command('claim')
         ),
       );
 
+      // Partial-claim amount: exact-stroops parsing (rejects >7dp) like send.
+      let claimAmount: number | undefined;
+      if (options.amount !== undefined) {
+        try {
+          claimAmount = parseClaimAmount(options.amount);
+        } catch (e) {
+          console.error(chalk.red(`Error: ${(e as Error).message}`));
+          process.exit(1);
+        }
+      }
+
       const receipt = await client.claim(payment, destination, {
         keys,
         merge: options.merge !== false,
         relay: options.relay,
         sponsored: options.sponsored,
         fundingAccount: options.fundingAccount,
-        amount: options.amount ? parseFloat(options.amount) : undefined,
+        amount: claimAmount,
       });
 
       console.log(chalk.green(`\u2713 Claimed ${receipt.amount} to ${destination}`));

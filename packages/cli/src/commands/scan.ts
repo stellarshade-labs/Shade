@@ -1,10 +1,19 @@
 import { Command } from 'commander';
 import { scanAnnouncements } from '@shade/crypto';
-import { StealthClient, labelForToken, type StealthKeys } from '@shade/sdk';
-import { StrKey, Networks, Contract, nativeToScVal } from '@stellar/stellar-sdk';
+import {
+  StealthClient,
+  labelForToken,
+  simulateReadOnly,
+  NETWORKS,
+  getNetworkConfig,
+  type NetworkName,
+  type StealthKeys,
+} from '@shade/sdk';
+import { StrKey, nativeToScVal } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { loadKeystoreOrExit, resolveKeystorePath } from '../utils/keystore.js';
 import { assertNetwork } from '../utils/network.js';
+import { getContractBalance } from '../utils/soroban.js';
 import {
   getContractAddress,
   loadHorizonCursor,
@@ -16,6 +25,9 @@ import {
 } from '../utils/config.js';
 import Table from 'cli-table3';
 import chalk from 'chalk';
+
+/** Optional progress sink for `--verbose` (no-op when the flag is off). */
+type VerboseLog = (msg: string) => void;
 
 interface AccountScanRow {
   stealthAddress: string;
@@ -32,24 +44,32 @@ interface AccountScanRow {
  * recoverable via --full-rescan. Returns the matching rows for display.
  */
 async function scanAccountMethod(
-  network: 'local' | 'testnet',
+  network: NetworkName,
   keys: StealthKeys,
   fullRescan: boolean,
+  log?: VerboseLog,
 ): Promise<AccountScanRow[]> {
   if (fullRescan) {
     clearHorizonCursor(network);
     clearHorizonPayments(network);
+    log?.('  account: cursor and payment cache cleared (--full-rescan)');
   }
   const cursor = loadHorizonCursor(network);
+  log?.(`  account: resuming from cursor ${cursor ?? '(none — start of history)'}`);
 
+  const started = Date.now();
   const client = new StealthClient({ network, methods: ['account'] });
   const result = await client.scanWithCursor(keys, {
     methods: ['account'],
     cursor: { account: cursor },
   });
+  log?.(
+    `  account: found ${result.payments.length} payment(s) in ${Date.now() - started}ms`,
+  );
 
   if (result.cursor.account) {
     saveHorizonCursor(network, result.cursor.account);
+    log?.(`  account: cursor advanced to ${result.cursor.account}`);
   }
 
   const persisted: PersistedPayment[] = result.payments.map((p) => ({
@@ -59,14 +79,14 @@ async function scanAccountMethod(
     asset: p.asset,
     claimableBalanceId: p.claimableBalanceId,
     amount: p.amount,
+    amountStroops: p.amountStroops,
     txHash: p.txHash,
   }));
   if (persisted.length > 0) {
     saveHorizonPayments(network, persisted);
   }
 
-  const networkPassphrase =
-    network === 'local' ? Networks.STANDALONE : Networks.TESTNET;
+  const networkPassphrase = NETWORKS[network].networkPassphrase;
   return result.payments.map((p) => ({
     stealthAddress: p.stealthAddress,
     token: p.asset ?? labelForToken(p.token, networkPassphrase),
@@ -85,19 +105,6 @@ export interface Announcement {
   ledger: number;
 }
 
-function createSimulationTx(
-  operation: StellarSdk.xdr.Operation,
-  networkPassphrase: string
-): StellarSdk.Transaction {
-  return new StellarSdk.TransactionBuilder(
-    new StellarSdk.Account('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF', '0'),
-    { fee: '100', networkPassphrase }
-  )
-    .addOperation(operation)
-    .setTimeout(30)
-    .build();
-}
-
 const ANNOUNCEMENT_PAGE_SIZE = 200;
 
 async function fetchAnnouncementCount(
@@ -105,15 +112,15 @@ async function fetchAnnouncementCount(
   server: StellarSdk.rpc.Server,
   networkPassphrase: string
 ): Promise<number> {
-  const contract = new Contract(contractId);
-  const op = contract.call('get_announcement_count');
-  const sim = await server.simulateTransaction(
-    createSimulationTx(op, networkPassphrase)
+  const result = await simulateReadOnly(
+    contractId,
+    'get_announcement_count',
+    [],
+    server,
+    networkPassphrase,
   );
-  if (StellarSdk.rpc.Api.isSimulationSuccess(sim) && sim.result?.retval) {
-    return Number(StellarSdk.scValToNative(sim.result.retval));
-  }
-  return 0;
+  if (result === null || result === undefined) return 0;
+  return Number(result as string | number);
 }
 
 async function fetchAnnouncementPage(
@@ -125,20 +132,20 @@ async function fetchAnnouncementPage(
   sinceLedger: number | undefined,
   out: Announcement[]
 ): Promise<number> {
-  const contract = new Contract(contractId);
-  const op = contract.call(
+  const decoded = (await simulateReadOnly(
+    contractId,
     'get_announcements',
-    nativeToScVal(start, { type: 'u64' }),
-    nativeToScVal(limit, { type: 'u64' })
-  );
-  const sim = await server.simulateTransaction(
-    createSimulationTx(op, networkPassphrase)
-  );
+    [
+      nativeToScVal(start, { type: 'u64' }),
+      nativeToScVal(limit, { type: 'u64' }),
+    ],
+    server,
+    networkPassphrase,
+  )) as any[] | null;
 
-  if (!StellarSdk.rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) {
+  if (!decoded || !Array.isArray(decoded)) {
     return 0;
   }
-  const decoded = StellarSdk.scValToNative(sim.result.retval) as any[];
   for (const ann of decoded) {
     const ledger = Number(ann.sequence || 0);
     if (sinceLedger && ledger < sinceLedger) continue;
@@ -169,7 +176,8 @@ export async function fetchAnnouncements(
   contractId: string,
   server: StellarSdk.rpc.Server,
   networkPassphrase: string,
-  sinceLedger?: number
+  sinceLedger?: number,
+  log?: VerboseLog,
 ): Promise<Announcement[]> {
   const announcements: Announcement[] = [];
 
@@ -179,6 +187,7 @@ export async function fetchAnnouncements(
       server,
       networkPassphrase
     );
+    log?.(`  pool: ${total} announcement(s) on-chain`);
     let offset = 0;
     while (offset < total) {
       const returned = await fetchAnnouncementPage(
@@ -191,6 +200,7 @@ export async function fetchAnnouncements(
         announcements
       );
       if (returned === 0) break;
+      log?.(`  pool: fetched page at offset ${offset} (${returned} announcement(s))`);
       offset += returned;
     }
   } catch (error) {
@@ -200,33 +210,9 @@ export async function fetchAnnouncements(
   return announcements;
 }
 
-async function getContractBalance(
-  contractId: string,
-  stealthPk: Uint8Array,
-  tokenAddress: string,
-  server: StellarSdk.rpc.Server,
-  networkPassphrase: string,
-): Promise<bigint> {
-  const contract = new Contract(contractId);
-  const op = contract.call(
-    'get_balance',
-    nativeToScVal(Buffer.from(stealthPk)),
-    new StellarSdk.Address(tokenAddress).toScVal(),
-  );
-
-  const sim = await server.simulateTransaction(
-    createSimulationTx(op, networkPassphrase)
-  );
-
-  if (StellarSdk.rpc.Api.isSimulationSuccess(sim) && sim.result?.retval) {
-    return BigInt(StellarSdk.scValToNative(sim.result.retval));
-  }
-  return 0n;
-}
-
 export const scanCommand = new Command('scan')
   .description('Scan for stealth payments you received (pool + account methods)')
-  .option('--network <network>', 'Network to use', 'local')
+  .option('--network <network>', 'Network to use', 'testnet')
   .option('--keystore <path>', 'Keystore file path (defaults to $SHADE_KEYSTORE or ~/.shade-keys.json)')
   .option('--password <password>', 'Keystore password (prompts on stderr if omitted for an encrypted keystore)')
   .option('--since-ledger <ledger>', 'Only scan announcements since this ledger', parseInt)
@@ -243,17 +229,11 @@ export const scanCommand = new Command('scan')
         process.exit(1);
       }
 
-      const networkPassphrase = network === 'local'
-        ? Networks.STANDALONE
-        : Networks.TESTNET;
+      const vlog: VerboseLog | undefined = options.verbose
+        ? (msg) => console.log(chalk.gray(msg))
+        : undefined;
 
-      const rpcUrl = network === 'local'
-        ? 'http://localhost:8000/soroban/rpc'
-        : 'https://soroban-testnet.stellar.org';
-
-      const server = new StellarSdk.rpc.Server(rpcUrl, {
-        allowHttp: network === 'local',
-      });
+      const { server, networkPassphrase } = getNetworkConfig(network);
 
       const table = new Table({
         head: ['Method', 'Stealth Address', 'Token', 'Balance'],
@@ -266,12 +246,14 @@ export const scanCommand = new Command('scan')
 
       // --- Pool method (Soroban announcements) ---
       console.log(chalk.cyan('Scanning pool announcements...'));
+      const poolStarted = Date.now();
       const contractAddress = getContractAddress(network);
       const announcements = await fetchAnnouncements(
         contractAddress,
         server,
         networkPassphrase,
         options.sinceLedger,
+        vlog,
       );
 
       if (announcements.length > 0) {
@@ -303,9 +285,11 @@ export const scanCommand = new Command('scan')
           found++;
         }
       }
+      vlog?.(`  pool: phase finished in ${Date.now() - poolStarted}ms`);
 
       // --- Account method (Horizon direct sends) ---
       console.log(chalk.cyan('Scanning direct account sends via Horizon...'));
+      const accountStarted = Date.now();
       const keys: StealthKeys = {
         metaAddress: '',
         spendPubKey: keystore.spendPublicKey,
@@ -315,7 +299,12 @@ export const scanCommand = new Command('scan')
       };
 
       try {
-        const accountRows = await scanAccountMethod(network, keys, !!options.fullRescan);
+        const accountRows = await scanAccountMethod(
+          network,
+          keys,
+          !!options.fullRescan,
+          vlog,
+        );
         for (const row of accountRows) {
           table.push(['account', row.stealthAddress, row.token, row.amount.toFixed(7)]);
           found++;
@@ -323,6 +312,7 @@ export const scanCommand = new Command('scan')
       } catch (e: any) {
         console.error(chalk.yellow(`Warning: account-method scan failed: ${e.message}`));
       }
+      vlog?.(`  account: phase finished in ${Date.now() - accountStarted}ms`);
 
       if (found === 0) {
         console.log(chalk.yellow('No stealth payments found for your keys'));

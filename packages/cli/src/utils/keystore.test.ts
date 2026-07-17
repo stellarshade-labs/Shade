@@ -159,9 +159,14 @@ describe('keystore', () => {
     expect(loaded.viewPrivateKey).toEqual(keystore.viewPrivateKey);
   });
 
-  it('decrypts a legacy envelope with no KDF params (N=16384 default)', async () => {
-    // Simulate a pre-existing (version 1, no kdf) envelope by encrypting with
-    // Node's scrypt defaults and the v1 shape, then confirm loadKeystore reads it.
+  /**
+   * Write a pre-hardening (version 1, no `kdf` field) envelope encrypted with
+   * Node's scrypt defaults (N=16384), returning the plaintext private keys.
+   */
+  async function writeLegacyEnvelope(filepath: string, pw: string): Promise<{
+    spendPrivateKey: string;
+    viewPrivateKey: string;
+  }> {
     const { createCipheriv, randomBytes: nodeRandom, scryptSync } = await import('crypto');
     const priv = {
       spendPrivateKey: Buffer.from(randomBytes(32)).toString('hex'),
@@ -169,7 +174,7 @@ describe('keystore', () => {
     };
     const salt = nodeRandom(32);
     const iv = nodeRandom(16);
-    const key = scryptSync(password, salt, 32); // Node defaults => N=16384
+    const key = scryptSync(pw, salt, 32); // Node defaults => N=16384
     const cipher = createCipheriv('aes-256-gcm', key, iv);
     const enc = Buffer.concat([
       cipher.update(JSON.stringify(priv), 'utf8'),
@@ -187,11 +192,82 @@ describe('keystore', () => {
         // NOTE: no `kdf` field — mirrors a pre-hardening keystore.
       },
     };
-    await fs.writeFile(keystorePath, JSON.stringify(legacy, null, 2));
+    await fs.writeFile(filepath, JSON.stringify(legacy, null, 2));
+    return priv;
+  }
+
+  it('decrypts a legacy envelope with no KDF params (N=16384 default)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const priv = await writeLegacyEnvelope(keystorePath, password);
 
     const loaded = await loadKeystore(keystorePath, password);
     expect(loaded.spendPrivateKey).toEqual(priv.spendPrivateKey);
     expect(loaded.viewPrivateKey).toEqual(priv.viewPrivateKey);
+    vi.restoreAllMocks();
+  });
+
+  it('rewraps a legacy envelope with the hardened KDF on decrypt, then decrypts again (F19)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const priv = await writeLegacyEnvelope(keystorePath, password);
+
+    // First load: decrypts with the legacy fallback AND upgrades the file.
+    const first = await loadKeystore(keystorePath, password);
+    expect(first.spendPrivateKey).toEqual(priv.spendPrivateKey);
+
+    const parsed = JSON.parse(await fs.readFile(keystorePath, 'utf-8'));
+    expect(parsed.encrypted.kdf).toEqual({ N: 131072, r: 8, p: 1 });
+    expect(parsed.version).toBe(2);
+    // Public keys survive the rewrap.
+    expect(parsed.spendPublicKey).toBe('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+    // The upgrade is announced (on stderr, not stdout).
+    expect(errorSpy.mock.calls.flat().join('\n')).toMatch(/hardened KDF/i);
+
+    // Second load: the now-hardened envelope round-trips with the same password.
+    const second = await loadKeystore(keystorePath, password);
+    expect(second.spendPrivateKey).toEqual(priv.spendPrivateKey);
+    expect(second.viewPrivateKey).toEqual(priv.viewPrivateKey);
+    vi.restoreAllMocks();
+  });
+
+  it('a failed rewrap only warns and never fails the load (best-effort)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const priv = await writeLegacyEnvelope(keystorePath, password);
+
+    // Make the file unwritable so the rewrap's save fails with EACCES.
+    fsSync.chmodSync(keystorePath, 0o400);
+    try {
+      const loaded = await loadKeystore(keystorePath, password);
+      expect(loaded.spendPrivateKey).toEqual(priv.spendPrivateKey);
+      expect(loaded.viewPrivateKey).toEqual(priv.viewPrivateKey);
+
+      const out = errorSpy.mock.calls.flat().join('\n');
+      expect(out).toMatch(/could not re-encrypt keystore/i);
+
+      // File is unchanged: still the legacy envelope without KDF params.
+      const parsed = JSON.parse(await fs.readFile(keystorePath, 'utf-8'));
+      expect(parsed.version).toBe(1);
+      expect(parsed.encrypted.kdf).toBeUndefined();
+    } finally {
+      fsSync.chmodSync(keystorePath, 0o600);
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('does NOT rewrite an already-hardened keystore on load', async () => {
+    const keystore = {
+      spendPrivateKey: Buffer.from(randomBytes(32)).toString('hex'),
+      viewPrivateKey: Buffer.from(randomBytes(32)).toString('hex'),
+      spendPublicKey: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      viewPublicKey: 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'
+    };
+    await saveKeystore(keystorePath, keystore, password);
+    const before = await fs.readFile(keystorePath, 'utf-8');
+
+    await loadKeystore(keystorePath, password);
+
+    const after = await fs.readFile(keystorePath, 'utf-8');
+    // Byte-identical: no pointless re-encryption (new salt/iv) on every load.
+    expect(after).toBe(before);
   });
 });
 

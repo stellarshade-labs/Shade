@@ -2,14 +2,19 @@ import { Command } from 'commander';
 import { deriveStealthAddressWithSecret } from '@shade/crypto';
 import {
   Keypair,
-  Networks,
   TransactionBuilder,
-  Asset,
   Contract,
   nativeToScVal,
 } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { StealthClient, parseStroops } from '@shade/sdk';
+import {
+  StealthClient,
+  parseStroops,
+  getNetworkConfig,
+  resolveTokenAddress,
+  waitForTransaction,
+  type NetworkName,
+} from '@shade/sdk';
 import { getContractAddress } from '../utils/config.js';
 import { assertNetwork, formatError, validateMetaAddress } from '../utils/network.js';
 import { resolveSecret } from '../utils/secrets.js';
@@ -29,7 +34,7 @@ function isNativeAsset(asset?: string): boolean {
  * here is what prevents the silent XLM-instead-of-token fund loss.
  */
 async function sendViaAccount(
-  network: 'local' | 'testnet',
+  network: NetworkName,
   metaAddress: string,
   amount: number,
   from: string,
@@ -72,50 +77,12 @@ async function sendViaAccount(
   }
 }
 
-function resolveTokenAddress(
-  assetArg: string | undefined,
-  networkPassphrase: string
-): string {
-  if (!assetArg || assetArg === 'native' || assetArg === 'XLM') {
-    return Asset.native().contractId(networkPassphrase);
-  }
-  const parts = assetArg.split(':');
-  if (parts.length !== 2 || !parts[0] || !parts[1]) {
-    throw new Error('Invalid asset format. Use CODE:ISSUER or "native"');
-  }
-  return new Asset(parts[0], parts[1]).contractId(networkPassphrase);
-}
-
-async function waitForTransaction(
-  server: StellarSdk.rpc.Server,
-  hash: string,
-  verbose?: boolean
-): Promise<void> {
-  let attempts = 0;
-  while (attempts < 30) {
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    try {
-      const result = await server.getTransaction(hash);
-      if (result.status === 'SUCCESS') return;
-      if (result.status === 'FAILED') {
-        throw new Error('Transaction failed on-chain');
-      }
-    } catch (e: any) {
-      if (e.message === 'Transaction failed on-chain') throw e;
-      // XDR parsing errors can occur; transaction may still be ok
-      if (verbose) console.log(chalk.gray(`  Polling: ${e.message}`));
-    }
-    attempts++;
-  }
-  if (verbose) console.log(chalk.yellow('  Transaction confirmation timed out'));
-}
-
 export const sendCommand = new Command('send')
   .description('Send tokens to a stealth address (pool deposit or direct account send)')
   .argument('<meta-address>', 'Recipient meta-address (shade:stellar:... or spend:view hex)')
   .argument('<amount>', 'Amount to send (in whole units, e.g. 100 for 100 XLM)')
   .option('--method <method>', 'Delivery method: pool | account | auto (you must choose)')
-  .option('--network <network>', 'Network to use', 'local')
+  .option('--network <network>', 'Network to use', 'testnet')
   .option('--from <secret>', 'Sender secret key (or set SHADE_FROM_SECRET / prompt; flags leak into shell history)')
   .option('--asset <asset>', 'Asset to send (default: native XLM, or CODE:ISSUER)')
   .option('--relay <url>', 'Relayer URL (account method fee-bump)')
@@ -194,9 +161,7 @@ export const sendCommand = new Command('send')
         return;
       }
 
-      const networkPassphrase = network === 'local'
-        ? Networks.STANDALONE
-        : Networks.TESTNET;
+      const { server, networkPassphrase } = getNetworkConfig(network);
 
       // Resolve token
       const tokenAddress = resolveTokenAddress(options.asset, networkPassphrase);
@@ -221,15 +186,6 @@ export const sendCommand = new Command('send')
 
       // Exact stroops parsed above — no lossy float round-trip.
       const stroops = amountStroops;
-
-      // Setup Soroban RPC
-      const rpcUrl = network === 'local'
-        ? 'http://localhost:8000/soroban/rpc'
-        : 'https://soroban-testnet.stellar.org';
-
-      const server = new StellarSdk.rpc.Server(rpcUrl, {
-        allowHttp: network === 'local',
-      });
 
       const contractAddress = getContractAddress(network);
       const contract = new Contract(contractAddress);
@@ -271,7 +227,7 @@ export const sendCommand = new Command('send')
       }
 
       if (sendResult.status === 'PENDING') {
-        await waitForTransaction(server, sendResult.hash, options.verbose);
+        await waitForTransaction(server, sendResult.hash);
       }
 
       console.log(chalk.green(`\u2713 Deposited ${parsedAmount} ${assetLabel} to stealth pool`));

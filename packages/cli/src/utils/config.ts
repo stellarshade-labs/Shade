@@ -1,62 +1,49 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import type { NetworkName } from '@shade/sdk';
 
 const CONFIG_DIR = path.join(os.homedir(), '.stealth');
 
 /**
- * Resolve the stealth pool contract address for a network.
+ * Resolve the stealth pool contract address for a network from the per-network
+ * config file under `~/.stealth/<network>-contract`.
  *
- * Precedence: the per-network config file under `~/.stealth/<network>-contract`,
- * then (for `local` only) a project-local `packages/cli/.stealth/local-contract`,
- * then the built-in `local` default. There is deliberately NO built-in testnet
- * address — testnet resets quarterly and a placeholder C-address only produces
- * an opaque Soroban failure later. If none is configured for testnet we throw an
- * actionable error naming the file to write.
+ * There is deliberately NO built-in default address — testnet resets quarterly
+ * and a placeholder C-address only produces an opaque Soroban failure later.
+ * If none is configured we throw an actionable error naming the file to write.
  *
- * @throws {Error} When no contract address is configured for `testnet`.
+ * @throws {Error} When no contract address is configured for the network.
  */
-export function getContractAddress(network: 'local' | 'testnet'): string {
+export function getContractAddress(network: NetworkName): string {
   const configFile = path.join(CONFIG_DIR, `${network}-contract`);
 
   try {
     const address = fs.readFileSync(configFile, 'utf-8').trim();
     if (address) return address;
   } catch {
-    // Fall through to defaults
-  }
-
-  if (network === 'local') {
-    // Try to read from project config first
-    try {
-      const projectConfig = path.join(process.cwd(), 'packages/cli/.stealth/local-contract');
-      const address = fs.readFileSync(projectConfig, 'utf-8').trim();
-      if (address) return address;
-    } catch {
-      // Use fallback
-    }
-    return 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGABAX';
+    // Fall through to the actionable error below.
   }
 
   throw new Error(
-    `No stealth pool contract configured for network 'testnet'. Deploy the ` +
+    `No stealth pool contract configured for network '${network}'. Deploy the ` +
       `contract and save its C-address to ${configFile} ` +
       `(e.g. 'stellar contract deploy ...' then write the id there).`,
   );
 }
 
-export function saveContractAddress(network: 'local' | 'testnet', address: string): void {
+export function saveContractAddress(network: NetworkName, address: string): void {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
   const configFile = path.join(CONFIG_DIR, `${network}-contract`);
   fs.writeFileSync(configFile, address);
 }
 
-function horizonCursorFile(network: 'local' | 'testnet'): string {
+function horizonCursorFile(network: NetworkName): string {
   return path.join(CONFIG_DIR, `horizon-cursor-${network}`);
 }
 
 /** Load the persisted Horizon paging cursor for the account method, if any. */
-export function loadHorizonCursor(network: 'local' | 'testnet'): string | undefined {
+export function loadHorizonCursor(network: NetworkName): string | undefined {
   try {
     const cursor = fs.readFileSync(horizonCursorFile(network), 'utf-8').trim();
     return cursor || undefined;
@@ -66,13 +53,13 @@ export function loadHorizonCursor(network: 'local' | 'testnet'): string | undefi
 }
 
 /** Persist the Horizon paging cursor for the account method. */
-export function saveHorizonCursor(network: 'local' | 'testnet', cursor: string): void {
+export function saveHorizonCursor(network: NetworkName, cursor: string): void {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
   fs.writeFileSync(horizonCursorFile(network), cursor);
 }
 
 /** Clear the persisted Horizon cursor (used by --full-rescan). */
-export function clearHorizonCursor(network: 'local' | 'testnet'): void {
+export function clearHorizonCursor(network: NetworkName): void {
   try {
     fs.rmSync(horizonCursorFile(network));
   } catch {
@@ -99,22 +86,46 @@ export interface PersistedPayment {
   claimableBalanceId?: string;
   /** Amount in whole units. */
   amount: number;
+  /**
+   * Exact amount as a decimal `bigint` count of stroops, serialized as a
+   * string. Mirrors the SDK `Payment.amountStroops` (required there), so a
+   * cached payment can be rehydrated into a `Payment` without a lossy float.
+   * Entries written before this field existed are normalized on load.
+   */
+  amountStroops: string;
   /** Transaction hash that delivered the payment. */
   txHash?: string;
 }
 
-function horizonPaymentsFile(network: 'local' | 'testnet'): string {
+/**
+ * Derive an exact stroop string from a legacy cached whole-unit amount. Only
+ * used to rehydrate cache entries written before `amountStroops` was persisted;
+ * those entries never had more precision than this float to begin with.
+ */
+function stroopsFromLegacyAmount(amount: number): string {
+  return BigInt(Math.round(amount * 1e7)).toString();
+}
+
+function horizonPaymentsFile(network: NetworkName): string {
   return path.join(CONFIG_DIR, `horizon-payments-${network}.json`);
 }
 
-/** Load the persisted account-method payments cache, if any. */
-export function loadHorizonPayments(
-  network: 'local' | 'testnet',
-): PersistedPayment[] {
+/**
+ * Load the persisted account-method payments cache, if any. Entries from an
+ * older cache that predate `amountStroops` are normalized so every returned
+ * payment carries the exact stroop amount.
+ */
+export function loadHorizonPayments(network: NetworkName): PersistedPayment[] {
   try {
     const raw = fs.readFileSync(horizonPaymentsFile(network), 'utf-8');
-    const parsed = JSON.parse(raw) as PersistedPayment[];
-    return Array.isArray(parsed) ? parsed : [];
+    const parsed = JSON.parse(raw) as (Omit<PersistedPayment, 'amountStroops'> & {
+      amountStroops?: string;
+    })[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((p) => ({
+      ...p,
+      amountStroops: p.amountStroops ?? stroopsFromLegacyAmount(p.amount),
+    }));
   } catch {
     return [];
   }
@@ -126,7 +137,7 @@ export function loadHorizonPayments(
  * entries are preserved so a cursor-advanced scan never loses earlier finds.
  */
 export function saveHorizonPayments(
-  network: 'local' | 'testnet',
+  network: NetworkName,
   payments: PersistedPayment[],
 ): void {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
@@ -143,7 +154,7 @@ export function saveHorizonPayments(
 }
 
 /** Clear the persisted account-method payments cache (used by --full-rescan). */
-export function clearHorizonPayments(network: 'local' | 'testnet'): void {
+export function clearHorizonPayments(network: NetworkName): void {
   try {
     fs.rmSync(horizonPaymentsFile(network));
   } catch {
@@ -153,7 +164,7 @@ export function clearHorizonPayments(network: 'local' | 'testnet'): void {
 
 /** Look up a persisted account-method payment by its stealth address. */
 export function findHorizonPayment(
-  network: 'local' | 'testnet',
+  network: NetworkName,
   stealthAddress: string,
 ): PersistedPayment | undefined {
   return loadHorizonPayments(network).find(

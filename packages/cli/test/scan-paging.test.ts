@@ -14,7 +14,7 @@ import {
 } from '@stellar/stellar-sdk';
 import { fetchAnnouncements } from '../src/commands/scan.js';
 
-const NET = Networks.STANDALONE;
+const NET = Networks.TESTNET;
 
 function makeContractId(): string {
   const kp = Keypair.random();

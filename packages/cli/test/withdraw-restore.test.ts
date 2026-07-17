@@ -21,7 +21,7 @@ import * as StellarSdk from '@stellar/stellar-sdk';
 import { Keypair, Account, TransactionBuilder, Networks } from '@stellar/stellar-sdk';
 import { prepareWithRestore } from '@shade/sdk';
 
-const PASSPHRASE = Networks.STANDALONE;
+const PASSPHRASE = Networks.TESTNET;
 
 function makeTx(account?: StellarSdk.Account): StellarSdk.Transaction {
   const source = account ?? new Account(Keypair.random().publicKey(), '10');
