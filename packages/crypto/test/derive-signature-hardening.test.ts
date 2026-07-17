@@ -96,7 +96,7 @@ describe('deriveKeysFromSignature hardening sweep', () => {
         derivation.ephemeralPubKey,
       );
 
-      expect(scalarMultBase(recovered)).toEqual(derivation.stealthPubKey);
+      expect(recovered.publicKey()).toEqual(derivation.stealthPubKey);
     }
   });
 

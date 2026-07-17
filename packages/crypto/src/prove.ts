@@ -1,10 +1,8 @@
 import { ed25519 } from '@noble/curves/ed25519';
-import { sha512 } from '@noble/hashes/sha512';
-import { bytesToNumberLE, numberToBytesLE } from '@noble/curves/abstract/utils';
-import { L, scalarMultBase } from './ed25519.js';
+import { StealthScalar, signWithRawScalarBytes } from './scalar.js';
 
 /**
- * Sign a message using a raw ed25519 scalar (stealth private key).
+ * Sign a message using a stealth private key (raw ed25519 scalar).
  *
  * Standard ed25519.sign() hashes the seed to derive the signing scalar,
  * but stealth private keys are already raw scalars from modular addition
@@ -13,50 +11,37 @@ import { L, scalarMultBase } from './ed25519.js';
  * standard ed25519.verify() against the corresponding public key (scalar * G).
  *
  * @param message - The message to sign
+ * @param key - The recovered stealth key ({@link StealthScalar})
+ * @returns 64-byte ed25519 signature (R || S)
+ */
+export function signWithStealthKey(
+  message: Uint8Array,
+  key: StealthScalar,
+): Uint8Array;
+/**
+ * Sign a message using a raw 32-byte scalar.
+ *
+ * @deprecated Pass the {@link StealthScalar} returned by
+ * `recoverStealthPrivateKey` (or call its `.sign(message)` directly) instead
+ * of raw bytes — raw scalar bytes are one `Keypair.fromRawEd25519Seed()` away
+ * from permanently unwithdrawable funds.
+ *
+ * @param message - The message to sign
  * @param privateScalar - 32-byte raw scalar (stealth private key)
  * @returns 64-byte ed25519 signature (R || S)
  */
-export function signWithStealthKey(message: Uint8Array, privateScalar: Uint8Array): Uint8Array {
-  if (privateScalar.length !== 32) {
-    throw new Error('Invalid stealth private key length');
+export function signWithStealthKey(
+  message: Uint8Array,
+  privateScalar: Uint8Array,
+): Uint8Array;
+export function signWithStealthKey(
+  message: Uint8Array,
+  key: StealthScalar | Uint8Array,
+): Uint8Array {
+  if (key instanceof StealthScalar) {
+    return key.sign(message);
   }
-  if (message.length === 0) {
-    throw new Error('Message cannot be empty');
-  }
-
-  const a = bytesToNumberLE(privateScalar) % L;
-  const pubKeyBytes = scalarMultBase(privateScalar);
-
-  // Deterministic nonce: r = SHA-512(privateScalar || message) mod L
-  const nonceInput = new Uint8Array(32 + message.length);
-  nonceInput.set(privateScalar, 0);
-  nonceInput.set(message, 32);
-  const r = bytesToNumberLE(sha512(nonceInput)) % L;
-
-  // Zero the sensitive intermediate (contains the private scalar).
-  nonceInput.fill(0);
-
-  const R = ed25519.ExtendedPoint.BASE.multiply(r);
-  const Rbytes = R.toRawBytes();
-
-  // Challenge: k = SHA-512(R || pubKey || message) mod L
-  const challengeInput = new Uint8Array(32 + 32 + message.length);
-  challengeInput.set(Rbytes, 0);
-  challengeInput.set(pubKeyBytes, 32);
-  challengeInput.set(message, 64);
-  const k = bytesToNumberLE(sha512(challengeInput)) % L;
-
-  // challengeInput holds only public data (R, pubKey, message); zeroing it is
-  // uniform zeroization hygiene, not a secrecy requirement.
-  challengeInput.fill(0);
-
-  // Response: S = (r + k * a) mod L
-  const S = (r + k * a) % L;
-
-  const sig = new Uint8Array(64);
-  sig.set(Rbytes, 0);
-  sig.set(numberToBytesLE(S, 32), 32);
-  return sig;
+  return signWithRawScalarBytes(message, key);
 }
 
 /**
@@ -65,16 +50,21 @@ export function signWithStealthKey(message: Uint8Array, privateScalar: Uint8Arra
  * Uses raw-scalar ed25519 signing so the signature verifies against
  * the stealth public key (privateScalar * G), not the hashed-seed public key.
  *
- * @param stealthPrivKey - The 32-byte stealth private key (raw scalar)
+ * @param stealthPrivKey - The recovered stealth key ({@link StealthScalar};
+ *   passing raw 32-byte scalar bytes is deprecated — see
+ *   {@link signWithStealthKey})
  * @param challenge - The challenge to sign (typically a nonce or timestamp)
  * @returns The 64-byte ed25519 signature
  * @throws {Error} If private key is not 32 bytes or challenge is empty
  */
 export function proveOwnership(
-  stealthPrivKey: Uint8Array,
+  stealthPrivKey: StealthScalar | Uint8Array,
   challenge: Uint8Array
 ): Uint8Array {
-  return signWithStealthKey(challenge, stealthPrivKey);
+  if (stealthPrivKey instanceof StealthScalar) {
+    return stealthPrivKey.sign(challenge);
+  }
+  return signWithRawScalarBytes(challenge, stealthPrivKey);
 }
 
 /**

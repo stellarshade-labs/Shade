@@ -5,7 +5,6 @@ import { generateMetaAddress } from '../src/keys.js';
 import { deriveStealthAddress } from '../src/stealth.js';
 import { scanAnnouncements } from '../src/scan.js';
 import { recoverStealthPrivateKey } from '../src/recover.js';
-import { scalarMultBase } from '../src/ed25519.js';
 import { signWithStealthKey } from '../src/prove.js';
 import type { Announcement } from '../src/types.js';
 
@@ -42,7 +41,7 @@ describe('complete roundtrip', () => {
     );
 
     // Step 6: Verify private key corresponds to public key
-    const recoveredPubKey = scalarMultBase(stealthPrivKey);
+    const recoveredPubKey = stealthPrivKey.publicKey();
     expect(bytesToHex(recoveredPubKey)).toBe(bytesToHex(derivation.stealthPubKey));
     expect(bytesToHex(recoveredPubKey)).toBe(bytesToHex(found[0].publicKey));
 
@@ -101,7 +100,7 @@ describe('complete roundtrip', () => {
         announcement!.ephemeralPubKey
       );
 
-      const recoveredPubKey = scalarMultBase(stealthPrivKey);
+      const recoveredPubKey = stealthPrivKey.publicKey();
       expect(bytesToHex(recoveredPubKey)).toBe(bytesToHex(stealthAddr.publicKey));
     }
   });

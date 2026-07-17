@@ -35,7 +35,14 @@ export {
 
 export {
   recoverStealthPrivateKey,
+  recoverStealthPrivateKeyBytes,
 } from './recover.js';
+
+// Wrapper for recovered stealth private keys (raw scalars). Structurally
+// incompatible with Uint8Array so seed-based Keypair misuse cannot compile.
+export {
+  StealthScalar,
+} from './scalar.js';
 
 // Stellar key conversion
 export {

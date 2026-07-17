@@ -3,7 +3,6 @@ import {
   deriveStealthAddressWithSecret,
   scanAnnouncements,
   recoverStealthPrivateKey,
-  signWithStealthKey,
 } from '@shade/crypto';
 import {
   Keypair,
@@ -373,7 +372,8 @@ export class PoolAdapter implements DeliveryAdapter {
       this.networkPassphrase,
     );
 
-    const signature = signWithStealthKey(messageHash, stealthPrivKey);
+    const signature = stealthPrivKey.sign(messageHash);
+    stealthPrivKey.zeroize();
 
     const feePayerPublicKey = opts.signTransaction
       ? opts.feePayerAddress!

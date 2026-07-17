@@ -121,7 +121,7 @@ describe('deriveKeysFromSignature', () => {
     );
 
     // The recovered private key should correspond to the stealth public key
-    const recoveredPubKey = scalarMultBase(recoveredPrivKey);
+    const recoveredPubKey = recoveredPrivKey.publicKey();
     expect(recoveredPubKey).toEqual(derivation.stealthPubKey);
   });
 

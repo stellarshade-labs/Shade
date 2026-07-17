@@ -4,7 +4,6 @@ import { generateMetaAddress } from '../src/keys.js';
 import { deriveStealthAddress } from '../src/stealth.js';
 import { isMyStealthAddress } from '../src/scan.js';
 import { recoverStealthPrivateKey } from '../src/recover.js';
-import { scalarMultBase } from '../src/ed25519.js';
 
 describe('stealth address derivation', () => {
   it('should derive a valid stealth address', () => {
@@ -78,7 +77,7 @@ describe('stealth address derivation', () => {
     );
 
     // Verify it corresponds to the stealth public key
-    const derivedPubKey = scalarMultBase(stealthPrivKey);
+    const derivedPubKey = stealthPrivKey.publicKey();
     expect(bytesToHex(derivedPubKey)).toBe(bytesToHex(derivation.stealthPubKey));
   });
 });

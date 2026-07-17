@@ -2,12 +2,12 @@ import {
   decodeMetaAddress,
   deriveStealthAddressWithSecret,
   recoverStealthPrivateKey,
-  signWithStealthKey,
   scalarMult,
   scalarMultBase,
   pointAdd,
   hashToScalar,
   encodePublicKey,
+  type StealthScalar,
 } from '@shade/crypto';
 import {
   Account,
@@ -692,7 +692,8 @@ export class AccountAdapter implements DeliveryAdapter {
     }
 
     const tx = builder.setTimeout(30).build();
-    const sig = signWithStealthKey(tx.hash(), stealthPrivKey);
+    const sig = stealthPrivKey.sign(tx.hash());
+    stealthPrivKey.zeroize();
     tx.addSignature(stealthAddress, Buffer.from(sig).toString('base64'));
 
     const txHash = await this.submit(tx.toEnvelope().toXDR('base64'), opts);
@@ -789,7 +790,8 @@ export class AccountAdapter implements DeliveryAdapter {
     }
 
     const tx = builder.setTimeout(30).build();
-    const sig = signWithStealthKey(tx.hash(), stealthPrivKey);
+    const sig = stealthPrivKey.sign(tx.hash());
+    stealthPrivKey.zeroize();
     tx.addSignature(stealthAddress, Buffer.from(sig).toString('base64'));
 
     const txHash = await this.submit(tx.toEnvelope().toXDR('base64'), opts);
@@ -841,7 +843,8 @@ export class AccountAdapter implements DeliveryAdapter {
     });
 
     const stealthPrivKey = this.recoverKey(payment, opts);
-    const sig = signWithStealthKey(tx.hash(), stealthPrivKey);
+    const sig = stealthPrivKey.sign(tx.hash());
+    stealthPrivKey.zeroize();
     tx.addSignature(payment.stealthAddress, Buffer.from(sig).toString('base64'));
 
     const { txHash } = await client.sponsorClaimSubmit(
@@ -984,8 +987,8 @@ export class AccountAdapter implements DeliveryAdapter {
     return payment.amount.toFixed(7);
   }
 
-  /** Recover the raw stealth scalar for signing from the payment's ephemeral R. */
-  private recoverKey(payment: Payment, opts: ClaimOpts): Uint8Array {
+  /** Recover the stealth scalar for signing from the payment's ephemeral R. */
+  private recoverKey(payment: Payment, opts: ClaimOpts): StealthScalar {
     const viewPrivKey = new Uint8Array(Buffer.from(opts.keys.viewPrivKey, 'hex'));
     const spendPrivKey = new Uint8Array(
       Buffer.from(opts.keys.spendPrivKey, 'hex'),

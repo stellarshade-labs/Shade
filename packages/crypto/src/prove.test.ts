@@ -4,7 +4,6 @@ import { randomBytes } from '@noble/hashes/utils';
 import { generateMetaAddress } from './keys.js';
 import { deriveStealthAddress } from './stealth.js';
 import { recoverStealthPrivateKey } from './recover.js';
-import { scalarMultBase } from './ed25519.js';
 
 describe('Ownership Proof', () => {
   it('should create and verify valid ownership proof', () => {
@@ -18,7 +17,7 @@ describe('Ownership Proof', () => {
     );
 
     // Verify key correspondence first
-    const recoveredPub = scalarMultBase(stealthPrivKey);
+    const recoveredPub = stealthPrivKey.publicKey();
     expect(Buffer.from(recoveredPub).toString('hex')).toBe(Buffer.from(stealthPubKey).toString('hex'));
 
     const challenge = new TextEncoder().encode('withdrawal_request_123456');

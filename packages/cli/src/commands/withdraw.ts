@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { recoverStealthPrivateKey, scanAnnouncements, signWithStealthKey } from '@shade/crypto';
+import { recoverStealthPrivateKey, scanAnnouncements } from '@shade/crypto';
 import {
   Keypair,
   TransactionBuilder,
@@ -258,7 +258,8 @@ export async function runPoolWithdraw(options: RunPoolWithdrawOpts): Promise<voi
       networkPassphrase,
     );
 
-    const signature = signWithStealthKey(messageHash, stealthPrivKey);
+    const signature = stealthPrivKey.sign(messageHash);
+    stealthPrivKey.zeroize();
 
     // Build Soroban transaction
     console.log(chalk.cyan('Building withdraw transaction...'));
