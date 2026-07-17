@@ -1,11 +1,10 @@
 import { Request, Response } from 'express';
 import {
   Keypair,
-  Networks,
   TransactionBuilder,
-  Horizon,
   Transaction
 } from '@stellar/stellar-sdk';
+import { getContext } from '../context.js';
 import type { CreditLedger, Reservation } from '../ledger.js';
 import { validateStellarAddress } from '../utils/validation.js';
 import { ChallengeStore } from '../utils/auth.js';
@@ -65,18 +64,9 @@ export async function handleRelay(req: Request, res: Response) {
       return res.status(400).json({ error: 'Missing or invalid XDR' });
     }
 
-    const network = process.env.NETWORK || 'local';
-    const networkPassphrase = network === 'local'
-      ? Networks.STANDALONE
-      : Networks.TESTNET;
-
-    const horizonUrl = network === 'local'
-      ? 'http://localhost:8000'
-      : 'https://horizon-testnet.stellar.org';
-
-    const server = new Horizon.Server(horizonUrl, {
-      allowHttp: network === 'local',
-    });
+    // Network passphrase + Horizon server come from the shared relayer
+    // context (table-driven; initialized once at startup).
+    const { networkPassphrase, server } = getContext();
 
     let innerTx: Transaction;
     try {

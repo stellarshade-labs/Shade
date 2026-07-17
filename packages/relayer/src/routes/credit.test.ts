@@ -85,7 +85,7 @@ describe('credit routes', () => {
   function setup(serverOpts: Parameters<typeof mockServer>[0]) {
     initContext({
       keypair: relayer,
-      network: 'local',
+      network: 'testnet',
       server: mockServer(serverOpts),
       ledger,
     });

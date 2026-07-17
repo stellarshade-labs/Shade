@@ -25,16 +25,49 @@ export interface RelayerContext {
 
 let ctx: RelayerContext | null = null;
 
-/** Resolve the Horizon URL for a network label. */
-export function horizonUrlFor(network: string): string {
-  return network === 'local'
-    ? 'http://localhost:8000'
-    : 'https://horizon-testnet.stellar.org';
+/** Static, per-network relayer configuration. */
+export interface RelayerNetworkDefinition {
+  horizonUrl: string;
+  passphrase: string;
+  allowHttp: boolean;
 }
 
-/** Resolve the network passphrase for a network label. */
+/**
+ * Supported networks (testnet-only today, table-driven so mainnet can be added
+ * post-audit without touching call sites). Self-contained on purpose — the
+ * relayer does not import @shade/sdk.
+ */
+export const RELAYER_NETWORKS = {
+  testnet: {
+    horizonUrl: 'https://horizon-testnet.stellar.org',
+    passphrase: Networks.TESTNET,
+    allowHttp: false,
+  },
+  // post-audit: public: { horizonUrl: 'https://horizon.stellar.org',
+  //   passphrase: Networks.PUBLIC, allowHttp: false },
+} satisfies Record<string, RelayerNetworkDefinition>;
+
+/** Look up a network's definition; throws on unknown networks. */
+export function networkDefinitionFor(network: string): RelayerNetworkDefinition {
+  const def = (RELAYER_NETWORKS as Record<string, RelayerNetworkDefinition>)[
+    network
+  ];
+  if (!def) {
+    throw new Error(
+      `Unsupported network '${network}'. Supported: ${Object.keys(RELAYER_NETWORKS).join(', ')}`,
+    );
+  }
+  return def;
+}
+
+/** Resolve the Horizon URL for a network label (throws on unknown networks). */
+export function horizonUrlFor(network: string): string {
+  return networkDefinitionFor(network).horizonUrl;
+}
+
+/** Resolve the network passphrase for a network label (throws on unknown networks). */
 export function passphraseFor(network: string): string {
-  return network === 'local' ? Networks.STANDALONE : Networks.TESTNET;
+  return networkDefinitionFor(network).passphrase;
 }
 
 /**
@@ -44,12 +77,14 @@ export function passphraseFor(network: string): string {
 export function initContext(
   partial: Partial<RelayerContext> & { keypair: Keypair },
 ): RelayerContext {
-  const network = partial.network ?? process.env.NETWORK ?? 'local';
+  const network = partial.network ?? process.env.NETWORK ?? 'testnet';
   const networkPassphrase = partial.networkPassphrase ?? passphraseFor(network);
   const horizonUrl = partial.horizonUrl ?? horizonUrlFor(network);
   const server =
     partial.server ??
-    new Horizon.Server(horizonUrl, { allowHttp: network === 'local' });
+    new Horizon.Server(horizonUrl, {
+      allowHttp: networkDefinitionFor(network).allowHttp,
+    });
   const ledger = partial.ledger ?? new CreditLedger();
   const requireCredit =
     partial.requireCredit ?? process.env.RELAYER_REQUIRE_CREDIT === '1';

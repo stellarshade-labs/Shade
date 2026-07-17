@@ -82,7 +82,7 @@ describe('sponsor route', () => {
 
   it('rejects an unauthenticated request with 401 (no faucet)', async () => {
     const { server, submitTransaction } = mockServer(relayer.publicKey());
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     const req = { body: { address: stealth, startingBalance: '2' } } as Request;
     const res = mockRes();
@@ -97,7 +97,7 @@ describe('sponsor route', () => {
     const funder = Keypair.random();
     ledger.credit(funder.publicKey(), '10', 'DEP1');
     const { server, submitTransaction } = mockServer(relayer.publicKey());
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     const req = {
       body: {
@@ -114,7 +114,7 @@ describe('sponsor route', () => {
 
   it('rejects an invalid address', async () => {
     const { server } = mockServer(relayer.publicKey());
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
     const req = { body: { address: 'not-an-address' } } as Request;
     const res = mockRes();
     await handleSponsor(req, res);
@@ -128,7 +128,7 @@ describe('sponsor route', () => {
     const { server, submitTransaction } = mockServer(relayer.publicKey());
     initContext({
       keypair: relayer,
-      network: 'local',
+      network: 'testnet',
       server,
       ledger,
       sponsorMaxXlm: 5,
@@ -153,7 +153,7 @@ describe('sponsor route', () => {
     const funder = Keypair.random();
     ledger.credit(funder.publicKey(), '2000', 'DEP1');
     const { server, submitTransaction } = mockServer(relayer.publicKey());
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     // The old faucet allowed up to 1000; the new default cap is 5.
     const req = {
@@ -174,7 +174,7 @@ describe('sponsor route', () => {
     const funder = Keypair.random();
     ledger.credit(funder.publicKey(), '10', 'DEP1');
     const { server } = mockServer(relayer.publicKey(), [stealth]);
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
     const req = {
       body: { address: stealth, fundingAccount: funder.publicKey() },
     } as Request;
@@ -188,7 +188,7 @@ describe('sponsor route', () => {
     const funder = Keypair.random();
     ledger.credit(funder.publicKey(), '3', 'DEP1');
     const { server, submitTransaction } = mockServer(relayer.publicKey());
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     // fee = 100 stroops = 0.00001; total authorized = 2 + 0.00001.
     const auth = signedAuth(funder, '2.0000100');
@@ -215,7 +215,7 @@ describe('sponsor route', () => {
     const funder = Keypair.random();
     ledger.credit(funder.publicKey(), '1', 'DEP1');
     const { server } = mockServer(relayer.publicKey());
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     const auth = signedAuth(funder, '2.0000100');
     const req = {
@@ -231,7 +231,7 @@ describe('sponsor route', () => {
     const funder = Keypair.random();
     ledger.credit(funder.publicKey(), '10', 'DEP1');
     const { server, submitTransaction } = mockServer(relayer.publicKey());
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     // Sign for a smaller amount than the route will actually authorize.
     const auth = signedAuth(funder, '1.0000000');
@@ -248,7 +248,7 @@ describe('sponsor route', () => {
     const funder = Keypair.random();
     ledger.credit(funder.publicKey(), '10', 'DEP1');
     const { server } = mockServer(relayer.publicKey());
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     const auth = signedAuth(funder, '2.0000100');
     const first = {

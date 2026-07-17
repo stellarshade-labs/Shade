@@ -4,7 +4,9 @@ import os from 'os';
 import path from 'path';
 import { Request, Response } from 'express';
 import { handleRelay, initRelayRoute } from './relay';
-import { Keypair, Networks } from '@stellar/stellar-sdk';
+import { Keypair } from '@stellar/stellar-sdk';
+import { resolveRequireCredit } from '../boot.js';
+import { initContext, resetContext } from '../context.js';
 import { CreditLedger } from '../ledger.js';
 import { ChallengeStore, challengeMessage } from '../utils/auth.js';
 
@@ -54,6 +56,11 @@ describe('handleRelay', () => {
 
     mockKeypair = Keypair.random();
     initRelayRoute(mockKeypair);
+    initContext({
+      keypair: mockKeypair,
+      network: 'testnet',
+      server: mockServerInstance as any,
+    });
 
     mockReq = {
       body: {
@@ -65,6 +72,10 @@ describe('handleRelay', () => {
       status: vi.fn().mockReturnThis(),
       json: vi.fn().mockReturnThis()
     };
+  });
+
+  afterEach(() => {
+    resetContext();
   });
 
   it('should relay a valid transaction', async () => {
@@ -208,6 +219,12 @@ describe('handleRelay credit gating', () => {
     fundingAccount = funder.publicKey();
     challenges = new ChallengeStore();
     initRelayRoute(relayer, { ledger, requireCredit: true, challenges });
+    initContext({
+      keypair: relayer,
+      network: 'testnet',
+      server: mockServerInstance as any,
+      ledger,
+    });
     mockRes = {
       status: vi.fn().mockReturnThis(),
       json: vi.fn().mockReturnThis(),
@@ -218,6 +235,7 @@ describe('handleRelay credit gating', () => {
   });
 
   afterEach(() => {
+    resetContext();
     fs.rmSync(dir, { recursive: true, force: true });
     initRelayRoute(Keypair.random());
   });
@@ -249,6 +267,26 @@ describe('handleRelay credit gating', () => {
       mockFeeBump('600'),
     );
     mockReq.body = { xdr: 'anything', fundingAccount, ...auth(FEE_XLM) };
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    expect(mockRes.status).toHaveBeenCalledWith(402);
+    expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('gates with 402 by default: requireCredit derived via resolveRequireCredit(undefined)', async () => {
+    // The load-bearing default path: no RELAYER_REQUIRE_CREDIT env, so the
+    // boot resolver must yield gating ON — and an uncredited /relay gets 402.
+    const { requireCredit } = resolveRequireCredit(undefined);
+    expect(requireCredit).toBe(true);
+    initRelayRoute(relayer, { ledger, requireCredit, challenges });
+
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
+    (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(
+      mockFeeBump('600'),
+    );
+    // No credit anywhere, no proof-of-control — the request must be refused.
+    mockReq.body = { xdr: 'anything' };
 
     await handleRelay(mockReq as Request, mockRes as Response);
 
@@ -333,6 +371,12 @@ describe('handleRelay proof-of-control auth (credit-gated)', () => {
     ledger.credit(funder.publicKey(), '10', 'DEP1');
     challenges = new ChallengeStore();
     initRelayRoute(relayer, { ledger, requireCredit: true, challenges });
+    initContext({
+      keypair: relayer,
+      network: 'testnet',
+      server: mockServerInstance as any,
+      ledger,
+    });
     mockRes = {
       status: vi.fn().mockReturnThis(),
       json: vi.fn().mockReturnThis(),
@@ -342,6 +386,7 @@ describe('handleRelay proof-of-control auth (credit-gated)', () => {
   });
 
   afterEach(() => {
+    resetContext();
     fs.rmSync(dir, { recursive: true, force: true });
     initRelayRoute(Keypair.random());
   });
@@ -453,9 +498,16 @@ describe('handleRelay abuse guards (default free path)', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    // Default config: NO credit gating, NO challenge store — only the abuse
-    // guards protect the hot wallet here.
-    initRelayRoute(Keypair.random());
+    // Explicitly ungated config (RELAYER_REQUIRE_CREDIT=0 equivalent): NO
+    // credit gating, NO challenge store — only the abuse guards protect the
+    // hot wallet here.
+    const relayer = Keypair.random();
+    initRelayRoute(relayer);
+    initContext({
+      keypair: relayer,
+      network: 'testnet',
+      server: mockServerInstance as any,
+    });
     mockReq = { body: { xdr: 'anything' } };
     mockRes = {
       status: vi.fn().mockReturnThis(),
@@ -472,6 +524,7 @@ describe('handleRelay abuse guards (default free path)', () => {
   });
 
   afterEach(() => {
+    resetContext();
     initRelayRoute(Keypair.random());
   });
 
@@ -603,6 +656,12 @@ describe('handleRelay inner-tx binding (credit-gated)', () => {
     ledger.credit(funder.publicKey(), '10', 'DEP1');
     challenges = new ChallengeStore();
     initRelayRoute(relayer, { ledger, requireCredit: true, challenges });
+    initContext({
+      keypair: relayer,
+      network: 'testnet',
+      server: mockServerInstance as any,
+      ledger,
+    });
     mockRes = {
       status: vi.fn().mockReturnThis(),
       json: vi.fn().mockReturnThis(),
@@ -622,6 +681,7 @@ describe('handleRelay inner-tx binding (credit-gated)', () => {
   });
 
   afterEach(() => {
+    resetContext();
     fs.rmSync(dir, { recursive: true, force: true });
     initRelayRoute(Keypair.random());
   });

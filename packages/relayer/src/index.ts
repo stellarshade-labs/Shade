@@ -2,6 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { Horizon } from '@stellar/stellar-sdk';
 import {
+  assertSupportedNetwork,
   resolveRelayerKeypair,
   resolveRequireCredit,
   warnIfEphemeralLedgerPath,
@@ -16,7 +17,7 @@ import {
 import { handleCreditClaim, handleCreditBalance } from './routes/credit.js';
 import { handleCreditChallenge } from './routes/challenge.js';
 import { CreditLedger } from './ledger.js';
-import { initContext } from './context.js';
+import { initContext, networkDefinitionFor } from './context.js';
 import RateLimiter from './utils/rateLimit.js';
 import { logger } from './utils/logger.js';
 import dotenv from 'dotenv';
@@ -58,7 +59,7 @@ app.use(rateLimiter.middleware());
 app.use(logger.middleware());
 
 const RELAYER_SECRET = process.env.RELAYER_SECRET;
-const NETWORK = process.env.NETWORK || 'local';
+const NETWORK = process.env.NETWORK || 'testnet';
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 /**
@@ -77,20 +78,18 @@ function asyncHandler(
 
 async function initRelayer() {
   try {
-    // Fail fast on testnet/mainnet when no funded secret is configured; only
-    // NETWORK=local may fall back to a random (unfunded) keypair.
-    const keypair = resolveRelayerKeypair(RELAYER_SECRET, NETWORK);
+    // Reject unknown networks before anything else — 'local' was removed and
+    // supported networks live in the RELAYER_NETWORKS table.
+    assertSupportedNetwork(NETWORK);
 
-    // Startup warning when CORS is wide open outside local development.
-    warnIfPermissiveCors(corsOptions.origin, NETWORK);
+    // Fail fast when no funded secret is configured (there is no dev fallback).
+    const keypair = resolveRelayerKeypair(RELAYER_SECRET);
 
-    const horizonUrl = NETWORK === 'local'
-      ? 'http://localhost:8000'
-      : 'https://horizon-testnet.stellar.org';
+    // Startup warning when CORS is wide open.
+    warnIfPermissiveCors(corsOptions.origin);
 
-    const horizonServer = new Horizon.Server(horizonUrl, {
-      allowHttp: NETWORK === 'local',
-    });
+    const { horizonUrl, allowHttp } = networkDefinitionFor(NETWORK);
+    const horizonServer = new Horizon.Server(horizonUrl, { allowHttp });
 
     try {
       const account = await horizonServer.loadAccount(keypair.publicKey());
@@ -112,19 +111,14 @@ async function initRelayer() {
       if (error?.response?.status === 404) {
         logger.error('Account not funded', { publicKey: keypair.publicKey() });
         console.log(`[Relayer] Account not funded. Please fund: ${keypair.publicKey()}`);
-        if (NETWORK === 'local') {
-          console.log(`[Relayer] Run: curl "http://localhost:8000/friendbot?addr=${keypair.publicKey()}"`);
-        }
       }
     }
 
     // Secure by default: when RELAYER_REQUIRE_CREDIT is unset, credit gating
-    // is ON for non-local networks (unauthenticated /relay and
-    // /sponsor-claim/submit would otherwise drain the hot wallet) and OFF on
-    // local for dev convenience. An explicit '0'/'1' always wins.
+    // is ALWAYS ON (unauthenticated /relay and /sponsor-claim/submit would
+    // otherwise drain the hot wallet). An explicit '0'/'1' always wins.
     const { requireCredit, reason: requireCreditReason } = resolveRequireCredit(
       process.env.RELAYER_REQUIRE_CREDIT,
-      NETWORK,
     );
     logger.info('Credit gating resolved', {
       requireCredit,
@@ -132,12 +126,8 @@ async function initRelayer() {
       network: NETWORK,
     });
 
-    // If gating is ON on a real network, the ledger must survive redeploys.
-    warnIfEphemeralLedgerPath(
-      process.env.CREDIT_LEDGER_PATH,
-      requireCredit,
-      NETWORK,
-    );
+    // If gating is ON, the ledger must survive redeploys.
+    warnIfEphemeralLedgerPath(process.env.CREDIT_LEDGER_PATH, requireCredit);
 
     const ledger = new CreditLedger();
 

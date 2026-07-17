@@ -14,6 +14,7 @@ import {
   Memo,
   TimeoutInfinite,
 } from '@stellar/stellar-sdk';
+import { resolveRequireCredit } from '../boot.js';
 import { CreditLedger } from '../ledger.js';
 import { initContext, resetContext, getContext } from '../context.js';
 import { challengeMessage } from '../utils/auth.js';
@@ -98,7 +99,7 @@ describe('sponsor-claim routes', () => {
 
   it('prepare builds the sponsorship sandwich + payout (account missing)', async () => {
     const { server } = mockServer(relayer.publicKey(), [], [destination]);
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     const req = {
       body: {
@@ -115,7 +116,7 @@ describe('sponsor-claim routes', () => {
     expect(res.statusCode).toBe(200);
     expect(typeof res.body.xdr).toBe('string');
 
-    const tx = new Transaction(res.body.xdr, Networks.STANDALONE);
+    const tx = new Transaction(res.body.xdr, Networks.TESTNET);
     const opTypes = tx.operations.map((o) => o.type);
     expect(opTypes).toEqual([
       'beginSponsoringFutureReserves',
@@ -135,7 +136,7 @@ describe('sponsor-claim routes', () => {
 
   it('prepare rejects when the destination does not trust the asset', async () => {
     const { server } = mockServer(relayer.publicKey()); // destination not trusting
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     const req = {
       body: {
@@ -158,7 +159,7 @@ describe('sponsor-claim routes', () => {
       [stealth.publicKey()],
       [destination],
     );
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     const req = {
       body: {
@@ -172,7 +173,7 @@ describe('sponsor-claim routes', () => {
     const res = mockRes();
     await handleSponsorClaimPrepare(req, res);
 
-    const tx = new Transaction(res.body.xdr, Networks.STANDALONE);
+    const tx = new Transaction(res.body.xdr, Networks.TESTNET);
     expect(tx.operations.map((o) => o.type)).not.toContain('createAccount');
   });
 
@@ -182,7 +183,7 @@ describe('sponsor-claim routes', () => {
       [],
       [destination],
     );
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     // Build the expected prepared tx, then have the stealth key co-sign it.
     const prepReq = {
@@ -196,7 +197,7 @@ describe('sponsor-claim routes', () => {
     } as Request;
     const prepRes = mockRes();
     await handleSponsorClaimPrepare(prepReq, prepRes);
-    const tx = new Transaction(prepRes.body.xdr, Networks.STANDALONE);
+    const tx = new Transaction(prepRes.body.xdr, Networks.TESTNET);
     tx.sign(stealth);
 
     const req = {
@@ -224,7 +225,7 @@ describe('sponsor-claim routes', () => {
       [],
       [destination, otherDest],
     );
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     // Prepare paying `otherDest`, then submit claiming it was for `destination`.
     const prepReq = {
@@ -238,7 +239,7 @@ describe('sponsor-claim routes', () => {
     } as Request;
     const prepRes = mockRes();
     await handleSponsorClaimPrepare(prepReq, prepRes);
-    const tx = new Transaction(prepRes.body.xdr, Networks.STANDALONE);
+    const tx = new Transaction(prepRes.body.xdr, Networks.TESTNET);
     tx.sign(stealth);
 
     const req = {
@@ -264,7 +265,7 @@ describe('sponsor-claim routes', () => {
       [],
       [destination],
     );
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     const prepReq = {
       body: {
@@ -277,7 +278,7 @@ describe('sponsor-claim routes', () => {
     } as Request;
     const prepRes = mockRes();
     await handleSponsorClaimPrepare(prepReq, prepRes);
-    const tx = new Transaction(prepRes.body.xdr, Networks.STANDALONE);
+    const tx = new Transaction(prepRes.body.xdr, Networks.TESTNET);
     tx.sign(stealth);
 
     const req = {
@@ -303,7 +304,7 @@ describe('sponsor-claim routes', () => {
       [],
       [destination],
     );
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     // Prepare against OTHER_BALANCE_ID, then claim to submit for BALANCE_ID.
     const prepReq = {
@@ -317,7 +318,7 @@ describe('sponsor-claim routes', () => {
     } as Request;
     const prepRes = mockRes();
     await handleSponsorClaimPrepare(prepReq, prepRes);
-    const tx = new Transaction(prepRes.body.xdr, Networks.STANDALONE);
+    const tx = new Transaction(prepRes.body.xdr, Networks.TESTNET);
     tx.sign(stealth);
 
     const req = {
@@ -344,7 +345,7 @@ describe('sponsor-claim routes', () => {
       [],
       [destination],
     );
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     const otherAsset =
       'DAI:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
@@ -359,7 +360,7 @@ describe('sponsor-claim routes', () => {
     } as Request;
     const prepRes = mockRes();
     await handleSponsorClaimPrepare(prepReq, prepRes);
-    const tx = new Transaction(prepRes.body.xdr, Networks.STANDALONE);
+    const tx = new Transaction(prepRes.body.xdr, Networks.TESTNET);
     tx.sign(stealth);
 
     const req = {
@@ -382,13 +383,13 @@ describe('sponsor-claim routes', () => {
 
   it('submit rejects a tampered op list', async () => {
     const { server } = mockServer(relayer.publicKey());
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     // A relayer-sourced tx with an unexpected op (plain payment).
     const source = new Account(relayer.publicKey(), '5');
     const tampered = new TransactionBuilder(source, {
       fee: '200',
-      networkPassphrase: Networks.STANDALONE,
+      networkPassphrase: Networks.TESTNET,
     })
       .addOperation(
         Operation.payment({
@@ -429,7 +430,7 @@ describe('sponsor-claim routes', () => {
     const source = new Account(relayer.publicKey(), '5');
     const builder = new TransactionBuilder(source, {
       fee: opts.fee ?? '200',
-      networkPassphrase: Networks.STANDALONE,
+      networkPassphrase: Networks.TESTNET,
     })
       .addOperation(
         Operation.beginSponsoringFutureReserves({
@@ -474,7 +475,7 @@ describe('sponsor-claim routes', () => {
 
   it('submit rejects a tx whose fee exceeds the per-op cap', async () => {
     const { server, submitTransaction } = mockServer(relayer.publicKey());
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     // 5 ops * 200 = 1000 stroop cap; 5000 total (1000/op) is over.
     const tx = buildExpectedTx({ fee: '1000' });
@@ -499,7 +500,7 @@ describe('sponsor-claim routes', () => {
 
   it('submit rejects a tx whose timebounds exceed the TTL', async () => {
     const { server, submitTransaction } = mockServer(relayer.publicKey());
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     // A 1-hour timeout blows past the 60s prepare TTL.
     const tx = buildExpectedTx({ timeout: 3600 });
@@ -524,7 +525,7 @@ describe('sponsor-claim routes', () => {
 
   it('submit rejects a tx with no timebounds', async () => {
     const { server, submitTransaction } = mockServer(relayer.publicKey());
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     const tx = buildExpectedTx({ timeout: TimeoutInfinite });
     tx.sign(stealth);
@@ -548,7 +549,7 @@ describe('sponsor-claim routes', () => {
 
   it('submit rejects a tx carrying a memo', async () => {
     const { server, submitTransaction } = mockServer(relayer.publicKey());
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     const tx = buildExpectedTx({ memo: Memo.text('sneaky') });
     tx.sign(stealth);
@@ -572,12 +573,12 @@ describe('sponsor-claim routes', () => {
 
   it('submit rejects a non-relayer-sourced tx', async () => {
     const { server } = mockServer(relayer.publicKey());
-    initContext({ keypair: relayer, network: 'local', server, ledger });
+    initContext({ keypair: relayer, network: 'testnet', server, ledger });
 
     const source = new Account(stealth.publicKey(), '5');
     const foreign = new TransactionBuilder(source, {
       fee: '200',
-      networkPassphrase: Networks.STANDALONE,
+      networkPassphrase: Networks.TESTNET,
     })
       .addOperation(
         Operation.beginSponsoringFutureReserves({
@@ -645,7 +646,7 @@ describe('sponsor-claim submit: credit-gated reserve accounting', () => {
     } as Request;
     const prepRes = mockRes();
     await handleSponsorClaimPrepare(prepReq, prepRes);
-    const tx = new Transaction(prepRes.body.xdr, Networks.STANDALONE);
+    const tx = new Transaction(prepRes.body.xdr, Networks.TESTNET);
     tx.sign(stealth);
     return tx;
   }
@@ -678,7 +679,7 @@ describe('sponsor-claim submit: credit-gated reserve accounting', () => {
     );
     initContext({
       keypair: relayer,
-      network: 'local',
+      network: 'testnet',
       server,
       ledger,
       requireCredit: true,
@@ -717,7 +718,7 @@ describe('sponsor-claim submit: credit-gated reserve accounting', () => {
     );
     initContext({
       keypair: relayer,
-      network: 'local',
+      network: 'testnet',
       server,
       ledger,
       requireCredit: true,
@@ -741,6 +742,48 @@ describe('sponsor-claim submit: credit-gated reserve accounting', () => {
     expect(submitTransaction).not.toHaveBeenCalled();
   });
 
+  it('gates submit with 402 by default: requireCredit derived via resolveRequireCredit(undefined)', async () => {
+    // The load-bearing default path: no RELAYER_REQUIRE_CREDIT env, so the
+    // boot resolver must yield gating ON — and a submit backed by zero credit
+    // gets 402 before anything is signed or submitted.
+    const { requireCredit } = resolveRequireCredit(undefined);
+    expect(requireCredit).toBe(true);
+
+    const { server, submitTransaction } = mockServer(
+      relayer.publicKey(),
+      [],
+      [destination],
+    );
+    initContext({
+      keypair: relayer,
+      network: 'testnet',
+      server,
+      ledger,
+      requireCredit,
+    });
+
+    // NOTE: no ledger.credit(...) anywhere — the funder has no balance.
+    const tx = await preparedSigned();
+    const total = totalXlm(tx.fee);
+    const req = {
+      body: {
+        xdr: tx.toEnvelope().toXDR('base64'),
+        stealthAddress: stealth.publicKey(),
+        asset: ASSET,
+        balanceId: BALANCE_ID,
+        destination,
+        amount: AMOUNT,
+        ...signAuth(total),
+      },
+    } as Request;
+    const res = mockRes();
+    await handleSponsorClaimSubmit(req, res);
+
+    expect(res.statusCode).toBe(402);
+    expect(res.body.code).toBe('insufficient_credit');
+    expect(submitTransaction).not.toHaveBeenCalled();
+  });
+
   it('returns 402 when the per-funder sponsored-reserve cap is exceeded', async () => {
     ledger.credit(funder.publicKey(), '10', 'DEP1');
     const { server, submitTransaction } = mockServer(
@@ -750,7 +793,7 @@ describe('sponsor-claim submit: credit-gated reserve accounting', () => {
     );
     initContext({
       keypair: relayer,
-      network: 'local',
+      network: 'testnet',
       server,
       ledger,
       requireCredit: true,
