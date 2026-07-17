@@ -92,13 +92,25 @@ export async function isKeystoreEncrypted(
 }
 
 /**
+ * Error for an interactive prompt whose stdin closed (EOF) before any input
+ * arrived. Prompts MUST reject in that case: with no pending listener work the
+ * event loop drains and node silently exits 0 mid-command as if it succeeded.
+ */
+export function stdinClosedError(): Error {
+  return new Error(
+    'stdin closed before input was received — pass the value via its flag or environment variable instead',
+  );
+}
+
+/**
  * Prompt for a secret on stderr without echoing keystrokes to the terminal.
  *
  * When stdin is a TTY, terminal echo is disabled via raw mode so typed
  * characters never appear on screen or in scrollback; bytes are accumulated
  * until CR/LF, with backspace and Ctrl-C handled. When stdin is not a TTY
  * (piped/redirected input) it falls back to a line read via readline, which
- * has no terminal echo to suppress.
+ * has no terminal echo to suppress. Either way, stdin closing before input
+ * arrives rejects with stdinClosedError instead of hanging the promise.
  */
 export function promptPassword(question: string): Promise<string> {
   const stdin = process.stdin as NodeJS.ReadStream & {
@@ -119,9 +131,16 @@ export function promptPassword(question: string): Promise<string> {
 
       const cleanup = (): void => {
         stdin.removeListener('data', onData);
+        stdin.removeListener('end', onEndOrError);
+        stdin.removeListener('error', onEndOrError);
         stdin.setRawMode!(wasRaw);
         stdin.pause();
         stderr.write('\n');
+      };
+
+      const onEndOrError = (): void => {
+        cleanup();
+        reject(stdinClosedError());
       };
 
       const onData = (chunk: string): void => {
@@ -148,15 +167,24 @@ export function promptPassword(question: string): Promise<string> {
       };
 
       stdin.on('data', onData);
+      stdin.on('end', onEndOrError);
+      stdin.on('error', onEndOrError);
     });
   }
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const rl = readline.createInterface({ input: process.stdin, output: stderr });
+    let answered = false;
     rl.question(question, (answer) => {
+      answered = true;
       rl.close();
       stderr.write('\n');
       resolve(answer.trim());
+    });
+    // rl.close() after a normal answer also fires 'close', hence the guard:
+    // only a close BEFORE any answer means stdin hit EOF with the prompt open.
+    rl.on('close', () => {
+      if (!answered) reject(stdinClosedError());
     });
   });
 }

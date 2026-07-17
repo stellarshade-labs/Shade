@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { PassThrough } from 'stream';
 
 // Mock only the interactive prompt so the keystore is still written to a real
 // temp file (we then inspect the on-disk envelope to assert encryption).
@@ -159,5 +160,45 @@ describe('keygen overwrite protection (fund safety)', () => {
     const parsed = JSON.parse(await fs.readFile(keystorePath, 'utf-8'));
     expect(parsed).toHaveProperty('encrypted');
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('promptLine (closed stdin must fail loudly, not exit 0)', () => {
+  /** Swap process.stdin (a configurable getter on `process`) for a fake. */
+  function useStdin(fake: unknown): void {
+    vi.spyOn(process, 'stdin', 'get').mockReturnValue(
+      fake as unknown as typeof process.stdin,
+    );
+  }
+
+  beforeEach(() => {
+    // readline echoes the question to stderr.
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('rejects when stdin ends before a line arrives', async () => {
+    const input = new PassThrough();
+    input.end(); // e.g. `shade keygen --recover < /dev/null`
+    useStdin(input);
+    const { promptLine } = await import('./keygen.js');
+
+    await expect(promptLine('Enter your 12-word mnemonic: ')).rejects.toThrow(
+      /stdin closed before input was received/,
+    );
+  });
+
+  it('still resolves (and trims) a normal piped line', async () => {
+    const input = new PassThrough();
+    useStdin(input);
+    const { promptLine } = await import('./keygen.js');
+
+    const pending = promptLine('Enter your 12-word mnemonic: ');
+    input.end('  alpha bravo charlie  \n');
+
+    await expect(pending).resolves.toBe('alpha bravo charlie');
   });
 });

@@ -15,6 +15,7 @@ import {
   resolveKeystorePath,
   promptPassword,
   keystoreExists,
+  stdinClosedError,
 } from '../utils/keystore.js';
 import chalk from 'chalk';
 import readline from 'readline';
@@ -46,12 +47,24 @@ export function deriveFromStellarSecret(
   return deriveKeysFromSignature(signature);
 }
 
-function promptLine(question: string): Promise<string> {
+/**
+ * Read one echoed line from stdin, rejecting if stdin closes before a line
+ * arrives — otherwise the unsettled promise lets node exit 0 mid-command.
+ * Exported for tests.
+ */
+export function promptLine(question: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    let answered = false;
     rl.question(question, (answer) => {
+      answered = true;
       rl.close();
       resolve(answer.trim());
+    });
+    // rl.close() after a normal answer also fires 'close' — the guard keeps
+    // only an EOF with the prompt still open rejecting.
+    rl.on('close', () => {
+      if (!answered) reject(stdinClosedError());
     });
   });
 }

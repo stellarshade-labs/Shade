@@ -3,6 +3,8 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { EventEmitter } from 'events';
+import { PassThrough } from 'stream';
 import { randomBytes } from '@noble/hashes/utils';
 
 // Dynamic import to avoid TypeScript compilation issues
@@ -486,5 +488,99 @@ describe('readPublicKeys (no password needed)', () => {
     await expect(readPublicKeys(path.join(dir, 'nope.json'))).rejects.toMatchObject({
       code: 'ENOENT',
     });
+  });
+});
+
+describe('promptPassword (closed stdin must fail loudly, not exit 0)', () => {
+  /** TTY-ish stdin: raw-mode capable EventEmitter, no real terminal. */
+  class FakeTtyStdin extends EventEmitter {
+    isTTY = true;
+    setRawMode = vi.fn();
+    resume = vi.fn();
+    pause = vi.fn();
+    setEncoding = vi.fn();
+  }
+
+  /** Swap process.stdin (a configurable getter on `process`) for a fake. */
+  function useStdin(fake: unknown): void {
+    vi.spyOn(process, 'stdin', 'get').mockReturnValue(
+      fake as unknown as typeof process.stdin,
+    );
+  }
+
+  beforeEach(() => {
+    // The prompt writes the question and a trailing newline to stderr.
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('TTY path: stdin "end" rejects and restores raw mode', async () => {
+    const fake = new FakeTtyStdin();
+    useStdin(fake);
+    const { promptPassword } = await import('./keystore.js');
+
+    const pending = promptPassword('Password: ');
+    fake.emit('end');
+
+    await expect(pending).rejects.toThrow(/stdin closed before input was received/);
+    // Raw mode was toggled on for the prompt, then restored by cleanup.
+    expect(fake.setRawMode).toHaveBeenNthCalledWith(1, true);
+    expect(fake.setRawMode).toHaveBeenLastCalledWith(false);
+    // Every prompt listener was removed — nothing can settle twice.
+    expect(fake.listenerCount('data')).toBe(0);
+    expect(fake.listenerCount('end')).toBe(0);
+    expect(fake.listenerCount('error')).toBe(0);
+  });
+
+  it('TTY path: stdin "error" rejects the same way', async () => {
+    const fake = new FakeTtyStdin();
+    useStdin(fake);
+    const { promptPassword } = await import('./keystore.js');
+
+    const pending = promptPassword('Password: ');
+    fake.emit('error', new Error('EIO'));
+
+    await expect(pending).rejects.toThrow(/stdin closed before input was received/);
+    expect(fake.setRawMode).toHaveBeenLastCalledWith(false);
+    expect(fake.listenerCount('data')).toBe(0);
+  });
+
+  it('TTY path: a typed line still resolves', async () => {
+    const fake = new FakeTtyStdin();
+    useStdin(fake);
+    const { promptPassword } = await import('./keystore.js');
+
+    const pending = promptPassword('Password: ');
+    fake.emit('data', 'hunter2\r');
+
+    await expect(pending).resolves.toBe('hunter2');
+    expect(fake.setRawMode).toHaveBeenLastCalledWith(false);
+    expect(fake.listenerCount('end')).toBe(0);
+    expect(fake.listenerCount('error')).toBe(0);
+  });
+
+  it('non-TTY path: stdin at EOF with no data rejects instead of hanging', async () => {
+    const input = new PassThrough();
+    input.end(); // e.g. `shade keygen < /dev/null`
+    useStdin(input);
+    const { promptPassword } = await import('./keystore.js');
+
+    await expect(promptPassword('Password: ')).rejects.toThrow(
+      /stdin closed before input was received/,
+    );
+  });
+
+  it('non-TTY path: a piped line still resolves (close after answer is benign)', async () => {
+    const input = new PassThrough();
+    useStdin(input);
+    const { promptPassword } = await import('./keystore.js');
+
+    const pending = promptPassword('Password: ');
+    input.end('s3cret\n');
+
+    await expect(pending).resolves.toBe('s3cret');
   });
 });

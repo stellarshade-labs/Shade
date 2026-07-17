@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
+import chalk from 'chalk';
 import packageJson from '../package.json' with { type: 'json' };
 import { keygenCommand } from './commands/keygen.js';
 import { addressCommand } from './commands/address.js';
@@ -27,4 +28,11 @@ program.addCommand(withdrawCommand);
 program.addCommand(claimCommand);
 program.addCommand(balanceCommand);
 
-program.parse();
+// parseAsync (not parse) so a rejection escaping a command action — e.g. a
+// prompt whose stdin closed — still prints on stderr and exits non-zero
+// instead of node draining the event loop and exiting 0 mid-command.
+program.parseAsync().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(chalk.red('Error:'), message);
+  process.exit(1);
+});
