@@ -10,6 +10,7 @@ import { HorizonClient } from './horizon.js';
 import { PoolAdapter } from './methods/pool.js';
 import { AccountAdapter } from './methods/account.js';
 import { SppAdapter } from './methods/spp.js';
+import { normalizeRelayList, type RelayerSelection } from './relayerPool.js';
 import {
   MethodRequiredError,
   MethodNotEnabledError,
@@ -64,7 +65,8 @@ export class StealthClient {
   private readonly server: StellarSdk.rpc.Server;
   private readonly enabledMethods: DeliveryMethod[];
   private readonly adapters: Map<DeliveryMethod, DeliveryAdapter>;
-  private readonly relayer?: string;
+  private readonly relayer?: string | string[];
+  private readonly relayerSelection?: RelayerSelection;
 
   constructor(config: ClientConfig) {
     this.contractId = config.contractId || '';
@@ -72,6 +74,7 @@ export class StealthClient {
     this.networkPassphrase = netConfig.networkPassphrase;
     this.server = netConfig.server;
     this.relayer = config.relayer;
+    this.relayerSelection = config.relayerSelection;
     this.enabledMethods = config.methods && config.methods.length > 0
       ? config.methods
       : ['pool'];
@@ -93,7 +96,9 @@ export class StealthClient {
         case 'pool':
           this.adapters.set(
             'pool',
-            new PoolAdapter(this.contractId, this.networkPassphrase, this.server),
+            new PoolAdapter(this.contractId, this.networkPassphrase, this.server, {
+              relayerSelection: this.relayerSelection,
+            }),
           );
           break;
         case 'account':
@@ -103,6 +108,7 @@ export class StealthClient {
               // Confirm-poll handle for relayed claims (`confirm: true`): the
               // Soroban RPC's getTransaction resolves classic tx hashes too.
               rpcServer: this.server,
+              relayerSelection: this.relayerSelection,
             }),
           );
           break;
@@ -311,7 +317,11 @@ export class StealthClient {
     opts: ClaimOpts,
   ): Promise<ClaimReceipt> {
     const adapter = this.getAdapter(payment.method);
-    const relay = opts.relay ?? this.relayer;
+    // Normalized so an empty/whitespace per-call list falls back to the config
+    // relayer instead of shadowing it (and `[]` means "no relayer", not a pool
+    // of zero candidates).
+    const relay =
+      normalizeRelayList(opts.relay) ?? normalizeRelayList(this.relayer);
     return adapter.claim(payment, destination, { ...opts, relay });
   }
 
@@ -339,7 +349,7 @@ export class StealthClient {
     const result = await adapter.withdraw(stealthAddress, destination, {
       keys: opts.keys,
       feePayer: opts.feePayer,
-      relay: opts.relay ?? this.relayer,
+      relay: normalizeRelayList(opts.relay) ?? normalizeRelayList(this.relayer),
       asset: opts.asset,
       amount: opts.amount,
       fundingAccount: opts.fundingAccount,

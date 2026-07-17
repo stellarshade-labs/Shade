@@ -1,5 +1,6 @@
 import type { NetworkName } from './soroban.js';
 import type { FundingSigner } from './relayer.js';
+import type { RelayerSelection } from './relayerPool.js';
 
 /**
  * A delivery method describes HOW a stealth payment reaches its recipient.
@@ -153,8 +154,11 @@ export interface WithdrawOpts {
   keys: StealthKeys;
   /** Secret key of account paying the Soroban invocation fee */
   feePayer: string;
-  /** Relay URL for fee-bumped submission (privacy-preserving) */
-  relay?: string;
+  /**
+   * Relay URL(s) for fee-bumped submission (privacy-preserving). A list is
+   * health-probed and routed like {@link ClientConfig.relayer}.
+   */
+  relay?: string | string[];
   /** Asset to withdraw. Default: native XLM. Format: "CODE:ISSUER" */
   asset?: string;
   /** Amount to withdraw. Default: full balance */
@@ -219,8 +223,11 @@ export interface ScanResult {
 export interface ClaimOpts {
   /** Stealth keys (need view + spend private keys) */
   keys: StealthKeys;
-  /** Relay URL for fee-bumped submission (privacy-preserving) */
-  relay?: string;
+  /**
+   * Relay URL(s) for fee-bumped submission (privacy-preserving). A list is
+   * health-probed and routed like {@link ClientConfig.relayer}.
+   */
+  relay?: string | string[];
   /**
    * For the account method: sweep the whole account via AccountMerge (default true).
    * Set false to leave the stealth account open (Payment, keeping the base reserve).
@@ -307,6 +314,18 @@ export interface ClientConfig {
   horizonUrl?: string;
   /** Delivery methods to enable. Default: ['pool'] */
   methods?: DeliveryMethod[];
-  /** Default relayer URL for fee-bumped submissions */
-  relayer?: string;
+  /**
+   * Default relayer(s) for fee-bumped submissions. A list enables BYO-relayer
+   * discovery: candidates are health-probed in parallel and relayed calls
+   * route to a healthy one (with failover on relayer faults) per
+   * {@link relayerSelection}. A single string behaves exactly as before.
+   */
+  relayer?: string | string[];
+  /**
+   * How a healthy relayer is picked from a multi-URL {@link relayer} list.
+   * Default `'random'` — spreads users across the relayer set instead of
+   * herding onto the first entry (anonymity-set preserving). Only meaningful
+   * with more than one URL.
+   */
+  relayerSelection?: RelayerSelection;
 }

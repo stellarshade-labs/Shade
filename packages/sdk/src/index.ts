@@ -19,6 +19,9 @@ export type { StealthKeys as RawStealthKeys } from '@shade/crypto';
 export {
   ShadeError,
   UnsupportedNetworkError,
+  RelayerHttpError,
+  RelayerNetworkError,
+  NoHealthyRelayerError,
   MethodRequiredError,
   MethodNotEnabledError,
   MethodNotAvailableError,
@@ -50,6 +53,7 @@ export {
 export {
   NETWORKS,
   getNetworkConfig,
+  networkNameForPassphrase,
   labelForToken,
   resolveTokenAddress,
   createSimulationTx,
@@ -86,6 +90,14 @@ export type {
   FundingSigner,
   CreditChallenge,
 } from './relayer.js';
+
+export { RelayerPool, normalizeRelayList } from './relayerPool.js';
+export type {
+  RelayerSelection,
+  RelayerPoolOpts,
+  RelayerCallCtx,
+  ProbeOutcome,
+} from './relayerPool.js';
 
 export { StealthSession } from './session.js';
 export type { KVStorage, StealthSessionOpts, ScanState } from './session.js';

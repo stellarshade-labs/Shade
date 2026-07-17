@@ -409,6 +409,65 @@ describe('pool relayed withdraw goes through RelayerClient (SDK-POOLRELAY-AUTH)'
     expect(getTxCalls).toHaveLength(0);
   });
 
+  it('routes a relay LIST through the live relayer when the first is dead (A3 acceptance)', async () => {
+    const { keys, stealth } = makeFixture();
+    const tokenAddress = Asset.native().contractId(NET);
+    const directSends: string[] = [];
+    const server = makeServer({ stealth, tokenAddress, directSends });
+    const adapter = new PoolAdapter(makeContractId(), NET, server);
+
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal(
+      'fetch',
+      async (url: string, init?: { method?: string; body?: string }) => {
+        if (url.startsWith('http://dead.invalid')) {
+          throw new Error('getaddrinfo ENOTFOUND dead.invalid');
+        }
+        const body = init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : {};
+        calls.push({ url, body });
+        if (url.endsWith('/health')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              status: 'ok',
+              network: 'testnet',
+              balance: '50.0000000',
+              requireCredit: true,
+              maxRelayFeeXlm: 0.1,
+            }),
+          };
+        }
+        if (url.includes('/credit/challenge')) {
+          return { ok: true, status: 200, json: async () => ({ nonce: 'NONCE123' }) };
+        }
+        if (url.endsWith('/relay')) {
+          return { ok: true, status: 200, json: async () => ({ txHash: 'RELAYED_HASH' }) };
+        }
+        return { ok: false, status: 404, json: async () => ({ error: 'not found' }) };
+      },
+    );
+
+    const fundingKp = Keypair.random();
+    const receipt = await adapter.withdraw(stealth.stealthAddress, DEST, {
+      keys,
+      feePayer: Keypair.random().secret(),
+      relay: ['http://dead.invalid', 'http://relayer.test'],
+      fundingAccount: fundingKp.publicKey(),
+      fundingSigner: async (message) => fundingKp.sign(Buffer.from(message)),
+    });
+    expect(receipt.txHash).toBe('RELAYED_HASH');
+
+    // The submit routed to the live relayer with the full auth triple; the
+    // dead candidate never received the transaction.
+    const relayCalls = calls.filter((c) => c.url.endsWith('/relay'));
+    expect(relayCalls).toHaveLength(1);
+    expect(relayCalls[0]!.url).toBe('http://relayer.test/relay');
+    expect(relayCalls[0]!.body.nonce).toBe('NONCE123');
+    expect(typeof relayCalls[0]!.body.signature).toBe('string');
+    expect(directSends).toHaveLength(0);
+  });
+
   it('non-relay direct path is unchanged: submits to the RPC, never fetches', async () => {
     const { keys, stealth } = makeFixture();
     const tokenAddress = Asset.native().contractId(NET);

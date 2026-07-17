@@ -1,6 +1,7 @@
 import { Transaction } from '@stellar/stellar-sdk';
 import type { FetchLike } from './horizon.js';
 import { waitForTransaction, type TransactionStatusSource } from './soroban.js';
+import { RelayerHttpError, RelayerNetworkError } from './errors.js';
 
 /**
  * Signs a canonical challenge message with the funding account's ed25519 key,
@@ -47,6 +48,10 @@ export interface RelayerHealth {
   requireCredit?: boolean;
   /** Advertised ceiling (XLM) on a fee-bump — the amount a client authorizes. */
   maxRelayFeeXlm?: number;
+  /** Credit-ledger backend: `'postgres'` (durable) or `'json'` (dev fallback). */
+  store?: string;
+  /** Nonce/rate-limit backend: `'redis'` (multi-instance) or `'memory'`. */
+  sharedState?: string;
 }
 
 /** Options for {@link RelayerClient.relay}. */
@@ -212,28 +217,61 @@ export class RelayerClient {
     return { nonce, signature };
   }
 
+  // Transport failures throw RelayerNetworkError and non-2xx responses throw
+  // RelayerHttpError (message text unchanged) so callers — and RelayerPool's
+  // failover — can branch on the failure KIND: unreachable/5xx is a relayer
+  // fault worth failing over, 4xx is this request's fault and would repeat.
   private async post<T>(path: string, body: unknown): Promise<T> {
-    const res = await this.fetchFn(`${this.baseUrl}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = (await res.json()) as T & { error?: string; code?: string };
-    if (!res.ok) {
-      throw new Error(
-        `Relayer ${path} failed (${res.status}): ${data.code ?? data.error ?? 'unknown'}`,
+    let res: Awaited<ReturnType<FetchLike>>;
+    try {
+      res = await this.fetchFn(`${this.baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      throw new RelayerNetworkError(
+        path,
+        err instanceof Error ? err.message : String(err),
       );
     }
-    return data as T;
+    return this.decode<T>(path, res);
   }
 
   private async get<T>(path: string): Promise<T> {
-    const res = await this.fetchFn(`${this.baseUrl}${path}`);
-    const data = (await res.json()) as T & { error?: string; code?: string };
-    if (!res.ok) {
-      throw new Error(
-        `Relayer ${path} failed (${res.status}): ${data.code ?? data.error ?? 'unknown'}`,
+    let res: Awaited<ReturnType<FetchLike>>;
+    try {
+      res = await this.fetchFn(`${this.baseUrl}${path}`);
+    } catch (err) {
+      throw new RelayerNetworkError(
+        path,
+        err instanceof Error ? err.message : String(err),
       );
+    }
+    return this.decode<T>(path, res);
+  }
+
+  /**
+   * Decode a relayer response. A non-JSON body on an error status (e.g. a
+   * proxy's HTML 502 page) must not mask the status, so decode failures fall
+   * back to an empty body there; a non-JSON body on a 2xx is a broken relayer
+   * and surfaces as a transport error.
+   */
+  private async decode<T>(
+    path: string,
+    res: Awaited<ReturnType<FetchLike>>,
+  ): Promise<T> {
+    let data: (T & { error?: string; code?: string }) | undefined;
+    try {
+      data = (await res.json()) as T & { error?: string; code?: string };
+    } catch {
+      data = undefined;
+    }
+    if (!res.ok) {
+      throw new RelayerHttpError(path, res.status, data?.code, data?.error);
+    }
+    if (data === undefined) {
+      throw new RelayerNetworkError(path, 'invalid JSON response body');
     }
     return data as T;
   }

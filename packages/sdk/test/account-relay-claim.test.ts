@@ -307,6 +307,69 @@ describe('account relayed claim: fundingSigner auth (credit-gated relayers)', ()
     }
   });
 
+  it('routes a gated claim through a dead-first relayer list to the live one (A3)', async () => {
+    const { keys, stealthAddress, ephemeralPubKeyHex } = makeFixture();
+    const submitted: string[] = [];
+    const horizon = makeCapturingHorizon({
+      accountsByAddress: { [stealthAddress]: accountRecord(stealthAddress, '5.0000000') },
+      submitted,
+    });
+    const adapter = new AccountAdapter(NET, horizon);
+
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal(
+      'fetch',
+      async (url: string, init?: { method?: string; body?: string }) => {
+        if (url.startsWith('http://dead.invalid')) {
+          throw new Error('getaddrinfo ENOTFOUND dead.invalid');
+        }
+        const body = init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : {};
+        calls.push({ url, body });
+        if (url.endsWith('/health')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              status: 'ok',
+              network: 'testnet',
+              balance: '50.0000000',
+              requireCredit: true,
+              maxRelayFeeXlm: 0.1,
+            }),
+          };
+        }
+        if (url.includes('/credit/challenge')) {
+          return { ok: true, status: 200, json: async () => ({ nonce: 'NONCE123' }) };
+        }
+        if (url.endsWith('/relay')) {
+          return { ok: true, status: 200, json: async () => ({ txHash: 'RELAYED_HASH' }) };
+        }
+        return { ok: false, status: 404, json: async () => ({ error: 'not found' }) };
+      },
+    );
+
+    const fundingKp = Keypair.random();
+    const receipt = await adapter.claim(
+      nativePayment(stealthAddress, ephemeralPubKeyHex),
+      DEST,
+      {
+        keys,
+        relay: ['http://dead.invalid', 'http://relayer.test'],
+        fundingAccount: fundingKp.publicKey(),
+        fundingSigner: async (message) => fundingKp.sign(Buffer.from(message)),
+      },
+    );
+    expect(receipt.txHash).toBe('RELAYED_HASH');
+
+    // The auth triple landed at the live relayer; nothing went direct.
+    const relayCalls = calls.filter((c) => c.url.endsWith('/relay'));
+    expect(relayCalls).toHaveLength(1);
+    expect(relayCalls[0]!.url).toBe('http://relayer.test/relay');
+    expect(relayCalls[0]!.body.fundingAccount).toBe(fundingKp.publicKey());
+    expect(relayCalls[0]!.body.nonce).toBe('NONCE123');
+    expect(submitted).toHaveLength(0);
+  });
+
   it('a per-call opts.relay wins over the ctor-configured relayer', async () => {
     const { keys, stealthAddress, ephemeralPubKeyHex } = makeFixture();
     const submitted: string[] = [];

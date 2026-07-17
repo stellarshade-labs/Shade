@@ -53,6 +53,22 @@ export interface NetworkConfig extends NetworkDefinition {
 }
 
 /**
+ * Reverse lookup: the {@link NETWORKS} name whose passphrase matches, or
+ * `undefined` for a passphrase outside the table. Lets components that only
+ * hold a passphrase (the delivery adapters) derive the network name a relayer
+ * `/health` should report; an unknown passphrase yields `undefined`, which
+ * callers treat as "skip the check" rather than a failure (mainnet-open).
+ */
+export function networkNameForPassphrase(
+  passphrase: string,
+): NetworkName | undefined {
+  for (const [name, def] of Object.entries(NETWORKS)) {
+    if (def.networkPassphrase === passphrase) return name as NetworkName;
+  }
+  return undefined;
+}
+
+/**
  * Build network config (endpoints + a connected RPC server) from a network
  * name. Unknown names throw {@link UnsupportedNetworkError} — the type system
  * already prevents them, but plain-JS callers and stale configs need the

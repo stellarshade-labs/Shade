@@ -353,6 +353,66 @@ export class TransactionTimeoutError extends ShadeError {
 }
 
 /**
+ * Thrown when a relayer HTTP endpoint responds non-2xx. Carries the HTTP
+ * {@link status} and the relayer's own machine-readable {@link relayerCode}
+ * (e.g. `insufficient_credit`, `missing_auth`) so callers — and the
+ * `RelayerPool` failover — can branch on the KIND of failure: 5xx is a relayer
+ * fault worth failing over, 4xx is this request's fault and would only repeat.
+ */
+export class RelayerHttpError extends ShadeError {
+  /** HTTP status the relayer responded with. */
+  readonly status: number;
+  /** The relayer's own `code` field from the error body, when present. */
+  readonly relayerCode?: string;
+  constructor(path: string, status: number, relayerCode?: string, detail?: string) {
+    super(
+      'relayer_http_error',
+      `Relayer ${path} failed (${status}): ${relayerCode ?? detail ?? 'unknown'}`,
+    );
+    this.name = 'RelayerHttpError';
+    this.status = status;
+    this.relayerCode = relayerCode;
+  }
+}
+
+/**
+ * Thrown when a relayer cannot be reached at the transport level (DNS failure,
+ * refused connection, aborted fetch, invalid response body). Distinct from
+ * {@link RelayerHttpError} so the `RelayerPool` can treat it as a candidate
+ * fault (fail over) rather than a request fault.
+ */
+export class RelayerNetworkError extends ShadeError {
+  constructor(path: string, detail: string) {
+    super('relayer_unreachable', `Relayer ${path} unreachable: ${detail}`);
+    this.name = 'RelayerNetworkError';
+  }
+}
+
+/**
+ * Thrown by the `RelayerPool` when no candidate relayer is usable for this
+ * call. {@link candidates} maps every probed URL to the reason it was rejected
+ * (`unreachable: ...`, `timeout`, `http_<status>`, `status_not_ok`,
+ * `network_mismatch (...)`, `balance_below_min (...)`,
+ * `credit_gated_no_funding_auth`), so the failure is diagnosable per relayer
+ * instead of a bare "nothing worked".
+ */
+export class NoHealthyRelayerError extends ShadeError {
+  /** Per-URL rejection reason for every probed candidate. */
+  readonly candidates: Record<string, string>;
+  constructor(candidates: Record<string, string>) {
+    const detail = Object.entries(candidates)
+      .map(([url, reason]) => `${url}: ${reason}`)
+      .join('; ');
+    super(
+      'no_healthy_relayer',
+      `No healthy relayer among ${Object.keys(candidates).length} candidate(s) — ${detail}`,
+    );
+    this.name = 'NoHealthyRelayerError';
+    this.candidates = candidates;
+  }
+}
+
+/**
  * Thrown by the {@link StealthClient} constructor when a pool-capable method is
  * enabled but no contract id was supplied (there are no built-in defaults —
  * pool deployments are per-operator). Failing here — rather than deep inside a

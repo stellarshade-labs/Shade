@@ -22,6 +22,8 @@ import {
   queryNonce,
   buildWithdrawMessage,
   resolveSendResult,
+  networkNameForPassphrase,
+  waitForTransaction,
   type RawAnnouncement,
 } from '../soroban.js';
 import type {
@@ -40,7 +42,8 @@ import {
   FeePayerAddressRequiredError,
 } from '../errors.js';
 import { numberToStroops, formatStroops } from '../stroops.js';
-import { RelayerClient, type FundingSigner } from '../relayer.js';
+import { type FundingSigner } from '../relayer.js';
+import { RelayerPool, type RelayerSelection } from '../relayerPool.js';
 import { signTx } from './sign.js';
 import { prepareWithRestore } from './restore.js';
 
@@ -54,12 +57,16 @@ const POOL_PAGE_SIZE = 200;
  */
 export class PoolAdapter implements DeliveryAdapter {
   readonly method = 'pool' as const;
+  private readonly relayerSelection?: RelayerSelection;
 
   constructor(
     private readonly contractId: string,
     private readonly networkPassphrase: string,
     private readonly server: StellarSdk.rpc.Server,
-  ) {}
+    opts?: { relayerSelection?: RelayerSelection },
+  ) {
+    this.relayerSelection = opts?.relayerSelection;
+  }
 
   /**
    * Derive a one-time stealth address and deposit into the pool contract,
@@ -252,7 +259,8 @@ export class PoolAdapter implements DeliveryAdapter {
     opts: {
       keys: StealthKeys;
       feePayer: string;
-      relay?: string;
+      /** Relay URL(s); a list is health-probed and routed with failover. */
+      relay?: string | string[];
       asset?: string;
       amount?: number;
       signTransaction?: TransactionSigner;
@@ -428,32 +436,37 @@ export class PoolAdapter implements DeliveryAdapter {
     // Submit a signed tx, fee-bumped through the relayer when one is configured,
     // otherwise directly to the RPC. Returns the transaction hash.
     //
-    // The relayed path goes through the SDK's RelayerClient — exactly like the
-    // account method — so `fundingAccount` (and the signed-challenge auth, when
-    // a signer is configured on the client) threads into the `/relay` request.
-    // A hand-rolled bare `{xdr}` POST would make a credit-gated relayer reject
-    // every pool withdrawal with 402 insufficient_credit. The RelayerClient
-    // accepts both a service-root URL and a bare `.../relay` URL (back-compat).
-    // The adapter's own RPC server doubles as the confirm-poll handle so
-    // `confirm: true` verifies the relayer's txHash against the same network.
-    const relayerClient = opts.relay
-      ? new RelayerClient(opts.relay, undefined, {
-          fundingSigner: opts.fundingSigner,
-          rpcServer: this.server,
-        })
-      : undefined;
+    // The relayed path goes through the RelayerPool: a single URL is a
+    // transparent pass-through (no probe, exactly the old RelayerClient path,
+    // incl. bare `.../relay` URLs), while a list is health-probed and fails
+    // over on relayer faults only (A3). `fundingAccount` + the signed-challenge
+    // auth thread into `/relay` — a bare `{xdr}` POST would make a credit-gated
+    // relayer reject every pool withdrawal 402. Confirm-polling runs OUTSIDE
+    // the pool's attempt budget so a slow ledger close is never misread as a
+    // dead relayer (which could resubmit).
+    const relayerPool = RelayerPool.from(opts.relay, {
+      network: networkNameForPassphrase(this.networkPassphrase),
+      selection: this.relayerSelection,
+    });
     const submit = async (
       signed: StellarSdk.Transaction,
     ): Promise<string> => {
-      if (relayerClient) {
-        const { txHash } = await relayerClient.relay(
-          signed.toEnvelope().toXDR('base64'),
+      if (relayerPool) {
+        const txHash = await relayerPool.withRelayer(
+          async (client) =>
+            (
+              await client.relay(signed.toEnvelope().toXDR('base64'), {
+                fundingAccount: opts.fundingAccount,
+                networkPassphrase: this.networkPassphrase,
+              })
+            ).txHash,
           {
             fundingAccount: opts.fundingAccount,
-            networkPassphrase: this.networkPassphrase,
-            confirm: opts.confirm,
+            fundingSigner: opts.fundingSigner,
+            rpcServer: this.server,
           },
         );
+        if (opts.confirm) await waitForTransaction(this.server, txHash);
         return txHash;
       }
       const result = await this.server.sendTransaction(signed);

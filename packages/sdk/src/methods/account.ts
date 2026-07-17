@@ -31,7 +31,16 @@ import type {
   HorizonClaimableBalance,
 } from '../horizon.js';
 import { RelayerClient } from '../relayer.js';
-import type { TransactionStatusSource } from '../soroban.js';
+import {
+  RelayerPool,
+  normalizeRelayList,
+  type RelayerSelection,
+} from '../relayerPool.js';
+import {
+  networkNameForPassphrase,
+  waitForTransaction,
+  type TransactionStatusSource,
+} from '../soroban.js';
 import {
   MinimumAmountError,
   ClaimAmountError,
@@ -179,14 +188,19 @@ export function computeReceiverStealthAddress(
 export class AccountAdapter implements DeliveryAdapter {
   readonly method = 'account' as const;
   private readonly rpcServer?: TransactionStatusSource;
+  private readonly relayerSelection?: RelayerSelection;
 
   constructor(
     private readonly networkPassphrase: string,
     private readonly horizon: HorizonClient,
-    private readonly relayer?: string,
-    opts?: { rpcServer?: TransactionStatusSource },
+    private readonly relayer?: string | string[],
+    opts?: {
+      rpcServer?: TransactionStatusSource;
+      relayerSelection?: RelayerSelection;
+    },
   ) {
     this.rpcServer = opts?.rpcServer;
+    this.relayerSelection = opts?.relayerSelection;
   }
 
   /**
@@ -649,7 +663,11 @@ export class AccountAdapter implements DeliveryAdapter {
 
     const source = new Account(account.id, account.sequence);
     const merge = opts.merge !== false;
-    const relayed = !!(opts.relay ?? this.relayer);
+    // Normalized so `[]`/whitespace lists mean "not relayed" — this flag decides
+    // whether the self-paid fee is subtracted from the receipt below.
+    const relayed = !!(
+      normalizeRelayList(opts.relay) ?? normalizeRelayList(this.relayer)
+    );
     // All fee/balance/max-claimable arithmetic is done in EXACT bigint stroops
     // (never floats): above 2^53 stroops a double cannot represent every stroop,
     // so float math could move the wrong amount on-chain or mis-evaluate the
@@ -755,10 +773,11 @@ export class AccountAdapter implements DeliveryAdapter {
 
     const stealthAddress = payment.stealthAddress;
     const account = await this.horizon.getAccount(stealthAddress);
-    const relay = opts.relay ?? this.relayer;
+    const relays =
+      normalizeRelayList(opts.relay) ?? normalizeRelayList(this.relayer);
 
     if (opts.sponsored || !account) {
-      if (!relay) {
+      if (!relays) {
         throw new Error(
           'Sponsored token claim requires a relayer URL (opts.relay or client relayer).',
         );
@@ -766,7 +785,7 @@ export class AccountAdapter implements DeliveryAdapter {
       return this.claimTokenSponsored(
         payment,
         opts,
-        relay,
+        relays,
         amount,
         destination,
         payoutAmount,
@@ -821,13 +840,25 @@ export class AccountAdapter implements DeliveryAdapter {
   private async claimTokenSponsored(
     payment: Payment,
     opts: ClaimOpts,
-    relay: string,
+    relays: string[],
     amount: number,
     destination: string,
     payoutAmount: string,
   ): Promise<ClaimReceipt> {
+    // ONE relayer is pinned up front for the whole flow: the prepared tx is
+    // sourced by that relayer's own account, so prepare and submit MUST hit
+    // the same URL — failing over between them is impossible by construction.
+    const pool = new RelayerPool(relays, {
+      network: networkNameForPassphrase(this.networkPassphrase),
+      selection: this.relayerSelection,
+    });
+    const relay = await pool.select({
+      fundingAccount: opts.fundingAccount,
+      fundingSigner: opts.fundingSigner,
+      rpcServer: this.rpcServer,
+    });
     // Built per call so the client carries THIS call's funding signer and the
-    // confirm-poll handle; prepare and submit intentionally hit the same URL.
+    // confirm-poll handle.
     const client = new RelayerClient(relay, undefined, {
       fundingSigner: opts.fundingSigner,
       rpcServer: this.rpcServer,
@@ -1058,22 +1089,44 @@ export class AccountAdapter implements DeliveryAdapter {
 
   /** Submit an XDR directly to Horizon, or via a relayer fee-bump when set. */
   private async submit(xdr: string, opts: ClaimOpts): Promise<string> {
-    const relay = opts.relay ?? this.relayer;
-    if (relay) {
+    const relays =
+      normalizeRelayList(opts.relay) ?? normalizeRelayList(this.relayer);
+    if (relays) {
       // Built per call — a per-call opts.relay must win over the ctor relayer,
-      // and the client must carry THIS call's funding signer — mirroring the
-      // pool withdraw path. The passphrase binds the inner-tx hash into the
-      // proof-of-control signature (REL-01); authAmount is auto-fetched from
-      // /health maxRelayFeeXlm by the RelayerClient.
-      const client = new RelayerClient(relay, undefined, {
-        fundingSigner: opts.fundingSigner,
-        rpcServer: this.rpcServer,
+      // and the clients must carry THIS call's funding signer — mirroring the
+      // pool withdraw path. A single URL is a transparent pass-through; a list
+      // is health-probed with failover on relayer faults only (A3). The
+      // passphrase binds the inner-tx hash into the proof-of-control signature
+      // (REL-01); authAmount is auto-fetched from /health maxRelayFeeXlm.
+      // Confirm-polling runs OUTSIDE the pool's attempt budget so a slow
+      // ledger close is never misread as a dead relayer (which could resubmit).
+      const pool = new RelayerPool(relays, {
+        network: networkNameForPassphrase(this.networkPassphrase),
+        selection: this.relayerSelection,
       });
-      const { txHash } = await client.relay(xdr, {
-        fundingAccount: opts.fundingAccount,
-        networkPassphrase: this.networkPassphrase,
-        confirm: opts.confirm,
-      });
+      const txHash = await pool.withRelayer(
+        async (client) =>
+          (
+            await client.relay(xdr, {
+              fundingAccount: opts.fundingAccount,
+              networkPassphrase: this.networkPassphrase,
+            })
+          ).txHash,
+        {
+          fundingAccount: opts.fundingAccount,
+          fundingSigner: opts.fundingSigner,
+          rpcServer: this.rpcServer,
+        },
+      );
+      if (opts.confirm) {
+        if (!this.rpcServer) {
+          throw new Error(
+            'confirm: true requires an RPC handle: construct the AccountAdapter ' +
+              'with opts.rpcServer (an rpc.Server for the same network).',
+          );
+        }
+        await waitForTransaction(this.rpcServer, txHash);
+      }
       return txHash;
     }
     const res = await this.horizon.submitTransaction(xdr);
