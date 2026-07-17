@@ -20,6 +20,7 @@ import {
   xdr,
 } from '@stellar/stellar-sdk';
 import { PoolAdapter } from '../src/methods/pool.js';
+import { challengeMessage } from '../src/relayer.js';
 import type { StealthKeys, Payment } from '../src/types.js';
 
 const NET = Networks.TESTNET;
@@ -201,6 +202,70 @@ describe('pool relayed withdraw goes through RelayerClient (SDK-POOLRELAY-AUTH)'
 
     // Nothing went to the RPC directly.
     expect(directSends).toHaveLength(0);
+  });
+
+  it('fundingSigner threads signed challenge auth into /relay (credit-gated relayers)', async () => {
+    const { keys, stealth } = makeFixture();
+    const tokenAddress = Asset.native().contractId(NET);
+    const directSends: string[] = [];
+    const server = makeServer({ stealth, tokenAddress, directSends });
+    const adapter = new PoolAdapter(makeContractId(), NET, server);
+
+    // Stub serving BOTH the challenge fetch and the relay post.
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal(
+      'fetch',
+      async (url: string, init?: { method?: string; body?: string }) => {
+        const body = init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : {};
+        calls.push({ url, body });
+        if (url.includes('/credit/challenge')) {
+          return { ok: true, status: 200, json: async () => ({ nonce: 'NONCE123' }) };
+        }
+        if (url.endsWith('/relay')) {
+          return { ok: true, status: 200, json: async () => ({ txHash: 'RELAYED_HASH' }) };
+        }
+        return { ok: false, status: 404, json: async () => ({ error: 'not found' }) };
+      },
+    );
+
+    const fundingKp = Keypair.random();
+    const receipt = await adapter.withdraw(stealth.stealthAddress, DEST, {
+      keys,
+      feePayer: Keypair.random().secret(),
+      relay: 'http://relayer.test',
+      fundingAccount: fundingKp.publicKey(),
+      fundingSigner: async (message) => fundingKp.sign(Buffer.from(message)),
+    });
+    expect(receipt.txHash).toBe('RELAYED_HASH');
+
+    // A challenge was fetched for the funding account, then /relay got the
+    // full proof-of-control triple. Without the signer, a credit-gated
+    // relayer rejects the bare {xdr, fundingAccount} with 402 missing_auth.
+    const challengeCall = calls.find((c) => c.url.includes('/credit/challenge'));
+    expect(challengeCall?.url).toContain(encodeURIComponent(fundingKp.publicKey()));
+    const relayCall = calls.find((c) => c.url.endsWith('/relay'));
+    expect(relayCall).toBeDefined();
+    expect(relayCall!.body.fundingAccount).toBe(fundingKp.publicKey());
+    expect(relayCall!.body.nonce).toBe('NONCE123');
+    expect(typeof relayCall!.body.signature).toBe('string');
+
+    // The signature verifies over the canonical challenge message, bound to
+    // the exact inner tx that was relayed (REL-01 tx-binding).
+    const innerTxHash = new Transaction(relayCall!.body.xdr as string, NET)
+      .hash()
+      .toString('hex');
+    const expectedMessage = challengeMessage(
+      'relay',
+      fundingKp.publicKey(),
+      'NONCE123',
+      '0',
+      innerTxHash,
+    );
+    const sigOk = fundingKp.verify(
+      Buffer.from(expectedMessage),
+      Buffer.from(relayCall!.body.signature as string, 'base64'),
+    );
+    expect(sigOk).toBe(true);
   });
 
   it('accepts a bare .../relay URL without doubling the path (back-compat)', async () => {

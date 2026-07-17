@@ -1,4 +1,5 @@
 import type { NetworkName } from './soroban.js';
+import type { FundingSigner } from './relayer.js';
 
 /**
  * A delivery method describes HOW a stealth payment reaches its recipient.
@@ -165,6 +166,19 @@ export interface WithdrawOpts {
    * See {@link ClaimOpts.fundingAccount}.
    */
   fundingAccount?: string;
+  /**
+   * Signer proving control of {@link fundingAccount}: a credit-gated relayer
+   * requires a fresh challenge nonce signed by the funding account before it
+   * debits credit for the fee-bump (proof-of-control; without it every gated
+   * `/relay` call is rejected 402 `missing_auth`). Omit for non-gated relayers.
+   */
+  fundingSigner?: FundingSigner;
+  /**
+   * Relayed submissions only: poll the relayer-returned txHash until it is
+   * on-chain before returning (SDK-TXHASH-TRUST), surfacing a
+   * `TransactionTimeoutError` (with the hash) if it never lands.
+   */
+  confirm?: boolean;
 }
 
 /** Per-method scan cursors, so each adapter can resume where it left off. */

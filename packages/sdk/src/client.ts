@@ -339,6 +339,8 @@ export class StealthClient {
       asset: opts.asset,
       amount: opts.amount,
       fundingAccount: opts.fundingAccount,
+      fundingSigner: opts.fundingSigner,
+      confirm: opts.confirm,
     });
     return { txHash: result.txHash, amount: result.amount };
   }

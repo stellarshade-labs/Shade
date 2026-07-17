@@ -40,7 +40,7 @@ import {
   FeePayerAddressRequiredError,
 } from '../errors.js';
 import { numberToStroops, formatStroops } from '../stroops.js';
-import { RelayerClient } from '../relayer.js';
+import { RelayerClient, type FundingSigner } from '../relayer.js';
 import { signTx } from './sign.js';
 import { prepareWithRestore } from './restore.js';
 
@@ -258,6 +258,12 @@ export class PoolAdapter implements DeliveryAdapter {
       /** App funding account to debit against (credit-gated relayers). */
       fundingAccount?: string;
       /**
+       * Signer proving control of `fundingAccount` — a credit-gated relayer
+       * rejects `/relay` without a signed challenge (proof-of-control), so
+       * `fundingAccount` alone is not enough to spend credit.
+       */
+      fundingSigner?: FundingSigner;
+      /**
        * Relayed submissions only: poll the relayer-returned txHash until it is
        * actually on-chain before returning (SDK-TXHASH-TRUST), surfacing a
        * `TransactionTimeoutError` (with the hash) if it never lands. Default
@@ -429,7 +435,10 @@ export class PoolAdapter implements DeliveryAdapter {
     // The adapter's own RPC server doubles as the confirm-poll handle so
     // `confirm: true` verifies the relayer's txHash against the same network.
     const relayerClient = opts.relay
-      ? new RelayerClient(opts.relay, undefined, { rpcServer: this.server })
+      ? new RelayerClient(opts.relay, undefined, {
+          fundingSigner: opts.fundingSigner,
+          rpcServer: this.server,
+        })
       : undefined;
     const submit = async (
       signed: StellarSdk.Transaction,
