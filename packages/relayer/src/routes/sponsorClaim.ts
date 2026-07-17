@@ -19,7 +19,7 @@ const PREPARE_TTL_SECONDS = 60;
  * plus one trustline entry (0.5) held under the sponsorship sandwich. Charged to
  * the fundingAccount and tracked in `sponsoredHeld` (previously a silent drain).
  */
-const SPONSORED_RESERVE_ESTIMATE = '1.0000000';
+export const SPONSORED_RESERVE_ESTIMATE = '1.0000000';
 
 function parseAsset(asset: string): Asset {
   if (!asset || asset === 'native' || asset === 'XLM') return Asset.native();

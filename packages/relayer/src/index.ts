@@ -8,7 +8,8 @@ import {
   warnIfEphemeralLedgerPath,
   warnIfPermissiveCors,
 } from './boot.js';
-import { initRelayRoute, handleRelay, maxRelayFeeXlm } from './routes/relay.js';
+import { initRelayRoute, handleRelay } from './routes/relay.js';
+import { createHealthHandler } from './routes/health.js';
 import { handleSponsor } from './routes/sponsor.js';
 import {
   handleSponsorClaimPrepare,
@@ -168,29 +169,17 @@ async function initRelayer() {
       challenges: relayerCtx.challenges,
     });
 
-    app.get('/health', async (_, res) => {
-      let balance = '0';
-      try {
-        const account = await horizonServer.loadAccount(keypair.publicKey());
-        balance = account.balances.find((b) => b.asset_type === 'native')?.balance ?? '0';
-      } catch {
-        // Account may be unfunded; report zero.
-      }
-      res.json({
-        status: 'ok',
+    app.get(
+      '/health',
+      createHealthHandler({
+        server: horizonServer,
+        keypair,
         network: NETWORK,
-        relayerAddress: keypair.publicKey(),
-        balance,
         requireCredit,
-        // Advertised so clients know the fee ceiling to sign in the /relay
-        // challenge (authAmount) without predicting the exact built fee.
-        maxRelayFeeXlm: maxRelayFeeXlm(),
-        // Backend transparency (also lets discovery clients prefer a durable,
-        // multi-instance relayer): 'postgres'|'json' and 'redis'|'memory'.
         store: ledgerHandle.kind,
         sharedState: sharedState.kind,
-      });
-    });
+      }),
+    );
 
     app.post('/relay', asyncHandler(handleRelay));
     app.post('/sponsor', asyncHandler(handleSponsor));
