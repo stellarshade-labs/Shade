@@ -34,12 +34,14 @@ The deposit and its announcement are written **atomically** — no deposit, no a
 **Claiming** calls `withdraw(...)` with an ed25519 signature over the [withdraw message](./03-architecture.md#the-withdraw-message). Because authorization is a signature rather than `require_auth`, *anyone* can submit the transaction for you. Two ways to pay the Soroban fee:
 
 1. **Direct** — you supply a fee-payer account and submit to RPC yourself.
-2. **Relayer fee-bump** — POST to the relayer's `/relay`; it pays the fee, so you never reveal a funded account of your own. See [Relayer](./08-relayer.md).
+2. **Relayer fee-bump** — POST to the relayer's `/relay`; it fee-bumps the transaction. See [Relayer](./08-relayer.md).
+
+> **What relaying a pool withdraw hides — and what it doesn't.** A relayed pool withdraw hides **who pays the fee** (the relayer fee-bumps it), but **not who authored it**: the fee-payer account you pass is the inner transaction's on-chain `source_account`, which is **publicly visible**. So pool relay gives **fee-payer privacy, not inner-author unlinkability**. When author unlinkability matters, use a **throwaway funded fee-payer per withdraw**, or the account method's **sponsored-claim** flow (where the relayer itself is the inner source). Either way, relaying stays **trustless**: the withdraw signature binds the destination, amount, contract, and network, so a relayer cannot redirect or tamper with the withdrawal.
 
 You may withdraw the **full balance or a partial amount** (`opts.amount`).
 
 **Requirements and caveats**
-- `contractId` is **required** whenever the pool method is enabled — there is a built-in default only for `local`. A `testnet` client with pool enabled and no explicit `contractId` throws `ContractIdRequiredError`.
+- `contractId` is **required** whenever the pool method is enabled — there is no built-in default. A `testnet` client with pool enabled and no explicit `contractId` throws `ContractIdRequiredError`.
 - The withdrawal **destination must be an existing Stellar account** (it needs its own reserve to exist).
 - **Not a mixer.** The deposit and the withdraw both name the same `stealth_pk` on-chain, so the *flow* remains traceable; only the link to your identity is hidden.
 

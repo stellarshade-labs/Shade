@@ -13,7 +13,7 @@ What Shade protects, what it explicitly does not, and what you must not rely on 
 
 The protocol and this implementation have **not undergone an external cryptographic audit**. An audit is on the roadmap. Treat the library as production-track but pre-audit, and **do not handle mainnet value**.
 
-Day-to-day development and testing run on the Docker local network, and there is no CI pipeline. The **pool** method has been validated end-to-end on Stellar **testnet** (2026-07-17): deposit → scan → balance → direct withdraw → relayer fee-bumped withdraw, for both native XLM and a classic-asset (USDC) SAC. No testnet contract id is pinned (testnet resets quarterly — deploy your own). The **account** method is unexercised at public-network scale: its scan (and `balance`) walk the global Horizon transaction feed, so a cold scan for a fresh recipient is impractical there — a Horizon indexer is the roadmap fix.
+Testnet is the current test network, and there is no CI pipeline. The **pool** method has been validated end-to-end on Stellar **testnet** (2026-07-17): deposit → scan → balance → direct withdraw → relayer fee-bumped withdraw, for both native XLM and a classic-asset (USDC) SAC. No testnet contract id is pinned (testnet resets quarterly — deploy your own). The **account** method is unexercised at public-network scale: its scan (and `balance`) walk the global Horizon transaction feed, so a cold scan for a fresh recipient is impractical there — a Horizon indexer is the roadmap fix.
 
 ## Threat model
 
@@ -89,8 +89,8 @@ Two hard rules:
 
 ### Implementation gaps worth knowing
 
-- **Relayer defaults are permissive.** `RELAYER_REQUIRE_CREDIT=0` leaves `/relay` and `/sponsor-claim/submit` unauthenticated; `CORS_ORIGIN` defaults to `*`; an unset `RELAYER_SECRET` boots an unfunded random keypair. See [Relayer](./08-relayer.md#operational-warnings).
-- **Relayer state is single-node and non-durable.** The credit ledger is a JSON file (wiped by an ephemeral-filesystem restart, taking consumed-tx idempotency with it); challenge nonces and rate-limit buckets are in-memory.
+- **Relayer defaults are secure, but explicit overrides can weaken them.** Credit gating is **on by default on every network**; explicitly setting `RELAYER_REQUIRE_CREDIT=0` leaves `/relay` and `/sponsor-claim/submit` unauthenticated. `CORS_ORIGIN` defaults to `*` (a startup warning fires). `RELAYER_SECRET` is **always required** — the relayer fails fast (exit 1) if it is unset, rather than booting an unfunded random keypair. `NETWORK` defaults to `testnet` and rejects unknown values (including the removed `local`). See [Relayer](./08-relayer.md#operational-warnings).
+- **Relayer state is durable/shared only when configured.** By default the credit ledger is a JSON file (wiped by an ephemeral-filesystem restart, taking consumed-tx idempotency with it) and challenge nonces + rate-limit buckets are in-memory. Set `DATABASE_URL` (Postgres) to make the ledger durable and multi-instance, and `REDIS_URL` (Redis) to share nonces + rate limits across instances; both fail fast if set-but-unreachable rather than silently forking the ledger. See [Durable & multi-instance state](./08-relayer.md#durable--multi-instance-state).
 - **State archival.** If a `Balance`/`Nonce` entry archives, a withdraw over the archived footprint fails on-chain while `get_balance` still reports the funds. The SDK restores automatically; if the restore itself fails you get `EntryArchivedRestoringError` — **the funds are safe**, but the withdraw can't proceed until the entry is restored. Read-path TTL extension (`get_balance`/`get_nonce` bump a live entry back to ~1 year) makes this unlikely for anyone who scans periodically.
 
 ## User responsibility
