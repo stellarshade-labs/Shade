@@ -43,8 +43,10 @@ interface AccountScanRow {
  * cursor so `claim` can later resolve them by stealth address — otherwise a
  * cursor-advanced scan would discard them and the payment would only be
  * recoverable via --full-rescan. Returns the matching rows for display.
+ * Exported for tests (mirrors `fetchAnnouncements` below); the command action
+ * remains the only production caller.
  */
-async function scanAccountMethod(
+export async function scanAccountMethod(
   network: NetworkName,
   keys: StealthKeys,
   fullRescan: boolean,
@@ -59,7 +61,9 @@ async function scanAccountMethod(
   const cursor = loadHorizonCursor(network);
   log?.(`  account: resuming from cursor ${cursor ?? '(none — start of history)'}`);
   if (indexerUrl) {
-    log?.(`  account: using indexer ${indexerUrl}`);
+    // 'configured', not 'using': this prints before the SDK's health guard
+    // decides whether the indexer is actually consulted for this scan.
+    log?.(`  account: indexer configured: ${indexerUrl}`);
   }
 
   const started = Date.now();
@@ -72,6 +76,47 @@ async function scanAccountMethod(
     // first covered position (no-op without an indexer).
     exhaustive: fullRescan,
   });
+
+  // SDK scan diagnostics (observability only — they describe how the scan
+  // discovered its payments, never which payments it found). The skip notice
+  // is the one operators need: a configured indexer that contributed nothing,
+  // and why. indexerSkipReason is absent when the health guard passed but the
+  // first /announcements page faulted — 'unknown' covers that gap.
+  const meta = result.meta?.account;
+  if (indexerUrl && meta && !meta.indexerUsed) {
+    log?.(
+      `  account: indexer skipped (${meta.indexerSkipReason ?? 'unknown'}) — using the pure Horizon walk`,
+    );
+  }
+  // A minute of lag is where the Horizon tail starts doing visible catch-up
+  // work; an at-head indexer's few seconds are not worth a notice.
+  if (
+    meta?.indexerUsed &&
+    meta.indexerLagSeconds != null &&
+    meta.indexerLagSeconds > 60
+  ) {
+    log?.(
+      `  account: indexer is ${meta.indexerLagSeconds}s behind the network head — the Horizon tail covers the difference`,
+    );
+  }
+  // The post-segment health re-check turning up non-'ok' means the segment's
+  // results were discarded and Horizon re-walked the span — worth a notice
+  // because the scan silently did much more work than the segment line shows.
+  if (meta?.postCheck && meta.postCheck !== 'ok') {
+    log?.(
+      `  account: indexer turned ${meta.postCheck} during the scan — its segment was discarded and Horizon re-walked the span`,
+    );
+  }
+  if (meta?.cursorClamped) {
+    log?.(
+      '  account: indexer-reported position exceeded the chain head — cursor clamped to Horizon\'s head',
+    );
+  }
+  for (const seg of meta?.segments ?? []) {
+    log?.(
+      `  account: segment ${seg.role} via ${seg.source}: ${seg.candidates} candidate(s), ${seg.matches} match(es)`,
+    );
+  }
   log?.(
     `  account: found ${result.payments.length} payment(s) in ${Date.now() - started}ms`,
   );

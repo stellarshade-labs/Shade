@@ -28,6 +28,13 @@ const isKeystoreEncrypted = async (filepath: string) => {
   return check(filepath);
 };
 
+/** Swap process.stdin (a configurable getter on `process`) for a fake. */
+function useStdin(fake: unknown): void {
+  vi.spyOn(process, 'stdin', 'get').mockReturnValue(
+    fake as unknown as typeof process.stdin,
+  );
+}
+
 describe('keystore', () => {
   const tempDir = path.join(os.tmpdir(), 'test-keystore-temp');
   const keystorePath = path.join(tempDir, 'test-keystore.json');
@@ -423,6 +430,28 @@ describe('loadKeystoreOrExit (wrong password vs missing keystore)', () => {
     expect(out).not.toMatch(/no keystore at/i);
   });
 
+  it('stdin EOF at the password prompt → verbatim stdin advice, NOT wrong-password guidance', async () => {
+    const { saveKeystore: save, loadKeystoreOrExit } = await import('./keystore.js');
+    await save(keystorePath, keystore, 'right-password');
+
+    // Encrypted keystore with no --password ⇒ interactive prompt; stdin
+    // already at EOF (e.g. `shade scan < /dev/null`) means no password was
+    // ever attempted, so "try the password again" would be actively wrong.
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const input = new PassThrough();
+    input.end();
+    useStdin(input);
+
+    await expect(loadKeystoreOrExit(keystorePath, undefined)).rejects.toThrow(/exit:1/);
+
+    const out = errorOutput();
+    expect(out).toMatch(/stdin closed before input was received/);
+    expect(out).not.toMatch(/wrong password or corrupt file/i);
+    expect(out).not.toMatch(/Try the password again/i);
+    // And no keygen hint either — the keystore exists and is intact.
+    expect(out).not.toMatch(/keygen/);
+  });
+
   it('correct password → returns the decrypted keystore without exiting', async () => {
     const { saveKeystore: save, loadKeystoreOrExit } = await import('./keystore.js');
     await save(keystorePath, keystore, 'right-password');
@@ -499,13 +528,6 @@ describe('promptPassword (closed stdin must fail loudly, not exit 0)', () => {
     resume = vi.fn();
     pause = vi.fn();
     setEncoding = vi.fn();
-  }
-
-  /** Swap process.stdin (a configurable getter on `process`) for a fake. */
-  function useStdin(fake: unknown): void {
-    vi.spyOn(process, 'stdin', 'get').mockReturnValue(
-      fake as unknown as typeof process.stdin,
-    );
   }
 
   beforeEach(() => {

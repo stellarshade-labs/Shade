@@ -212,7 +212,9 @@ export async function loadKeystoreInteractive(
  * suggest `shade keygen`) from one that exists but could not be opened (wrong
  * password / corrupt file) — in the latter case suggesting `shade keygen`
  * would lead the user to overwrite the keystore and destroy their keys and
- * any unclaimed funds.
+ * any unclaimed funds. A password prompt whose stdin closed (EOF) before any
+ * input is reported verbatim instead: no password was ever attempted, so both
+ * retry advice and a keygen hint would mislead.
  */
 export async function loadKeystoreOrExit(
   filepath: string,
@@ -225,6 +227,12 @@ export async function loadKeystoreOrExit(
     if (err?.code === 'ENOENT' || /not found|no such file/i.test(message)) {
       console.error(chalk.red(`Error: no keystore at ${filepath}`));
       console.error(chalk.gray("  Run 'shade keygen' first to create keys"));
+    } else if (/stdin closed before input was received/.test(message)) {
+      // The prompt never received input, so no password was ever attempted:
+      // "try the password again" cannot help a closed stdin, and the message
+      // itself already carries the actionable advice (pass the value via its
+      // flag or environment variable).
+      console.error(chalk.red(`Error: ${message}`));
     } else {
       console.error(
         chalk.red(
