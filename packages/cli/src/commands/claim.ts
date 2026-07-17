@@ -4,6 +4,7 @@ import {
   parseStroops,
   formatStroops,
   numberToStroops,
+  NoHealthyRelayerError,
   type StealthKeys,
   type Payment,
 } from '@shade/sdk';
@@ -15,6 +16,11 @@ import {
 import { assertNetwork } from '../utils/network.js';
 import { resolveSecret } from '../utils/secrets.js';
 import { resolveFundingAuth } from '../utils/funding.js';
+import {
+  collectRelay,
+  resolveRelays,
+  printNoHealthyRelayer,
+} from '../utils/relay.js';
 import { findHorizonPayment } from '../utils/config.js';
 import { runPoolWithdraw } from './withdraw.js';
 import chalk from 'chalk';
@@ -63,7 +69,7 @@ export const claimCommand = new Command('claim')
   .option('--password <password>', 'Keystore password (prompts on stderr if omitted for an encrypted keystore)')
   .option('--merge', 'Sweep the whole account via AccountMerge (account method)')
   .option('--no-merge', 'Leave the stealth account open (partial payout)')
-  .option('--relay <url>', 'Relayer URL for fee-bumped submission')
+  .option('--relay <url>', 'Relayer URL(s) for fee-bumped submission — repeatable or comma-separated; falls back to SHADE_RELAYERS', collectRelay)
   .option('--sponsored', 'Use the relayer sponsor-claim pair (token claimable-balance claims)')
   .option('--funding-account <address>', 'App account to debit a credit-gated relayer fee against')
   .option('--funding-secret <secret>', 'Secret controlling the funding account, signs the relayer challenge (or set SHADE_FUNDING_SECRET / prompt; flags leak into shell history)')
@@ -74,6 +80,7 @@ export const claimCommand = new Command('claim')
   .action(async (stealthAddress: string, destination: string, options) => {
     try {
       const network = assertNetwork(options.network);
+      const relays = resolveRelays(options.relay);
 
       if (!StrKey.isValidEd25519PublicKey(stealthAddress)) {
         console.error(chalk.red('Error: Invalid stealth address'));
@@ -108,7 +115,7 @@ export const claimCommand = new Command('claim')
           stealthAddress,
           destination,
           network,
-          relay: options.relay,
+          relay: relays,
           feePayer,
           asset: options.asset,
           fundingAccount: options.fundingAccount,
@@ -152,7 +159,7 @@ export const claimCommand = new Command('claim')
       const client = new StealthClient({
         network,
         methods: ['account'],
-        relayer: options.relay,
+        relayer: relays,
       });
 
       const isToken =
@@ -182,7 +189,7 @@ export const claimCommand = new Command('claim')
 
       // Funding auth only matters on the relayed path (credit-gated relayers);
       // never prompt for it on a direct submission.
-      const funding = options.relay
+      const funding = relays
         ? await resolveFundingAuth({
             fundingAccount: options.fundingAccount,
             fundingSecret: options.fundingSecret,
@@ -192,7 +199,7 @@ export const claimCommand = new Command('claim')
       const receipt = await client.claim(payment, destination, {
         keys,
         merge: options.merge !== false,
-        relay: options.relay,
+        relay: relays,
         sponsored: options.sponsored,
         fundingAccount: funding.fundingAccount,
         fundingSigner: funding.fundingSigner,
@@ -202,6 +209,10 @@ export const claimCommand = new Command('claim')
       console.log(chalk.green(`\u2713 Claimed ${receipt.amount} to ${destination}`));
       console.log(chalk.gray(`  Tx hash: ${receipt.txHash}`));
     } catch (error) {
+      if (error instanceof NoHealthyRelayerError) {
+        printNoHealthyRelayer(error);
+        process.exit(1);
+      }
       const message = error instanceof Error ? error.message : String(error);
       console.error(chalk.red('Error claiming:'), message);
       if (options.verbose && error instanceof Error && error.stack) {

@@ -16,7 +16,8 @@ import {
   getNetworkConfig,
   waitForTransaction,
   buildWithdrawMessage,
-  RelayerClient,
+  RelayerPool,
+  NoHealthyRelayerError,
   type NetworkName,
 } from '@shade/sdk';
 import {
@@ -26,6 +27,11 @@ import {
 import { assertNetwork } from '../utils/network.js';
 import { resolveSecret } from '../utils/secrets.js';
 import { resolveFundingAuth } from '../utils/funding.js';
+import {
+  collectRelay,
+  resolveRelays,
+  printNoHealthyRelayer,
+} from '../utils/relay.js';
 import { getContractAddress } from '../utils/config.js';
 import { getContractBalance, getNonce } from '../utils/soroban.js';
 import { fetchAnnouncements } from './scan.js';
@@ -106,8 +112,11 @@ export interface RunPoolWithdrawOpts {
   asset?: string;
   /** Secret key of the account paying the Soroban fee. */
   feePayer?: string;
-  /** Relay URL for fee-bumped submission. */
-  relay?: string;
+  /**
+   * Relay URL(s) for fee-bumped submission — repeatable/comma-joined; falls
+   * back to `SHADE_RELAYERS` when empty.
+   */
+  relay?: string | string[];
   /** App account to debit a credit-gated relayer fee against. */
   fundingAccount?: string;
   /** Secret controlling `fundingAccount` (signs the relayer challenge). */
@@ -310,7 +319,8 @@ export async function runPoolWithdraw(options: RunPoolWithdrawOpts): Promise<voi
 
     // Funding auth only matters on the relayed path (credit-gated relayers);
     // never prompt for it on a direct submission.
-    const funding = options.relay
+    const relays = resolveRelays(options.relay);
+    const funding = relays
       ? await resolveFundingAuth({
           fundingAccount: options.fundingAccount,
           fundingSecret: options.fundingSecret,
@@ -320,27 +330,35 @@ export async function runPoolWithdraw(options: RunPoolWithdrawOpts): Promise<voi
     // Submit a signed tx, fee-bumped through the relayer when configured,
     // otherwise directly to the RPC. Returns the transaction hash.
     //
-    // The relayed path goes through the SDK RelayerClient (which also accepts a
-    // bare `.../relay` URL): a hand-rolled `{xdr}` POST carries no funding auth,
-    // so a credit-gated relayer — the default — rejects it 401/402. The
-    // passphrase binds the inner-tx hash into the proof-of-control signature.
-    const relayerClient = options.relay
-      ? new RelayerClient(options.relay, undefined, {
-          fundingSigner: funding.fundingSigner,
-          rpcServer: server,
-        })
+    // The relayed path goes through the SDK RelayerPool: one URL is a plain
+    // pass-through (bare `.../relay` URLs included), a list is health-probed
+    // and fails over on relayer faults (A3). Funding auth + the inner-tx-hash
+    // binding thread into `/relay` — a bare `{xdr}` POST would make a
+    // credit-gated relayer (the default) reject 401/402.
+    const relayerPool = relays
+      ? RelayerPool.from(relays, { network })
       : undefined;
     const submit = async (signed: StellarSdk.Transaction): Promise<string> => {
-      if (relayerClient) {
+      if (relayerPool) {
         console.log(chalk.cyan('Submitting via relay...'));
-        const { txHash } = await relayerClient.relay(
-          signed.toEnvelope().toXDR('base64'),
+        return relayerPool.withRelayer(
+          async (client, url) => {
+            if (options.verbose) console.log(chalk.gray(`  Relayer: ${url}`));
+            const { txHash } = await client.relay(
+              signed.toEnvelope().toXDR('base64'),
+              {
+                fundingAccount: funding.fundingAccount,
+                networkPassphrase,
+              },
+            );
+            return txHash;
+          },
           {
             fundingAccount: funding.fundingAccount,
-            networkPassphrase,
+            fundingSigner: funding.fundingSigner,
+            rpcServer: server,
           },
         );
-        return txHash;
       }
       console.log(chalk.cyan('Submitting transaction...'));
       const result = await server.sendTransaction(signed);
@@ -373,6 +391,10 @@ export async function runPoolWithdraw(options: RunPoolWithdrawOpts): Promise<voi
     console.log(chalk.gray(`  Tx hash: ${txHash}`));
 
   } catch (error: any) {
+    if (error instanceof NoHealthyRelayerError) {
+      printNoHealthyRelayer(error);
+      process.exit(1);
+    }
     console.error(chalk.red('Error withdrawing:'), error.message);
     if (options.verbose && error.stack) {
       console.error(chalk.gray(error.stack));
@@ -391,7 +413,7 @@ export const withdrawCommand = new Command('withdraw')
   .option('--amount <amount>', 'Amount to withdraw (default: full balance)')
   .option('--asset <asset>', 'Asset to withdraw (default: native XLM, or CODE:ISSUER)')
   .option('--fee-payer <secret>', 'Secret key of account paying the Soroban fee (or set SHADE_FEE_PAYER / prompt; flags leak into shell history)')
-  .option('--relay <url>', 'Relay URL for fee-bumped submission')
+  .option('--relay <url>', 'Relayer URL(s) for fee-bumped submission — repeatable or comma-separated; falls back to SHADE_RELAYERS', collectRelay)
   .option('--funding-account <address>', 'App account to debit a credit-gated relayer fee against')
   .option('--funding-secret <secret>', 'Secret controlling the funding account, signs the relayer challenge (or set SHADE_FUNDING_SECRET / prompt; flags leak into shell history)')
   .option('--verbose', 'Show detailed output')
