@@ -65,7 +65,7 @@ There is deliberately no implicit default — the privacy trade-off must be a co
 
 ### `ContractIdRequiredError`
 
-The `pool` method is enabled but no contract id resolved. There is a built-in default only for `local`.
+The `pool` method is enabled but no contract id resolved. There is no built-in default on any network:
 
 - **SDK:** pass `contractId: 'C...'` in `ClientConfig`.
 - **CLI:** deploy the contract and write its id to `~/.stealth/<network>-contract`.
