@@ -106,6 +106,25 @@ shade-relayer:v1:{endpoint}:{fundingAccount}:{nonce}:{amount}[:{bind}]
 
 The signed message binds the endpoint, the account, the nonce, and the exact **amount** authorized. On `/relay`, `bind` is additionally the **inner transaction hash**, so an intercepted `{nonce, signature}` cannot be paired with a different inner XDR of the same fee.
 
+On `/relay` the signed amount is a **fee ceiling**: the client authorizes "debit up to the relayer's advertised `maxRelayFeeXlm` for THIS inner tx", and the relayer debits only the **actual** fee (rejecting anything above the ceiling with `fee_exceeds_authorization`). On `/sponsor-claim/submit` the amount is the **exact** total the relayer will charge — the prepared tx's fee plus the 1 XLM sponsored-reserve estimate.
+
+The SDK and CLI handle all of this automatically once they hold a funding signer:
+
+```bash
+# CLI: the funding secret signs the challenge (prefer the env var over the flag)
+SHADE_FUNDING_SECRET=S... shade claim <stealth> <dest> --relay https://relayer.example
+```
+
+```typescript
+// SDK: any FundingSigner works — a raw key, a wallet, an HSM
+await client.claim(payment, dest, {
+  keys,
+  relay: 'https://relayer.example',
+  fundingAccount: 'G...',                        // account whose credit is debited
+  fundingSigner: (msg) => kp.sign(Buffer.from(msg)),  // proof of control
+});
+```
+
 ### The ledger
 
 The credit ledger holds balances, consumed-deposit idempotency records, reservations, and per-funder sponsored-reserve totals. Whichever backend is in use (JSON file or Postgres, below), the accounting semantics are the same:

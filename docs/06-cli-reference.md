@@ -19,6 +19,7 @@ This page documents every command's real arguments and flags.
 |---|---|
 | `SHADE_FROM_SECRET` | `send` (sender secret) |
 | `SHADE_FEE_PAYER` | `claim`, `withdraw` (fee-payer secret) |
+| `SHADE_FUNDING_SECRET` | `claim`, `withdraw` (funding-account secret — signs the credit-gated relayer challenge) |
 | `SHADE_KEYSTORE` | every command (keystore path) |
 
 **Keystore path** resolves as: `--keystore <path>` → `$SHADE_KEYSTORE` → `~/.shade-keys.json`.
@@ -159,7 +160,14 @@ Claim a discovered payment to a destination address. This is the **preferred, un
 shade claim <stealth-addr> <destination> --fee-payer S...                    # pool withdraw
 shade claim <stealth-addr> <destination> --relay http://localhost:3000       # account sweep
 shade claim <stealth-addr> <destination> --sponsored --funding-account G...  # token, no reserves
+
+# Against a credit-gated relayer (the default), the funding account must also
+# SIGN the relayer's challenge — supply its secret (prefer the env var):
+SHADE_FUNDING_SECRET=S... shade claim <stealth-addr> <destination> \
+  --relay https://relayer.example --funding-account G...
 ```
+
+The funding secret alone is enough — the account is derived from it; passing both asserts they match. Without a signer, a credit-gated relayer rejects the request (`401 missing_auth`).
 
 | Argument | Description |
 |---|---|
@@ -176,6 +184,7 @@ shade claim <stealth-addr> <destination> --sponsored --funding-account G...  # t
 | `--relay <url>` | Relayer URL for fee-bumped submission |
 | `--sponsored` | Use the relayer sponsor-claim pair (token claimable-balance claims) |
 | `--funding-account <address>` | App account to debit a credit-gated relayer fee against |
+| `--funding-secret <secret>` | Secret controlling the funding account — signs the relayer challenge (prefer `$SHADE_FUNDING_SECRET`) |
 | `--fee-payer <secret>` | Secret paying the pool-withdraw Soroban fee (prefer `$SHADE_FEE_PAYER`) |
 | `--asset <asset>` | Asset to claim, pool method: `native` or `CODE:ISSUER` |
 | `--amount <amount>` | Partial claim amount (account method, with `--no-merge`) |
@@ -207,6 +216,8 @@ shade withdraw <stealth-addr> <destination> --fee-payer S... --asset USDC:GISSUE
 | `--asset <asset>` | Asset to withdraw (default: native XLM, or `CODE:ISSUER`) |
 | `--fee-payer <secret>` | Secret of the account paying the Soroban fee (prefer `$SHADE_FEE_PAYER`) |
 | `--relay <url>` | Relay URL for fee-bumped submission |
+| `--funding-account <address>` | App account to debit a credit-gated relayer fee against |
+| `--funding-secret <secret>` | Secret controlling the funding account — signs the relayer challenge (prefer `$SHADE_FUNDING_SECRET`) |
 | `--verbose` | Show detailed output |
 
 A fee payer is **required**. If the recipient's pool entry has archived, the CLI transparently submits a `RestoreFootprintOp` first and rebuilds the withdraw on a fresh sequence.

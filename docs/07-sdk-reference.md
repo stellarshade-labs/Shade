@@ -195,10 +195,14 @@ interface ClaimOpts {
   amount?: number;            // partial claim
   sponsored?: boolean;        // account-method token claim via the relayer
   fundingAccount?: string;    // credit-gated relayer: account to debit
+  fundingSigner?: FundingSigner;  // credit-gated relayer: signs the proof-of-control challenge
+  confirm?: boolean;          // relayed only: poll the returned txHash until it lands on-chain
   signTransaction?: TransactionSigner;
   feePayerAddress?: string;   // required when signTransaction is set on a pool claim
 }
 ```
+
+Against a credit-gated relayer (the default), `fundingAccount` alone is not enough — the relayer requires a fresh challenge **signed** by that account, so pass `fundingSigner` too (any `(message) => signature` function: a raw keypair, a wallet, an HSM). Both fields also apply to `withdraw()`'s `WithdrawOpts`.
 
 ---
 
