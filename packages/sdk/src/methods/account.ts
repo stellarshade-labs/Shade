@@ -77,12 +77,14 @@ const TOKEN_ACCOUNT_STARTING_BALANCE = '1.5001';
 const ACCOUNT_RESERVE_STROOPS = 10_000_000n;
 
 /**
- * Mirror of the relayer's `SPONSORED_RESERVE_ESTIMATE` ('1.0000000' XLM): the
- * reserve component a credit-gated relayer adds to the prepared tx's fee when
- * verifying the sponsor-claim proof-of-control signature. Unlike `/relay`
- * (which authorizes a fee CEILING), sponsor-claim verifies the EXACT total
- * `tx.fee + this` — any other signed amount is rejected 401. Follow-up: the
- * relayer should advertise this via `/health` instead of being mirrored here.
+ * Fallback mirror of the relayer's `SPONSORED_RESERVE_ESTIMATE` ('1.0000000'
+ * XLM): the reserve component a credit-gated relayer adds to the prepared tx's
+ * fee when verifying the sponsor-claim proof-of-control signature. Unlike
+ * `/relay` (which authorizes a fee CEILING), sponsor-claim verifies the EXACT
+ * total `tx.fee + this` — any other signed amount is rejected 401. The relayer
+ * advertises the live value via `/health` `sponsoredReserveEstimate`, which
+ * the sponsored-claim path prefers; this constant applies only when the field
+ * is absent, unparsable, or /health is unreachable.
  */
 const SPONSORED_RESERVE_ESTIMATE_STROOPS = 10_000_000n;
 
@@ -898,10 +900,15 @@ export class AccountAdapter implements DeliveryAdapter {
     // A gated relayer verifies the proof-of-control signature over the EXACT
     // total it debits — the prepared tx's fee plus the sponsored-reserve
     // estimate — recomputed server-side from the same tx, so this must match
-    // byte-for-byte (see packages/relayer/src/routes/sponsorClaim.ts).
-    const authAmount = formatStroops(
-      BigInt(tx.fee) + SPONSORED_RESERVE_ESTIMATE_STROOPS,
-    );
+    // byte-for-byte (see packages/relayer/src/routes/sponsorClaim.ts). Prefer
+    // the estimate THIS pinned relayer advertises via /health so a
+    // relayer-side change cannot silently break gated claims; the mirrored
+    // constant covers relayers that do not advertise it (and a /health fault,
+    // which must never break the claim itself).
+    const reserveStroops =
+      (await client.sponsoredReserveEstimateStroops()) ??
+      SPONSORED_RESERVE_ESTIMATE_STROOPS;
+    const authAmount = formatStroops(BigInt(tx.fee) + reserveStroops);
 
     const { txHash } = await client.sponsorClaimSubmit(
       tx.toEnvelope().toXDR('base64'),

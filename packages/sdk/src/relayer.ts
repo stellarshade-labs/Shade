@@ -1,6 +1,7 @@
 import { Transaction } from '@stellar/stellar-sdk';
 import type { FetchLike } from './horizon.js';
 import { waitForTransaction, type TransactionStatusSource } from './soroban.js';
+import { parseStroops } from './stroops.js';
 import { RelayerHttpError, RelayerNetworkError } from './errors.js';
 
 /**
@@ -48,6 +49,13 @@ export interface RelayerHealth {
   requireCredit?: boolean;
   /** Advertised ceiling (XLM) on a fee-bump — the amount a client authorizes. */
   maxRelayFeeXlm?: number;
+  /**
+   * The reserve component (7-dp XLM string, e.g. `'1.0000000'`) a credit-gated
+   * relayer adds to a sponsor-claim tx's fee when verifying the
+   * proof-of-control signature. Clients signing the EXACT `fee + reserve`
+   * total should prefer this over mirroring the relayer-side constant.
+   */
+  sponsoredReserveEstimate?: string;
   /** Credit-ledger backend: `'postgres'` (durable) or `'json'` (dev fallback). */
   store?: string;
   /** Nonce/rate-limit backend: `'redis'` (multi-instance) or `'memory'`. */
@@ -347,6 +355,34 @@ export class RelayerClient {
     }
     this.cachedMaxRelayFee = cap.toFixed(7);
     return this.cachedMaxRelayFee;
+  }
+
+  /** Cached per-client sponsored-reserve estimate; `null` = fetched, absent. */
+  private cachedSponsoredReserve?: bigint | null;
+
+  /**
+   * The relayer's advertised sponsored-reserve estimate
+   * (`sponsoredReserveEstimate` from /health), parsed to exact stroops.
+   * Returns `undefined` when the relayer does not advertise one, the value is
+   * unparsable, or /health is unreachable — the caller falls back to its own
+   * mirrored constant, so a health fault never breaks a claim. Cached per
+   * client, mirroring {@link maxRelayFee}.
+   */
+  async sponsoredReserveEstimateStroops(): Promise<bigint | undefined> {
+    if (this.cachedSponsoredReserve === undefined) {
+      let estimate: bigint | null = null;
+      try {
+        const h = await this.health();
+        if (typeof h.sponsoredReserveEstimate === 'string') {
+          estimate = parseStroops(h.sponsoredReserveEstimate);
+        }
+      } catch {
+        // Unreachable /health or an unparsable value: leave null so the
+        // caller's fallback applies.
+      }
+      this.cachedSponsoredReserve = estimate;
+    }
+    return this.cachedSponsoredReserve ?? undefined;
   }
 
   /**

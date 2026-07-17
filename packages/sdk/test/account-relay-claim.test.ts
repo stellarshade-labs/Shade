@@ -103,7 +103,11 @@ function nativePayment(stealthAddress: string, ephemeralPubKeyHex: string): Paym
  * Stub the global fetch (used by RelayerClient) serving /health, the credit
  * challenge, /relay and the sponsor-claim pair, recording every call.
  */
-function stubRelayerFetch(opts?: { preparedXdr?: string }): Array<{
+function stubRelayerFetch(opts?: {
+  preparedXdr?: string;
+  /** Override the /health body, or `'error'` for a 500 response. */
+  health?: Record<string, unknown> | 'error';
+}): Array<{
   url: string;
   body: Record<string, unknown>;
 }> {
@@ -114,11 +118,15 @@ function stubRelayerFetch(opts?: { preparedXdr?: string }): Array<{
       const body = init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : {};
       calls.push({ url, body });
       if (url.endsWith('/health')) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ status: 'ok', requireCredit: true, maxRelayFeeXlm: 0.1 }),
+        if (opts?.health === 'error') {
+          return { ok: false, status: 500, json: async () => ({ error: 'down' }) };
+        }
+        const healthBody = opts?.health ?? {
+          status: 'ok',
+          requireCredit: true,
+          maxRelayFeeXlm: 0.1,
         };
+        return { ok: true, status: 200, json: async () => healthBody };
       }
       if (url.includes('/credit/challenge')) {
         return { ok: true, status: 200, json: async () => ({ nonce: 'NONCE123' }) };
@@ -450,8 +458,10 @@ describe('account sponsored claim: fundingSigner auth (credit-gated relayers)', 
     expect(typeof submit!.body.signature).toBe('string');
 
     // The relayer verifies the signature over the EXACT total it will debit:
-    // the prepared tx's fee + the sponsored-reserve estimate (1.0 XLM) — an
-    // exact match, not a ceiling, and with no inner-tx bind on this endpoint.
+    // the prepared tx's fee + the sponsored-reserve estimate — an exact match,
+    // not a ceiling, and with no inner-tx bind on this endpoint. This stub's
+    // /health does NOT advertise sponsoredReserveEstimate, so this doubles as
+    // the absent-field case: the SDK falls back to the mirrored 1.0 XLM.
     const preparedFee = BigInt(new Transaction(preparedXdr, NET).fee);
     const expectedTotal = formatStroops(preparedFee + 10_000_000n);
     const expectedMessage = challengeMessage(
@@ -465,5 +475,106 @@ describe('account sponsored claim: fundingSigner auth (credit-gated relayers)', 
       Buffer.from(submit!.body.signature as string, 'base64'),
     );
     expect(sigOk).toBe(true);
+  });
+
+  /**
+   * Run one sponsored claim against the stubbed relayer with the given
+   * /health behavior; assert the proof-of-control signature covers
+   * `prepared fee + expectedReserveStroops` exactly.
+   */
+  async function expectSponsoredAuthTotal(
+    health: Record<string, unknown> | 'error',
+    expectedReserveStroops: bigint,
+  ): Promise<void> {
+    const { keys, stealthAddress, ephemeralPubKeyHex } = makeFixture();
+    const preparedXdr = buildSponsorClaimXdr({
+      stealthAddress,
+      destination: DEST,
+      amount: '100.0000000',
+    });
+    const calls = stubRelayerFetch({ preparedXdr, health });
+
+    const destTrusts = {
+      id: DEST,
+      sequence: '1',
+      balances: [
+        {
+          asset_type: 'credit_alphanum4',
+          asset_code: 'USDC',
+          asset_issuer: ISSUER,
+          balance: '0.0000000',
+        },
+      ],
+    };
+    const horizon = makeCapturingHorizon({
+      accountsByAddress: { [DEST]: destTrusts },
+      submitted: [],
+    });
+    const adapter = new AccountAdapter(NET, horizon, 'http://relayer.test');
+
+    const payment: Payment = {
+      stealthAddress,
+      ephemeralPubKey: ephemeralPubKeyHex,
+      token: ASSET,
+      asset: ASSET,
+      claimableBalanceId: CB_ID,
+      amount: 100,
+      amountStroops: '1000000000',
+      method: 'account',
+    };
+    const fundingKp = Keypair.random();
+    const receipt = await adapter.claim(payment, DEST, {
+      keys,
+      sponsored: true,
+      fundingAccount: fundingKp.publicKey(),
+      fundingSigner: async (message) => fundingKp.sign(Buffer.from(message)),
+    });
+    // The claim itself must succeed regardless of the /health behavior.
+    expect(receipt.txHash).toBe('SPONSORED_HASH');
+
+    const submit = calls.find((c) => c.url.endsWith('/sponsor-claim/submit'));
+    const preparedFee = BigInt(new Transaction(preparedXdr, NET).fee);
+    const expectedTotal = formatStroops(preparedFee + expectedReserveStroops);
+    const expectedMessage = challengeMessage(
+      'sponsor-claim',
+      fundingKp.publicKey(),
+      'NONCE123',
+      expectedTotal,
+    );
+    const sigOk = fundingKp.verify(
+      Buffer.from(expectedMessage),
+      Buffer.from(submit!.body.signature as string, 'base64'),
+    );
+    expect(sigOk).toBe(true);
+  }
+
+  it('prefers the relayer-advertised sponsoredReserveEstimate from /health', async () => {
+    // The relayer advertises 2.0 XLM — a silent relayer-side change away from
+    // the mirrored 1.0 XLM constant must not break gated sponsored claims.
+    await expectSponsoredAuthTotal(
+      {
+        status: 'ok',
+        requireCredit: true,
+        maxRelayFeeXlm: 0.1,
+        sponsoredReserveEstimate: '2.0000000',
+      },
+      20_000_000n,
+    );
+  });
+
+  it('falls back to the mirrored constant on an unparsable advertised estimate', async () => {
+    await expectSponsoredAuthTotal(
+      {
+        status: 'ok',
+        requireCredit: true,
+        maxRelayFeeXlm: 0.1,
+        sponsoredReserveEstimate: 'not-a-number',
+      },
+      10_000_000n,
+    );
+  });
+
+  it('falls back to the mirrored constant when /health errors (claim not broken)', async () => {
+    await expectSponsoredAuthTotal('error', 10_000_000n);
   });
 });
