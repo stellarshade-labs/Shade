@@ -4,6 +4,13 @@ use soroban_sdk::{
     symbol_short,
 };
 
+/// Static domain-separation tag prepended to the withdraw signature preimage
+/// (SH-3). Ensures a signed withdraw message can never collide with any other
+/// protocol's message a stealth key might be asked to sign. 22 ASCII bytes.
+/// Consensus-critical: must match the TypeScript mirror byte-for-byte
+/// (`buildWithdrawMessage` in packages/sdk/src/soroban.ts).
+const WITHDRAW_MSG_DOMAIN_TAG: &[u8; 22] = b"SHADE-POOL-WITHDRAW-V1";
+
 /// Announcement entry for stealth payments.
 /// Created atomically with each deposit — no deposit, no announcement.
 #[contracttype]
@@ -118,10 +125,13 @@ impl StealthPoolContract {
     /// to submit the transaction on behalf of the recipient.
     ///
     /// Message format:
-    ///   SHA256(stealth_pk || token || amount || destination || nonce
-    ///          || contract_address || network_id)
-    /// This binds the signature to a specific contract deployment and network,
-    /// preventing cross-deployment / cross-network replay.
+    ///   SHA256(domain_tag || stealth_pk || token || amount || destination
+    ///          || nonce || contract_address || network_id)
+    /// The leading static domain tag ("SHADE-POOL-WITHDRAW-V1") separates this
+    /// preimage from any other message a stealth key might sign; the trailing
+    /// contract address and network id bind the signature to a specific
+    /// contract deployment and network, preventing cross-deployment /
+    /// cross-network replay.
     pub fn withdraw(
         env: Env,
         stealth_pk: BytesN<32>,
@@ -186,13 +196,17 @@ impl StealthPoolContract {
 
     /// Build the message bytes for withdraw signature verification.
     ///
-    /// Format (fixed-width fields concatenated, then SHA-256):
-    ///   stealth_pk[32] || token_strkey_ascii[56] || amount_be_i128[16]
+    /// SHA-256 of the fixed-width 278-byte preimage built by
+    /// `build_withdraw_preimage`:
+    ///   domain_tag[22] ("SHADE-POOL-WITHDRAW-V1" ASCII) || stealth_pk[32]
+    ///   || token_strkey_ascii[56] || amount_be_i128[16]
     ///   || dest_strkey_ascii[56] || nonce_be_u64[8]
     ///   || contract_strkey_ascii[56] || network_id[32]
     ///
-    /// The trailing contract address and network id provide domain separation so a
-    /// signature cannot be replayed on a different deployment or network.
+    /// The leading static domain tag (SH-3) separates withdraw preimages from
+    /// any other message a stealth key might sign; the trailing contract
+    /// address and network id provide domain separation so a signature cannot
+    /// be replayed on a different deployment or network.
     fn build_withdraw_message(
         env: &Env,
         stealth_pk: &BytesN<32>,
@@ -201,7 +215,26 @@ impl StealthPoolContract {
         destination: &Address,
         nonce: u64,
     ) -> Bytes {
+        let preimage =
+            Self::build_withdraw_preimage(env, stealth_pk, token_addr, amount, destination, nonce);
+        env.crypto().sha256(&preimage).into()
+    }
+
+    /// Build the raw withdraw signature preimage (278 bytes; layout documented
+    /// on `build_withdraw_message`). Kept separate from the hashing step so
+    /// tests can assert on the exact preimage bytes.
+    fn build_withdraw_preimage(
+        env: &Env,
+        stealth_pk: &BytesN<32>,
+        token_addr: &Address,
+        amount: i128,
+        destination: &Address,
+        nonce: u64,
+    ) -> Bytes {
         let mut msg = Bytes::new(env);
+
+        // Static domain-separation tag: 22 ASCII bytes (SH-3)
+        msg.append(&Bytes::from_slice(env, WITHDRAW_MSG_DOMAIN_TAG));
 
         // stealth_pk: 32 bytes
         msg.append(&Bytes::from_slice(env, &stealth_pk.to_array()));
@@ -233,7 +266,7 @@ impl StealthPoolContract {
         // Domain separation: 32-byte network id (SHA-256 of the network passphrase)
         msg.append(&Bytes::from_slice(env, &env.ledger().network_id().to_array()));
 
-        env.crypto().sha256(&msg).into()
+        msg
     }
 
     /// Get balance for a stealth key + token pair.
@@ -1129,5 +1162,91 @@ mod tests {
         // Same signature must be rejected on B (different contract address).
         let res = client_b.try_withdraw(&stealth_pk, &token_id, &50, &destination, &1, &sig_a_bytes);
         assert!(res.is_err(), "signature must not replay across deployments");
+    }
+
+    #[test]
+    fn test_withdraw_preimage_starts_with_domain_tag() {
+        // SH-3: the signed preimage must begin with the static domain tag and
+        // be exactly 22+32+56+16+56+8+56+32 = 278 bytes.
+        let env = Env::default();
+        let contract_id = env.register(StealthPoolContract, ());
+
+        let stealth_pk = BytesN::from_array(&env, &[1u8; 32]);
+        let token = Address::generate(&env);
+        let destination = Address::generate(&env);
+
+        let preimage = env.as_contract(&contract_id, || {
+            StealthPoolContract::build_withdraw_preimage(
+                &env, &stealth_pk, &token, 50, &destination, 1,
+            )
+        });
+
+        assert_eq!(preimage.len(), 278, "preimage must be 278 bytes");
+        let mut tag = [0u8; 22];
+        preimage.slice(0..22).copy_into_slice(&mut tag);
+        assert_eq!(
+            &tag, b"SHADE-POOL-WITHDRAW-V1",
+            "preimage must start with the static domain tag"
+        );
+        assert_eq!(&tag, WITHDRAW_MSG_DOMAIN_TAG);
+    }
+
+    #[test]
+    fn test_withdraw_message_matches_cross_language_vector() {
+        // Cross-language consensus pin: the SAME fixed inputs and the SAME
+        // expected SHA-256 are asserted against the TypeScript mirror in
+        // packages/sdk/test/withdraw-message.test.ts (EXPECTED_HASH). If either
+        // implementation's byte layout drifts by even one byte, one of the two
+        // pins breaks.
+        let env = Env::default();
+
+        // network_id = SHA-256("Test SDF Network ; September 2015") — testnet.
+        env.ledger().set_network_id([
+            0xce, 0xe0, 0x30, 0x2d, 0x59, 0x84, 0x4d, 0x32,
+            0xbd, 0xca, 0x91, 0x5c, 0x82, 0x03, 0xdd, 0x44,
+            0xb3, 0x3f, 0xbb, 0x7e, 0xdc, 0x19, 0x05, 0x1e,
+            0xa3, 0x7a, 0xbe, 0xdf, 0x28, 0xec, 0xd4, 0x72,
+        ]);
+
+        // Fixed deployment address: contract StrKey of 32 x 0x04.
+        let contract_id = Address::from_str(
+            &env,
+            "CACAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAINCW",
+        );
+        env.register_at(&contract_id, StealthPoolContract, ());
+
+        let stealth_pk = BytesN::from_array(&env, &[1u8; 32]);
+        // Token: contract StrKey of 32 x 0x03; destination: ed25519 StrKey of 32 x 0x02.
+        let token = Address::from_str(
+            &env,
+            "CABQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGCK3",
+        );
+        let destination = Address::from_str(
+            &env,
+            "GABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEJXA",
+        );
+
+        let message = env.as_contract(&contract_id, || {
+            StealthPoolContract::build_withdraw_message(
+                &env,
+                &stealth_pk,
+                &token,
+                1_234_567i128,
+                &destination,
+                7,
+            )
+        });
+        let mut raw = [0u8; 32];
+        message.copy_into_slice(&mut raw);
+        assert_eq!(
+            raw,
+            [
+                0x36, 0xf8, 0x96, 0x1f, 0x90, 0x0c, 0x42, 0x1b,
+                0x73, 0x13, 0x7c, 0x05, 0x4a, 0xf9, 0x6f, 0x4f,
+                0xe7, 0xd8, 0x40, 0x23, 0xfb, 0x6d, 0xb3, 0x1d,
+                0xd5, 0x7a, 0xba, 0x53, 0x06, 0x34, 0xc1, 0xfc,
+            ],
+            "withdraw message hash must match the cross-language pinned vector"
+        );
     }
 }

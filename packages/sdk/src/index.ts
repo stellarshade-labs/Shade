@@ -55,6 +55,7 @@ export {
   createSimulationTx,
   simulateReadOnly,
   waitForTransaction,
+  buildWithdrawMessage,
 } from './soroban.js';
 export type {
   NetworkName,

@@ -9,13 +9,13 @@ import {
   Asset,
 } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { sha256 } from '@noble/hashes/sha256';
 import {
   parseStroops,
   formatStroops,
   prepareWithRestore,
   getNetworkConfig,
   waitForTransaction,
+  buildWithdrawMessage,
   type NetworkName,
 } from '@shade/sdk';
 import {
@@ -35,58 +35,6 @@ interface MatchedAnnouncement {
   stealthAddress: string;
   token: string;
   amount: bigint;
-}
-
-function i128ToBigEndian(value: bigint): Uint8Array {
-  const buf = new Uint8Array(16);
-  const dv = new DataView(buf.buffer);
-  // i128 big-endian: high 64 bits then low 64 bits
-  dv.setBigInt64(0, value >> 64n);
-  dv.setBigUint64(8, value & 0xFFFFFFFFFFFFFFFFn);
-  return buf;
-}
-
-function u64ToBigEndian(value: bigint): Uint8Array {
-  const buf = new Uint8Array(8);
-  const dv = new DataView(buf.buffer);
-  dv.setBigUint64(0, value);
-  return buf;
-}
-
-/** Build the withdraw message hash — must be byte-identical to the contract's build_withdraw_message */
-function buildWithdrawMessage(
-  stealthPk: Uint8Array,
-  tokenAddress: string,
-  amount: bigint,
-  destination: string,
-  nonce: bigint,
-  contractId: string,
-  networkPassphrase: string,
-): Uint8Array {
-  // Format: SHA256(stealth_pk(32) || token_strkey(56) || amount_be(16) || dest_strkey(56)
-  //                || nonce_be(8) || contract_strkey(56) || network_id(32))
-  const tokenBytes = Buffer.from(tokenAddress, 'utf-8'); // 56 bytes StrKey
-  const destBytes = Buffer.from(destination, 'utf-8');   // 56 bytes StrKey
-  const contractBytes = Buffer.from(contractId, 'utf-8'); // 56 bytes StrKey
-
-  if (tokenBytes.length !== 56) throw new Error(`Token address must be 56 bytes StrKey, got ${tokenBytes.length}`);
-  if (destBytes.length !== 56) throw new Error(`Destination must be 56 bytes StrKey, got ${destBytes.length}`);
-  if (contractBytes.length !== 56) throw new Error(`Contract address must be 56 bytes StrKey, got ${contractBytes.length}`);
-  const amountBytes = i128ToBigEndian(amount);           // 16 bytes
-  const nonceBytes = u64ToBigEndian(nonce);              // 8 bytes
-  const networkId = sha256(Buffer.from(networkPassphrase, 'utf-8')); // 32 bytes
-
-  const msg = new Uint8Array(32 + tokenBytes.length + 16 + destBytes.length + 8 + contractBytes.length + 32);
-  let offset = 0;
-  msg.set(stealthPk, offset); offset += 32;
-  msg.set(tokenBytes, offset); offset += tokenBytes.length;
-  msg.set(amountBytes, offset); offset += 16;
-  msg.set(destBytes, offset); offset += destBytes.length;
-  msg.set(nonceBytes, offset); offset += 8;
-  msg.set(contractBytes, offset); offset += contractBytes.length;
-  msg.set(networkId, offset);
-
-  return sha256(msg);
 }
 
 async function findMatchingAnnouncement(

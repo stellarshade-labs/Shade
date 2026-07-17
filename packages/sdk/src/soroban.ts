@@ -334,13 +334,16 @@ function u64ToBigEndian(value: bigint): Uint8Array {
  * Build the withdraw message hash. Must be byte-identical to the contract's
  * `build_withdraw_message`.
  *
- * Layout (concatenated, then SHA-256):
- *   stealth_pk[32] || token_strkey_ascii[56] || amount_be_i128[16]
+ * Layout (concatenated, then SHA-256) — 278-byte preimage:
+ *   domain_tag[22] ("SHADE-POOL-WITHDRAW-V1" ASCII) || stealth_pk[32]
+ *   || token_strkey_ascii[56] || amount_be_i128[16]
  *   || dest_strkey_ascii[56] || nonce_be_u64[8]
  *   || contract_strkey_ascii[56] || network_id[32]
  *
- * The trailing contract address and network id provide domain separation so a
- * signature cannot be replayed on a different deployment or network.
+ * The leading static domain tag (SH-3) separates withdraw preimages from any
+ * other message a stealth key might sign; the trailing contract address and
+ * network id provide domain separation so a signature cannot be replayed on a
+ * different deployment or network.
  * `networkId` equals `SHA-256(utf8(networkPassphrase))`, which matches the
  * on-chain `env.ledger().network_id()`.
  */
@@ -353,6 +356,9 @@ export function buildWithdrawMessage(
   contractId: string,
   networkPassphrase: string,
 ): Uint8Array {
+  // Static domain-separation tag: 22 ASCII bytes (SH-3). Must match the
+  // contract's WITHDRAW_MSG_DOMAIN_TAG byte-for-byte.
+  const domainTag = Buffer.from('SHADE-POOL-WITHDRAW-V1', 'utf-8');
   const tokenBytes = Buffer.from(tokenAddress, 'utf-8');
   const destBytes = Buffer.from(destination, 'utf-8');
   const contractBytes = Buffer.from(contractId, 'utf-8');
@@ -364,8 +370,9 @@ export function buildWithdrawMessage(
   const nonceBytes = u64ToBigEndian(nonce);
   const networkId = sha256(Buffer.from(networkPassphrase, 'utf-8'));
 
-  const msg = new Uint8Array(32 + 56 + 16 + 56 + 8 + 56 + 32);
+  const msg = new Uint8Array(22 + 32 + 56 + 16 + 56 + 8 + 56 + 32); // 278 bytes
   let offset = 0;
+  msg.set(domainTag, offset); offset += 22;
   msg.set(stealthPk, offset); offset += 32;
   msg.set(tokenBytes, offset); offset += 56;
   msg.set(amountBytes, offset); offset += 16;
