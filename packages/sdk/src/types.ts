@@ -177,7 +177,11 @@ export interface ScanCursor {
   spp?: string;
 }
 
-/** Options controlling a cursor-aware scan. */
+/**
+ * Options controlling a cursor-aware scan. Also accepted by the balance path
+ * (`StealthClient.balance`/`balanceWithCursor`), whose account phase otherwise
+ * re-walks the entire Horizon history on every call.
+ */
 export interface ScanOpts {
   /** Restrict the scan to these methods (default: all enabled adapters) */
   methods?: DeliveryMethod[];
@@ -185,7 +189,11 @@ export interface ScanOpts {
   cursor?: ScanCursor;
 }
 
-/** Result of a cursor-aware scan. */
+/**
+ * Result of a cursor-aware scan — and of `StealthClient.balanceWithCursor`,
+ * which returns the same shape with balance-view rows (claimed payments
+ * dropped, native rows reporting the live remaining balance).
+ */
 export interface ScanResult {
   /** Detected payments across all scanned methods */
   payments: Payment[];

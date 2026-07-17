@@ -251,15 +251,45 @@ export class StealthClient {
    * Get balances for all your stealth payments across enabled methods.
    *
    * @param keys - Your stealth keys (needs viewPrivKey + spendPubKey)
+   * @param opts - Optional method filter and resume cursor (a cursor returned
+   *   by a previous {@link scanWithCursor}/{@link balanceWithCursor}). With no
+   *   opts the whole history is scanned, exactly as before. Passing the
+   *   persisted cursor turns the account phase from a full Horizon re-walk
+   *   into O(new transactions); use {@link balanceWithCursor} when you also
+   *   need the advanced cursor back to persist it.
    */
-  async balance(keys: StealthKeys): Promise<Balance[]> {
-    const { payments } = await this.scanInternal(keys, undefined, true);
+  async balance(keys: StealthKeys, opts?: ScanOpts): Promise<Balance[]> {
+    const { payments } = await this.balanceWithCursor(keys, opts);
     return payments.map((p) => ({
       stealthAddress: p.stealthAddress,
       token: p.token,
       amount: p.amount,
       amountStroops: p.amountStroops,
     }));
+  }
+
+  /**
+   * Cursor-aware balance check: like {@link balance}, but resumes the
+   * underlying scan from `opts.cursor` and returns the full live payments
+   * (ephemeral key, txHash, claimable-balance id) PLUS the advanced cursor so
+   * callers can persist it for the next call — the exact counterpart of
+   * {@link scanWithCursor} for the balance path.
+   *
+   * The rows are the balance view: claimed/fully-swept payments are dropped
+   * and native rows report the LIVE remaining account balance (not the
+   * original per-transaction amount). Callers that persist discovered
+   * payments should merge these rows into their cache BEFORE persisting the
+   * advanced cursor, since the next resumed scan will skip everything behind
+   * it.
+   *
+   * @param keys - Your stealth keys (needs viewPrivKey + spendPubKey)
+   * @param opts - Optional method filter and resume cursor
+   */
+  async balanceWithCursor(
+    keys: StealthKeys,
+    opts?: ScanOpts,
+  ): Promise<ScanResult> {
+    return this.scanInternal(keys, opts, true);
   }
 
   /**
