@@ -106,11 +106,19 @@ export interface SharedStateHandle {
 export async function createSharedState(): Promise<SharedStateHandle> {
   const url = process.env.REDIS_URL?.trim();
   if (url) {
+    // lazyConnect so we can await the connection explicitly before the boot
+    // PING (with enableOfflineQueue:false a PING issued before the socket is
+    // writeable would spuriously reject). enableOfflineQueue:false is the
+    // RUNTIME posture we want: once up, a Redis outage rejects commands rather
+    // than queueing them, so the fail-closed auth/rate-limit paths engage.
     const redis = new Redis(url, {
       enableOfflineQueue: false,
       maxRetriesPerRequest: 2,
+      lazyConnect: true,
+      connectTimeout: 10_000,
     });
     try {
+      await redis.connect();
       await redis.ping();
     } catch (err) {
       redis.disconnect();
