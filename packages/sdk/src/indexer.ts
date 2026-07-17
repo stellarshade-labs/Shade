@@ -90,7 +90,7 @@ function withTimeout<T>(
  *
  * @example
  * ```typescript
- * const indexer = new IndexerClient('http://localhost:4000');
+ * const indexer = new IndexerClient('http://localhost:3100');
  * const { cursor } = await indexer.health();
  * ```
  */
