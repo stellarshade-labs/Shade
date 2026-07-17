@@ -1,6 +1,0 @@
-services:
-  stellar:
-    image: stellar/quickstart:testing
-    command: --local
-    ports:
-      - "8000:8000"

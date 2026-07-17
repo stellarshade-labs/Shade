@@ -10,7 +10,7 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 # Default values
-NETWORK="local"
+NETWORK="testnet"
 SOURCE_ACCOUNT="deployer"
 
 # Parse arguments
@@ -27,7 +27,7 @@ while [[ $# -gt 0 ]]; do
         --help)
             echo "Usage: $0 [options]"
             echo "Options:"
-            echo "  --network <network>  Network to deploy to (default: local)"
+            echo "  --network <network>  Network to deploy to (default: testnet; only testnet is supported today)"
             echo "  --source <account>   Source account for deployment (default: deployer)"
             echo "  --help              Show this help message"
             exit 0
@@ -38,6 +38,18 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Validate the requested network. Only testnet is accepted today; add further
+# networks (e.g. mainnet/public) as extra cases here after the external audit.
+case "$NETWORK" in
+    testnet)
+        ;;
+    *)
+        echo -e "${RED}✗ Error: unsupported network '$NETWORK'. Supported: testnet${NC}" >&2
+        echo "('local' has been removed — dev/test runs on testnet; mainnet arrives after the external audit.)" >&2
+        exit 1
+        ;;
+esac
 
 echo
 echo "========================================="
@@ -56,9 +68,9 @@ command -v stellar >/dev/null 2>&1 || {
 }
 
 # Build the contract from the cargo WORKSPACE root (contracts/), so the wasm lands
-# in the workspace target dir (contracts/target/), matching demo.sh. Building from
-# contracts/registry would still emit to contracts/target (workspace target), leaving
-# the relative target/ path below pointing at a nonexistent registry/target.
+# in the workspace target dir (contracts/target/). Building from contracts/registry
+# would still emit to contracts/target (workspace target), leaving the relative
+# target/ path below pointing at a nonexistent registry/target.
 cd "$(dirname "$0")"
 
 if [[ ! -f "registry/Cargo.toml" ]]; then
@@ -76,11 +88,11 @@ fi
 echo -e "${GREEN}✓ Contract built successfully${NC}"
 
 # Generate the deployer key if missing, then fund it via friendbot. Funding is
-# idempotent and covers BOTH fresh and pre-existing keys: a key can outlive a reset
-# local network or the quarterly testnet reset, in which case `keys generate --fund`
-# (a no-op when the key already exists) would leave the account unfunded and the
-# upload fails with "Account not found". Mainnet has no friendbot — fund out-of-band.
-if [[ "$NETWORK" == "local" || "$NETWORK" == "testnet" ]]; then
+# idempotent and covers BOTH fresh and pre-existing keys: a key can outlive the
+# quarterly testnet reset, in which case `keys generate --fund` (a no-op when the
+# key already exists) would leave the account unfunded and the upload fails with
+# "Account not found". Mainnet has no friendbot — fund out-of-band.
+if [[ "$NETWORK" == "testnet" ]]; then
     echo -e "${CYAN}Ensuring deployer account exists and is funded...${NC}"
     stellar keys generate --network "$NETWORK" "$SOURCE_ACCOUNT" >/dev/null 2>&1 || true
     stellar keys fund "$SOURCE_ACCOUNT" --network "$NETWORK" >/dev/null 2>&1 || true
@@ -112,9 +124,8 @@ echo -e "${GREEN}✓ Contract deployed successfully${NC}"
 echo
 
 # Save the contract ID where the CLI actually reads it: ~/.stealth/<network>-contract.
-# getContractAddress() checks this path FIRST for both local and testnet; the old
-# packages/cli/.stealth/<network>-contract path was only a local-only fallback, so a
-# testnet id written there was never found and the CLI threw "no contract configured".
+# getContractAddress() reads this path (e.g. ~/.stealth/testnet-contract); ids written
+# anywhere else are never found and the CLI throws "no contract configured".
 CONFIG_DIR="$HOME/.stealth"
 mkdir -p "$CONFIG_DIR"
 echo "$CONTRACT_ID" > "$CONFIG_DIR/${NETWORK}-contract"

@@ -7,8 +7,6 @@
   "scripts": {
     "test": "npm run test --workspaces --if-present && cd contracts && cargo test --quiet",
     "build": "npm run build --workspaces --if-present",
-    "demo": "bash demo.sh",
-    "stress-test": "tsx packages/cli/test/stress-test.ts",
     "relayer:dev": "cd packages/relayer && npm run dev"
   },
   "workspaces": [
