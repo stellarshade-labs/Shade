@@ -11,6 +11,7 @@ import { getContext } from '../context.js';
 import type { Reservation } from '../ledger.js';
 import { toStroops, fromStroops } from '../ledger.js';
 import { validateStellarAddress } from '../utils/validation.js';
+import { feeChargedStroops } from '../utils/feeCharged.js';
 
 const PREPARE_TTL_SECONDS = 60;
 
@@ -515,14 +516,12 @@ export async function handleSponsorClaimSubmit(req: Request, res: Response) {
     }
   }
 
+  let response: { hash: string };
   try {
     tx.sign(ctx.keypair);
-    const response = (await ctx.server.submitTransaction(tx)) as unknown as {
+    response = (await ctx.server.submitTransaction(tx)) as unknown as {
       hash: string;
     };
-    if (reservation) await ctx.ledger.settle(reservation);
-
-    return res.json({ txHash: response.hash });
   } catch (err: unknown) {
     if (reservation) await ctx.ledger.refund(reservation);
     if (heldRecorded) {
@@ -542,4 +541,33 @@ export async function handleSponsorClaimSubmit(req: Request, res: Response) {
     }
     return res.status(500).json({ error: errMessage(err) || 'submit failed', code: 'server_error' });
   }
+
+  // The tx LANDED: nothing below may turn the success into an error response
+  // (previously a throwing settle refunded the fee AND released the hold for a
+  // claim that was on-chain). Settle the fee PORTION at the on-chain
+  // fee_charged; the sponsored-reserve estimate stays charged in full — it
+  // tracks the base reserve the relayer actually locked on-chain, not a fee.
+  if (reservation) {
+    try {
+      const charged = feeChargedStroops(response);
+      if (charged === null) {
+        console.warn(
+          '[SponsorClaim] fee_charged unavailable; settling the full reserved total',
+        );
+        await ctx.ledger.settle(reservation);
+      } else {
+        const feeReserved = toStroops(feeXlm);
+        const actualFee = charged > feeReserved ? feeReserved : charged;
+        await ctx.ledger.settle(
+          reservation,
+          fromStroops(actualFee + toStroops(SPONSORED_RESERVE_ESTIMATE)),
+        );
+      }
+    } catch (settleErr) {
+      // Reservation stays OUTSTANDING; the recovery sweep refunds it later —
+      // under-charging is the acceptable direction once the tx landed.
+      console.error('[SponsorClaim] settle failed after successful submit:', settleErr);
+    }
+  }
+  return res.json({ txHash: response.hash });
 }

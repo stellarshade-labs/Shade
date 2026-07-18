@@ -13,6 +13,7 @@ import {
   Asset,
   Memo,
   TimeoutInfinite,
+  xdr,
 } from '@stellar/stellar-sdk';
 import { resolveRequireCredit } from '../boot.js';
 import type { CreditLedger } from '../ledger.js';
@@ -32,6 +33,19 @@ const BALANCE_ID =
   '00000000178826fbfe339e1f5c53417c6fb2e7e3b0a4b6d3e2a3f0e1d2c3b4a5e6f70819';
 const OTHER_BALANCE_ID =
   '00000000aa8826fbfe339e1f5c53417c6fb2e7e3b0a4b6d3e2a3f0e1d2c3b4a5e6f70819';
+
+/**
+ * Base64 TransactionResult whose top-level feeCharged is `feeCharged` stroops —
+ * what a Horizon submit response carries in `result_xdr` and what the debit
+ * reconciliation decodes.
+ */
+function resultXdrWithFee(feeCharged: string): string {
+  return new xdr.TransactionResult({
+    feeCharged: xdr.Int64.fromString(feeCharged),
+    result: xdr.TransactionResultResult.txSuccess([]),
+    ext: new xdr.TransactionResultExt(0),
+  }).toXDR('base64');
+}
 
 function mockRes(): Response & { statusCode: number; body: any } {
   const res: any = {
@@ -704,7 +718,91 @@ describe('sponsor-claim submit: credit-gated reserve accounting', () => {
 
     expect(res.statusCode).toBe(200);
     expect(submitTransaction).toHaveBeenCalledOnce();
-    // Reserve + fee were debited; the reserve is tracked in sponsoredHeld.
+    // Reserve + fee were debited. The mocked submit response carries no
+    // result_xdr, so reconciliation falls back to the full declared fee; the
+    // reserve is tracked in sponsoredHeld.
+    const expectedBal = (10 - Number(total)).toFixed(7);
+    expect(await ledger.getBalance(funder.publicKey())).toBe(expectedBal);
+    expect((await ledger.getAccount(funder.publicKey()))?.sponsoredHeld).toBe(RESERVE);
+  });
+
+  it('reconciles the fee portion to fee_charged and keeps the full reserve', async () => {
+    await ledger.credit(funder.publicKey(), '10', 'DEP1');
+    const { server, submitTransaction } = mockServer(
+      relayer.publicKey(),
+      [],
+      [destination],
+    );
+    // The network charged 500 stroops although the tx declared more: the
+    // funder must end up debited fee_charged + the full sponsored reserve.
+    submitTransaction.mockResolvedValue({
+      hash: 'CLAIM_TX',
+      result_xdr: resultXdrWithFee('500'),
+    } as any);
+    initContext({
+      keypair: relayer,
+      network: 'testnet',
+      server,
+      ledger,
+      requireCredit: true,
+    });
+
+    const tx = await preparedSigned();
+    const total = totalXlm(tx.fee);
+    const req = {
+      body: {
+        xdr: tx.toEnvelope().toXDR('base64'),
+        stealthAddress: stealth.publicKey(),
+        asset: ASSET,
+        balanceId: BALANCE_ID,
+        destination,
+        amount: AMOUNT,
+        ...(await signAuth(total)),
+      },
+    } as Request;
+    const res = mockRes();
+    await handleSponsorClaimSubmit(req, res);
+
+    expect(res.statusCode).toBe(200);
+    // 10 - (0.0000500 fee_charged + 1.0000000 reserve) = 8.9999500 — the
+    // declared-fee overhead was credited back, the reserve stayed charged.
+    expect(await ledger.getBalance(funder.publicKey())).toBe('8.9999500');
+    expect((await ledger.getAccount(funder.publicKey()))?.sponsoredHeld).toBe(RESERVE);
+  });
+
+  it('still returns 200 when settle throws after a landed submit', async () => {
+    await ledger.credit(funder.publicKey(), '10', 'DEP1');
+    const { server } = mockServer(relayer.publicKey(), [], [destination]);
+    initContext({
+      keypair: relayer,
+      network: 'testnet',
+      server,
+      ledger,
+      requireCredit: true,
+    });
+
+    const tx = await preparedSigned();
+    const total = totalXlm(tx.fee);
+    const req = {
+      body: {
+        xdr: tx.toEnvelope().toXDR('base64'),
+        stealthAddress: stealth.publicKey(),
+        asset: ASSET,
+        balanceId: BALANCE_ID,
+        destination,
+        amount: AMOUNT,
+        ...(await signAuth(total)),
+      },
+    } as Request;
+    vi.spyOn(ledger, 'settle').mockRejectedValueOnce(new Error('store down'));
+    const res = mockRes();
+    await handleSponsorClaimSubmit(req, res);
+
+    // The claim landed on-chain: the client must see success — and the fee
+    // must NOT be refunded nor the sponsored hold released (the old shape did
+    // both, treating a settle failure as a failed submit).
+    expect(res.statusCode).toBe(200);
+    expect(res.body.txHash).toBe('CLAIM_TX');
     const expectedBal = (10 - Number(total)).toFixed(7);
     expect(await ledger.getBalance(funder.publicKey())).toBe(expectedBal);
     expect((await ledger.getAccount(funder.publicKey()))?.sponsoredHeld).toBe(RESERVE);

@@ -133,8 +133,15 @@ export interface CreditLedger {
    * Idempotent by `ref`.
    */
   reserve(account: string, amount: string, ref: string): Promise<Reservation>;
-  /** Mark a reservation SETTLED after a SUCCESSFUL submit. */
-  settle(reservation: Reservation): Promise<void>;
+  /**
+   * Mark a reservation SETTLED after a SUCCESSFUL submit. When `actualAmount`
+   * (decimal XLM string, e.g. the on-chain fee_charged) is given, only that
+   * much of the reserved amount is kept and the remainder is credited back in
+   * the same atomic step. The actual is clamped into [0, reserved];
+   * unparseable input settles the full amount. Idempotent: only an
+   * OUTSTANDING reservation flips, exactly once.
+   */
+  settle(reservation: Reservation, actualAmount?: string): Promise<void>;
   /** Restore a previously reserved amount after a FAILED submit. */
   refund(reservation: Reservation): Promise<void>;
   /**
@@ -167,6 +174,25 @@ export function toStroops(amount: string): bigint {
   const stroops =
     BigInt(whole || '0') * STROOPS_PER_UNIT + BigInt(paddedFraction || '0');
   return negative ? -stroops : stroops;
+}
+
+/**
+ * Clamp a settle-time actual amount into [0, reserved] stroops. Garbage input
+ * settles the full reserved amount: reconciliation runs AFTER a successful
+ * submit, so degrading to the pre-reconciliation debit is the safe direction —
+ * a throw here would leave the reservation OUTSTANDING and let the recovery
+ * sweep refund a legitimately charged fee.
+ */
+export function clampSettleStroops(actual: string, reservedStroops: bigint): bigint {
+  let v: bigint;
+  try {
+    v = toStroops(actual);
+  } catch {
+    return reservedStroops;
+  }
+  if (v < 0n) return 0n;
+  if (v > reservedStroops) return reservedStroops;
+  return v;
 }
 
 /** Render integer stroops back to a 7-dp decimal string. */
@@ -453,12 +479,36 @@ export class JsonCreditLedger implements CreditLedger {
    * can never be refunded — a replay of the same signed tx within the TTL is a
    * refund no-op, so the relayer keeps the fee it legitimately charged. Settling
    * an unknown or already-terminal reservation is a no-op.
+   *
+   * When `actualAmount` is given (the on-chain fee_charged), only that much of
+   * the reserved amount is kept: the remainder is credited back in the same
+   * atomic persist under the `adjust:` ref prefix. NOT `refund:` — the legacy
+   * counter backfill in {@link ensureAccount} re-derives net debit counters
+   * from history and decrements on `refund:`-prefixed credits, and an
+   * adjustment must not decrement: the charge is terminal, so a replayed
+   * reserve of the same ref must stay an idempotent no-op exactly like a full
+   * settle.
    */
-  async settle(reservation: Reservation): Promise<void> {
+  async settle(reservation: Reservation, actualAmount?: string): Promise<void> {
     await this.withLock(reservation.account, () => {
       const rec = this.data.reservations[reservation.id];
       if (!rec || rec.state !== 'OUTSTANDING') return;
       rec.state = 'SETTLED';
+      if (actualAmount !== undefined && rec.debited) {
+        const reserved = toStroops(rec.amount);
+        const remainder = reserved - clampSettleStroops(actualAmount, reserved);
+        if (remainder > 0n) {
+          const acct = this.ensureAccount(rec.account);
+          acct.balance = fromStroops(toStroops(acct.balance) + remainder);
+          acct.updatedAt = new Date().toISOString();
+          this.pushHistory(acct, {
+            type: 'credit',
+            amount: fromStroops(remainder),
+            ref: `adjust:${rec.ref}`,
+            at: acct.updatedAt,
+          });
+        }
+      }
       this.persist();
     });
   }

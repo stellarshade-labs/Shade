@@ -188,6 +188,83 @@ export function describeCreditLedgerSpec(
       expect(await ledger.getBalance(ACC)).toBe('5.0000000');
     });
 
+    it('settle with an actual amount keeps the actual and credits back the remainder', async () => {
+      const ledger = await open();
+      await ledger.credit(ACC, '5', 'TX1');
+      const r = await ledger.reserve(ACC, '2', 'ref-partial');
+      expect(await ledger.getBalance(ACC)).toBe('3.0000000');
+      // On-chain fee_charged came in at 1.5: keep 1.5, credit 0.5 back.
+      await ledger.settle(r, '1.5000000');
+      expect(await ledger.getBalance(ACC)).toBe('3.5000000');
+      const acct = (await ledger.getAccount(ACC))!;
+      const last = acct.history[acct.history.length - 1]!;
+      expect(last.type).toBe('credit');
+      expect(last.amount).toBe('0.5000000');
+      expect(last.ref).toBe('adjust:ref-partial');
+    });
+
+    it('a partial settle is terminal: a refund afterwards is a no-op', async () => {
+      const ledger = await open();
+      await ledger.credit(ACC, '5', 'TX1');
+      const r = await ledger.reserve(ACC, '2', 'ref-partial-terminal');
+      await ledger.settle(r, '1.5000000');
+      await ledger.refund(r);
+      expect(await ledger.getBalance(ACC)).toBe('3.5000000');
+    });
+
+    it('a second settle of the same reservation cannot double-credit the remainder', async () => {
+      const ledger = await open();
+      await ledger.credit(ACC, '5', 'TX1');
+      const r = await ledger.reserve(ACC, '2', 'ref-partial-replay');
+      await ledger.settle(r, '1.5000000');
+      await ledger.settle(r, '1.5000000');
+      await ledger.settle(r, '0.0000001');
+      expect(await ledger.getBalance(ACC)).toBe('3.5000000');
+    });
+
+    it('clamps a settle actual above the reserved amount to a full settle', async () => {
+      const ledger = await open();
+      await ledger.credit(ACC, '5', 'TX1');
+      const r = await ledger.reserve(ACC, '2', 'ref-clamp-high');
+      await ledger.settle(r, '99.0000000');
+      expect(await ledger.getBalance(ACC)).toBe('3.0000000');
+      // No adjustment row: the remainder was zero.
+      const acct = (await ledger.getAccount(ACC))!;
+      expect(acct.history.some((h) => h.ref.startsWith('adjust:'))).toBe(false);
+    });
+
+    it('clamps a negative settle actual to zero (still terminal)', async () => {
+      const ledger = await open();
+      await ledger.credit(ACC, '5', 'TX1');
+      const r = await ledger.reserve(ACC, '2', 'ref-clamp-neg');
+      await ledger.settle(r, '-1.0000000');
+      // Nothing kept: the full reservation is credited back...
+      expect(await ledger.getBalance(ACC)).toBe('5.0000000');
+      // ...but the reservation is SETTLED, not refundable again.
+      await ledger.refund(r);
+      expect(await ledger.getBalance(ACC)).toBe('5.0000000');
+    });
+
+    it('settles the full amount when the actual is unparseable', async () => {
+      const ledger = await open();
+      await ledger.credit(ACC, '5', 'TX1');
+      const r = await ledger.reserve(ACC, '2', 'ref-garbage');
+      await ledger.settle(r, 'not-a-number');
+      expect(await ledger.getBalance(ACC)).toBe('3.0000000');
+    });
+
+    it('keeps a reserve replay of a partially settled ref an idempotent no-op', async () => {
+      const ledger = await open();
+      await ledger.credit(ACC, '5', 'TX1');
+      const r = await ledger.reserve(ACC, '2', 'ref-partial-reuse');
+      await ledger.settle(r, '1.5000000');
+      expect(await ledger.getBalance(ACC)).toBe('3.5000000');
+      // The charge is terminal: replaying the same signed tx (same ref) must
+      // NOT re-debit (the adjustment credit must not decrement the net counter).
+      await ledger.reserve(ACC, '2', 'ref-partial-reuse');
+      expect(await ledger.getBalance(ACC)).toBe('3.5000000');
+    });
+
     it('holdReserve tracks sponsoredHeld and enforces the cap', async () => {
       const ledger = await open();
       const held = await ledger.holdReserve(ACC, '1', '2');

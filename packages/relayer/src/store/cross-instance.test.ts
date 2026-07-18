@@ -92,4 +92,19 @@ describe.skipIf(!DATABASE_URL)('PostgresCreditLedger cross-instance', () => {
     await ledgerA.refund(reservation);
     expect(await ledgerB.getBalance(ACC)).toBe('3.0000000');
   });
+
+  it('a partial settle from a second instance credits the remainder exactly once', async () => {
+    await ledgerA.credit(ACC, '5', 'TX1');
+    const reservation = await ledgerA.reserve(ACC, '2', 'relay:partial');
+    // B settles at the on-chain fee_charged (1.5): the 0.5 remainder is
+    // credited back atomically with the terminal flip.
+    await ledgerB.settle(reservation, '1.5000000');
+    expect(await ledgerA.getBalance(ACC)).toBe('3.5000000');
+    // Replays from either instance — settle again or refund — cannot
+    // double-credit: the conditional flip already had its single winner.
+    await ledgerA.settle(reservation, '1.5000000');
+    await ledgerA.refund(reservation);
+    await ledgerB.refund(reservation);
+    expect(await ledgerB.getBalance(ACC)).toBe('3.5000000');
+  });
 });

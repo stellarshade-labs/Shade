@@ -6,7 +6,9 @@ import {
 } from '@stellar/stellar-sdk';
 import { getContext } from '../context.js';
 import type { CreditLedger, Reservation } from '../ledger.js';
+import { fromStroops } from '../ledger.js';
 import { validateStellarAddress } from '../utils/validation.js';
+import { feeChargedStroops } from '../utils/feeCharged.js';
 import type { ChallengeStore } from '../utils/auth.js';
 
 let relayerKeypair: Keypair | null = null;
@@ -204,7 +206,26 @@ export async function handleRelay(req: Request, res: Response) {
       if (reservation && relayLedger) await relayLedger.refund(reservation);
       throw submitErr;
     }
-    if (reservation && relayLedger) await relayLedger.settle(reservation);
+    // The tx LANDED: nothing below may turn the success into an error
+    // response. Settle at the on-chain fee_charged (decoded offline from the
+    // submit result) so the funder is charged what the network actually took,
+    // not the built maximum — the difference (base-fee headroom + Soroban
+    // resource-fee refunds) is credited back in the same atomic step.
+    if (reservation && relayLedger) {
+      try {
+        const charged = feeChargedStroops(response);
+        if (charged === null) {
+          console.warn('[Relay] fee_charged unavailable; settling the full reserved fee');
+          await relayLedger.settle(reservation);
+        } else {
+          await relayLedger.settle(reservation, fromStroops(charged));
+        }
+      } catch (settleErr) {
+        // Reservation stays OUTSTANDING; the recovery sweep refunds it later —
+        // under-charging is the acceptable direction once the tx landed.
+        console.error('[Relay] settle failed after successful submit:', settleErr);
+      }
+    }
 
     console.log(`[Relay] Transaction submitted: ${response.hash}`);
 

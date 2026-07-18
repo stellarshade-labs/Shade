@@ -4,7 +4,7 @@ import os from 'os';
 import path from 'path';
 import { Request, Response } from 'express';
 import { handleRelay, initRelayRoute } from './relay';
-import { Keypair } from '@stellar/stellar-sdk';
+import { Keypair, xdr } from '@stellar/stellar-sdk';
 import { resolveRequireCredit } from '../boot.js';
 import { initContext, resetContext } from '../context.js';
 import type { CreditLedger } from '../ledger.js';
@@ -47,6 +47,19 @@ vi.mock('@stellar/stellar-sdk', async () => {
     }
   };
 });
+
+/**
+ * Base64 TransactionResult whose top-level feeCharged is `feeCharged` stroops —
+ * what a Horizon submit response carries in `result_xdr` and what the debit
+ * reconciliation decodes.
+ */
+function resultXdrWithFee(feeCharged: string): string {
+  return new xdr.TransactionResult({
+    feeCharged: xdr.Int64.fromString(feeCharged),
+    result: xdr.TransactionResultResult.txSuccess([]),
+    ext: new xdr.TransactionResultExt(0),
+  }).toXDR('base64');
+}
 
 describe('handleRelay', () => {
   let mockReq: Partial<Request>;
@@ -311,6 +324,8 @@ describe('handleRelay credit gating', () => {
     (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(
       mockFeeBump('600'),
     );
+    // No result_xdr / fee_charged in the response: the reconciliation falls
+    // back to settling the full built fee (the pre-reconciliation behavior).
     mockServerInstance.submitTransaction.mockResolvedValue({
       hash: 'RELAY_OK',
       successful: true,
@@ -321,6 +336,69 @@ describe('handleRelay credit gating', () => {
 
     // 10 - 0.00006 = 9.99994 (proves the full 600-stroop fee was debited,
     // not a flat 200-stroop / 0.00002 charge).
+    expect(await ledger.getBalance(fundingAccount)).toBe('9.9999400');
+  });
+
+  it('reconciles the debit to the on-chain fee_charged from result_xdr', async () => {
+    await ledger.credit(fundingAccount, '10', 'DEP1');
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
+    (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(
+      mockFeeBump('600'),
+    );
+    // Built (and reserved) 600 stroops, but the network only charged 400 —
+    // the funder must end up debited exactly the on-chain fee_charged.
+    mockServerInstance.submitTransaction.mockResolvedValue({
+      hash: 'RELAY_OK',
+      successful: true,
+      result_xdr: resultXdrWithFee('400'),
+    });
+    mockReq.body = { xdr: 'anything', fundingAccount, ...(await auth(FEE_XLM)) };
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    expect(mockRes.json).toHaveBeenCalledWith({ txHash: 'RELAY_OK', success: true });
+    expect(await ledger.getBalance(fundingAccount)).toBe('9.9999600');
+  });
+
+  it('never keeps more than the reserved fee when result_xdr reports a higher value', async () => {
+    await ledger.credit(fundingAccount, '10', 'DEP1');
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
+    (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(
+      mockFeeBump('600'),
+    );
+    // fee_charged can never legitimately exceed the fee bid the reservation
+    // covered; if a response claims it does, clamp to the reserved amount.
+    mockServerInstance.submitTransaction.mockResolvedValue({
+      hash: 'RELAY_OK',
+      successful: true,
+      result_xdr: resultXdrWithFee('900'),
+    });
+    mockReq.body = { xdr: 'anything', fundingAccount, ...(await auth(FEE_XLM)) };
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    expect(await ledger.getBalance(fundingAccount)).toBe('9.9999400');
+  });
+
+  it('still returns success when settle throws after a landed submit', async () => {
+    await ledger.credit(fundingAccount, '10', 'DEP1');
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
+    (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(
+      mockFeeBump('600'),
+    );
+    mockServerInstance.submitTransaction.mockResolvedValue({
+      hash: 'RELAY_OK',
+      successful: true,
+      result_xdr: resultXdrWithFee('400'),
+    });
+    vi.spyOn(ledger, 'settle').mockRejectedValueOnce(new Error('store down'));
+    mockReq.body = { xdr: 'anything', fundingAccount, ...(await auth(FEE_XLM)) };
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    // The tx landed: the client must see success, not a 500 — and the
+    // reservation must NOT be refunded (it stays OUTSTANDING for recovery).
+    expect(mockRes.json).toHaveBeenCalledWith({ txHash: 'RELAY_OK', success: true });
     expect(await ledger.getBalance(fundingAccount)).toBe('9.9999400');
   });
 

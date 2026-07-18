@@ -7,7 +7,7 @@ import type {
   LedgerHistoryEntry,
   Reservation,
 } from '../ledger.js';
-import { fromStroops, toStroops } from '../ledger.js';
+import { clampSettleStroops, fromStroops, toStroops } from '../ledger.js';
 import { migrate } from './migrations.js';
 import { recoverStaleReservations } from './recovery.js';
 
@@ -353,13 +353,45 @@ export class PostgresCreditLedger implements CreditLedger {
    * conditional UPDATE: only an OUTSTANDING reservation flips, so a replay or a
    * settle of an already-terminal reservation is a no-op. A settled reservation
    * can never be refunded.
+   *
+   * When `actualAmount` is given (the on-chain fee_charged), only that much of
+   * the reserved amount is kept: the winning flip and the remainder credit run
+   * in one transaction, and the remainder is recorded under the `adjust:` ref
+   * prefix. The net debit counter is NOT decremented — the charge is terminal,
+   * so a replayed reserve of the same ref stays an idempotent no-op exactly
+   * like a full settle (the JSON backend's legacy counter backfill likewise
+   * only decrements on `refund:` credits). Lock order (reservation row, then
+   * account row) matches {@link refund} so the two cannot deadlock.
    */
-  async settle(reservation: Reservation): Promise<void> {
-    await this.pool.query(
-      `UPDATE reservations SET state = 'SETTLED', resolved_at = now()
-         WHERE id = $1 AND state = 'OUTSTANDING'`,
-      [reservation.id],
-    );
+  async settle(reservation: Reservation, actualAmount?: string): Promise<void> {
+    await this.tx(async (client) => {
+      const res = await client.query<{
+        account: string;
+        amount_stroops: string;
+        ref: string;
+        debited: boolean;
+      }>(
+        `UPDATE reservations SET state = 'SETTLED', resolved_at = now()
+           WHERE id = $1 AND state = 'OUTSTANDING'
+           RETURNING account, amount_stroops, ref, debited`,
+        [reservation.id],
+      );
+      const rec = res.rows[0];
+      if (!rec || !rec.debited || actualAmount === undefined) return;
+      const reserved = BigInt(rec.amount_stroops);
+      const remainder = reserved - clampSettleStroops(actualAmount, reserved);
+      if (remainder <= 0n) return;
+      await this.lockAccount(client, rec.account);
+      await client.query(
+        `UPDATE ledger_accounts
+            SET balance_stroops = balance_stroops + $2,
+                history_total   = history_total + 1,
+                updated_at      = now()
+          WHERE account = $1`,
+        [rec.account, remainder.toString()],
+      );
+      await this.pushHistory(client, rec.account, 'credit', remainder, `adjust:${rec.ref}`);
+    });
   }
 
   /**
