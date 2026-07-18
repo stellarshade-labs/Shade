@@ -43,7 +43,9 @@ export async function handleCreditClaim(req: Request, res: Response) {
   const { fundingAccount, txHash } = req.body ?? {};
 
   if (!validateStellarAddress(fundingAccount)) {
-    return res.status(400).json({ error: 'Invalid funding account', code: 'invalid_address' });
+    // invalid_account, matching /credit/challenge and the challenge stores:
+    // the value is an account, not a stealth address.
+    return res.status(400).json({ error: 'Invalid funding account', code: 'invalid_account' });
   }
   if (!txHash || typeof txHash !== 'string') {
     return res.status(400).json({ error: 'Missing txHash', code: 'invalid_tx' });

@@ -122,6 +122,18 @@ describe('credit routes', () => {
     expect(res.body.code).toBe('tx_already_claimed');
   });
 
+  it('rejects an invalid funding account with 400 invalid_account', async () => {
+    // Same code as GET /credit/challenge and the challenge stores — the API
+    // used to answer invalid_address here, splitting the vocabulary for the
+    // same kind of value (a G... account).
+    setup({ tx: { successful: true, source_account: FUNDING, hash: 'TX1' } });
+    const req = { body: { fundingAccount: 'not-a-key', txHash: 'TX1' } } as Request;
+    const res = mockRes();
+    await handleCreditClaim(req, res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.code).toBe('invalid_account');
+  });
+
   it('returns 404 when the tx is unknown', async () => {
     setup({ txError: { response: { status: 404 } } });
     const req = { body: { fundingAccount: FUNDING, txHash: 'MISSING' } } as Request;
