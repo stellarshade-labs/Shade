@@ -53,11 +53,15 @@ Abuse guards apply on **every** path, credit-gated or not:
 
 | Guard | Default |
 |---|---|
-| Max operations in the inner tx | 5 (`MAX_RELAY_OPS`) |
-| Timebounds must be present, unexpired, and bounded | ≤ now + 600s (`MAX_RELAY_TIMEBOUNDS_SECONDS`) |
+| Max operations in the inner tx | 5 (`MAX_RELAY_OPS`); zero-op inner txs are rejected (`invalid_tx`) |
+| Timebounds must be present, unexpired, and bounded | ≤ now + 600s (`MAX_RELAY_TIMEBOUNDS_SECONDS`); already-expired bounds are rejected up front (`invalid_timebounds`) rather than burning a submit |
 | Memos | **Forbidden** — a relayed withdrawal has no legitimate memo, and one could leak or tag metadata |
 | Fetched base fee clamp | 10,000 stroops (`MAX_BASE_FEE`) |
 | Absolute outer fee cap | 0.1 XLM (`MAX_RELAY_FEE_XLM`) |
+
+The outer-fee cap is enforced **before** the fee bump is built: the relayer plans the bump fee from the inner tx's own per-op demand (excluding any Soroban resource fee), so an inner fee large enough to push the outer fee over the cap gets an honest `400 fee_exceeds_cap`, while a high-but-cappable inner fee is served with a correspondingly raised bump fee. An inner tx the SDK cannot build a fee bump for at all returns `400 invalid_tx`.
+
+**What you're charged.** The fee is *reserved* at the built maximum (the fee bid must be covered before submission) and *settled* to the on-chain **`fee_charged`** decoded from the submit result — the difference, including Soroban resource-fee refunds on contract withdrawals, is credited back automatically in the same atomic step. Your credit history shows the full-bid debit followed by an `adjust:`-tagged credit for the refund.
 
 ### `POST /sponsor`
 
@@ -88,6 +92,8 @@ The payout rides in the same transaction because a stealth account created with 
 
 The client attaches its stealth signature and returns the XDR. The relayer then rebuilds the expected operation list from the **trusted inputs** and compares field-by-field (type, per-op source, destination, asset, amount, balanceId, sponsoredId) before adding its own signature. A client cannot mutate any operation and still pass. It also enforces a per-op fee cap (200 stroops/op), the advertised 60-second TTL, and a no-memo rule.
 
+The charge is `sponsoredReserveEstimate` plus the transaction fee — and the fee portion, like `/relay`'s, is settled to the on-chain **`fee_charged`** rather than the declared maximum (the reserve portion stays charged in full: it tracks the base reserve the relayer actually locks on-chain, not a fee).
+
 > **Two-sided verification.** The relayer's check protects the *relayer*. The **client** independently re-derives the same operation list from its own inputs and refuses to sign if anything differs — throwing `SponsoredClaimMismatchError`. That is what stops a malicious relayer from redirecting the payout or appending an `AccountMerge` to steal the just-claimed token.
 
 ## The credit system
@@ -96,7 +102,7 @@ The relayer is metered so it isn't a free-for-all:
 
 1. An app sends the relayer a normal XLM payment.
 2. It calls `POST /credit/claim` with the **transaction hash**.
-3. The relayer checks Horizon: the transaction succeeded, is sourced by that funding account, contains native payment ops **to the relayer** whose op-source is the funding account, and hasn't already been claimed. It sums every qualifying payment op and credits that amount.
+3. The relayer checks Horizon: the transaction succeeded, is sourced by that funding account, contains native payment ops **to the relayer** whose op-source is the funding account, and hasn't already been claimed. It sums every qualifying payment op and credits that amount. (A malformed funding account is rejected with `invalid_account` — the same code the challenge endpoint uses.)
 4. From then on the relayer serves that app's requests, drawing the credit down.
 
 Credit gating is **on by default on every network** — an unconfigured deploy cannot be drained through unauthenticated `/relay` and `/sponsor-claim/submit` calls. Set **`RELAYER_REQUIRE_CREDIT=0`** to disable it or **`=1`** to force it on explicitly.
@@ -116,7 +122,7 @@ shade-relayer:v1:{endpoint}:{fundingAccount}:{nonce}:{amount}[:{bind}]
 
 The signed message binds the endpoint, the account, the nonce, and the exact **amount** authorized. On `/relay`, `bind` is additionally the **inner transaction hash**, so an intercepted `{nonce, signature}` cannot be paired with a different inner XDR of the same fee.
 
-On `/relay` the signed amount is a **fee ceiling**: the client authorizes "debit up to the relayer's advertised `maxRelayFeeXlm` for THIS inner tx", and the relayer debits only the **actual** fee (rejecting anything above the ceiling with `fee_exceeds_authorization`). On `/sponsor-claim/submit` the amount is the **exact** total the relayer will charge — the prepared tx's fee plus the sponsored-reserve estimate. That reserve component is advertised in `/health` as **`sponsoredReserveEstimate`** (`'1.0000000'`): clients prefer the advertised value over their own mirrored constant when computing the total they sign, so changing the estimate relayer-side no longer breaks gated sponsored claims — and a `/health` fault just falls back to the mirrored constant, never breaking the claim itself.
+On `/relay` the signed amount is a **fee ceiling**: the client authorizes "debit up to the relayer's advertised `maxRelayFeeXlm` for THIS inner tx", and the relayer debits only the **actual** fee — reserved at the built bid, settled down to the on-chain `fee_charged` — rejecting anything above the ceiling with `fee_exceeds_authorization`. On `/sponsor-claim/submit` the amount is the **exact** total the relayer will charge — the prepared tx's fee plus the sponsored-reserve estimate. That reserve component is advertised in `/health` as **`sponsoredReserveEstimate`** (`'1.0000000'`): clients prefer the advertised value over their own mirrored constant when computing the total they sign, so changing the estimate relayer-side no longer breaks gated sponsored claims — and a `/health` fault just falls back to the mirrored constant, never breaking the claim itself.
 
 The SDK and CLI handle all of this automatically once they hold a funding signer:
 
@@ -142,6 +148,7 @@ The credit ledger holds balances, consumed-deposit idempotency records, reservat
 - All arithmetic on **BigInt stroops** — never floats.
 - **Concurrency-safe** reservations, so two concurrent holds against a balance that only covers one cannot both succeed (per-account async locks for the JSON file; row-level guarantees for Postgres).
 - **Reserve → settle / refund** around each submit: the fee is debited *before* submission, settled on success, refunded if the submit throws. Reservations carry a unique id and a terminal state (`OUTSTANDING` / `SETTLED` / `REFUNDED`) so a replay can't refund a legitimate charge.
+- **Settle reconciles to the actual charge**: settle accepts the on-chain `fee_charged`, keeps `actual ≤ reserved`, and credits the remainder back in the same atomic step (an `adjust:`-tagged history credit). Still idempotent — only an `OUTSTANDING` reservation flips, exactly once, so a replay can't double-credit the remainder. If the submit result can't be parsed, the full reserved amount is settled (the pre-reconciliation behavior) rather than ever failing a landed transaction.
 - **Idempotent by ref** via O(1) net counters (debits minus refunds), so a duplicate is a no-op while a genuine retry after a refund still re-debits.
 - Consumed deposit tx hashes make credit claims idempotent.
 - Sponsored reserves are tracked under a per-funder ceiling (`SPONSOR_CLAIM_MAX_HELD`).
