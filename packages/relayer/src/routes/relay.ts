@@ -2,13 +2,15 @@ import { Request, Response } from 'express';
 import {
   Keypair,
   TransactionBuilder,
-  Transaction
+  Transaction,
+  type FeeBumpTransaction
 } from '@stellar/stellar-sdk';
 import { getContext } from '../context.js';
 import type { CreditLedger, Reservation } from '../ledger.js';
-import { fromStroops } from '../ledger.js';
+import { fromStroops, toStroops } from '../ledger.js';
 import { validateStellarAddress } from '../utils/validation.js';
 import { feeChargedStroops } from '../utils/feeCharged.js';
+import { planBumpFee } from '../utils/relayFee.js';
 import type { ChallengeStore } from '../utils/auth.js';
 
 let relayerKeypair: Keypair | null = null;
@@ -82,6 +84,15 @@ export async function handleRelay(req: Request, res: Response) {
     // unauthenticated caller and the relayer hot wallet). Mirror the caps in
     // sponsorClaim: bound op-count, base fee, outer fee, timebounds, and memo.
     const ops = innerTx.operations ?? [];
+    if (ops.length === 0) {
+      // The SDK's per-op fee math divides by the op count (a zero-op inner tx
+      // used to throw inside the build and surface as a 500); core rejects
+      // op-less transactions anyway.
+      return res.status(400).json({
+        error: 'Inner tx has no operations',
+        code: 'invalid_tx',
+      });
+    }
     if (ops.length > maxRelayOps()) {
       return res.status(400).json({
         error: `Too many operations (max ${maxRelayOps()})`,
@@ -116,24 +127,54 @@ export async function handleRelay(req: Request, res: Response) {
     // Clamp the fetched base fee so a poisoned/spiking base-fee reading cannot
     // inflate what the relayer signs.
     const baseFee = Math.min(await server.fetchBaseFee(), maxBaseFee());
-    const bumpFee = (baseFee * 2).toString();
 
-    // Build the fee-bump FIRST so we can debit the actual total outer fee
+    // Plan the bump fee BEFORE building: the SDK requires the bump base fee to
+    // cover the inner tx's per-op inclusion fee, so a high inner fee used to
+    // throw inside buildFeeBumpTransaction (an uncaught 500) before the cap
+    // check below could ever run. Sizing the bump base to the inner demand and
+    // capping the resulting outer fee first serves high-but-cappable inner
+    // fees and gives over-cap ones an honest fee_exceeds_cap.
+    const plan = planBumpFee(innerTx, baseFee);
+    const capStroops = toStroops(maxRelayFeeXlm().toFixed(7));
+    if (plan && plan.outerFee > capStroops) {
+      return res.status(400).json({
+        error: `Fee exceeds cap (${maxRelayFeeXlm()} XLM)`,
+        code: 'fee_exceeds_cap',
+      });
+    }
+    const bumpFee = (plan ? plan.bumpBase : BigInt(baseFee) * 2n).toString();
+
+    // Build the fee-bump so we can debit the actual total outer fee
     // (per-op fee * (innerOps + 1)) rather than the per-op input, which
     // otherwise undercharges 2-6x on multi-op inner transactions.
-    const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
-      relayerKeypair,
-      bumpFee,
-      innerTx,
-      networkPassphrase
-    );
+    let feeBumpTx: FeeBumpTransaction;
+    try {
+      feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
+        relayerKeypair,
+        bumpFee,
+        innerTx,
+        networkPassphrase
+      );
+    } catch (buildErr) {
+      // Structurally unbuildable inner tx — never fee-driven (the plan above
+      // already sized the bump base to the inner demand and capped it).
+      console.warn(
+        '[Relay] buildFeeBumpTransaction rejected inner tx:',
+        buildErr instanceof Error ? buildErr.message : buildErr,
+      );
+      return res.status(400).json({
+        error: 'Could not build a fee bump for this inner transaction',
+        code: 'invalid_tx',
+      });
+    }
 
     // Optional credit gating: reserve the actual built total fee BEFORE submit.
-    const feeXlm = (Number(feeBumpTx.fee) / 1e7).toFixed(7);
+    const feeXlm = fromStroops(BigInt(feeBumpTx.fee));
 
-    // Absolute outer-fee ceiling: even a well-formed multi-op tx cannot make the
-    // relayer sign an outer fee above the configured cap.
-    if (Number(feeXlm) > maxRelayFeeXlm()) {
+    // Absolute outer-fee ceiling, re-checked on the BUILT fee: even when the
+    // pre-build plan could not parse the inner tx, a well-formed multi-op tx
+    // cannot make the relayer sign an outer fee above the configured cap.
+    if (toStroops(feeXlm) > capStroops) {
       return res.status(400).json({
         error: `Fee exceeds cap (${maxRelayFeeXlm()} XLM)`,
         code: 'fee_exceeds_cap',

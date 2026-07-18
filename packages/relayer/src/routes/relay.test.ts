@@ -103,7 +103,7 @@ describe('handleRelay', () => {
       successful: true
     });
 
-    const mockFeeBumpTx = { sign: vi.fn() } as any;
+    const mockFeeBumpTx = { sign: vi.fn(), fee: '600' } as any;
     (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(mockFeeBumpTx);
 
     await handleRelay(mockReq as Request, mockRes as Response);
@@ -145,7 +145,7 @@ describe('handleRelay', () => {
     mockServerInstance.fetchBaseFee.mockResolvedValue(100);
     mockServerInstance.submitTransaction.mockRejectedValue(new Error('Network error'));
 
-    const mockFeeBumpTx = { sign: vi.fn() } as any;
+    const mockFeeBumpTx = { sign: vi.fn(), fee: '600' } as any;
     (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(mockFeeBumpTx);
 
     await handleRelay(mockReq as Request, mockRes as Response);
@@ -175,7 +175,7 @@ describe('handleRelay', () => {
     };
     mockServerInstance.submitTransaction.mockRejectedValue(error);
 
-    const mockFeeBumpTx = { sign: vi.fn() } as any;
+    const mockFeeBumpTx = { sign: vi.fn(), fee: '600' } as any;
     (TransactionBuilder.buildFeeBumpTransaction as any).mockReturnValue(mockFeeBumpTx);
 
     await handleRelay(mockReq as Request, mockRes as Response);
@@ -749,6 +749,97 @@ describe('handleRelay abuse guards (default free path)', () => {
     expect(mockRes.json).toHaveBeenCalledWith(
       expect.objectContaining({ code: 'fee_exceeds_cap' }),
     );
+    expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects an over-cap inner fee with fee_exceeds_cap BEFORE building', async () => {
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
+    // Inner fee 2_000_000 on 1 op forces a bump base of 2_000_000 => outer
+    // 4_000_000 stroops (0.4 XLM) > 0.1 cap. Historically this threw inside
+    // buildFeeBumpTransaction ("Invalid baseFee...") and surfaced as a 500.
+    MockTransaction.mockImplementationOnce(function () {
+      return {
+        fee: '2000000',
+        operations: [{ type: 'payment' }],
+        timeBounds: { maxTime: future() },
+        memo: { type: 'none' },
+        hash: vi.fn().mockReturnValue(Buffer.from('h')),
+      };
+    });
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    expect(mockRes.status).toHaveBeenCalledWith(400);
+    expect(mockRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'fee_exceeds_cap' }),
+    );
+    expect(TransactionBuilder.buildFeeBumpTransaction).not.toHaveBeenCalled();
+    expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('serves an under-cap high inner fee by raising the bump base', async () => {
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
+    // Inner fee 40_000 on 1 op: above the doubled network base (200) but the
+    // resulting outer fee (40_000 × 2 = 0.008 XLM) is under the cap — the
+    // request must be served with the bump base raised to the inner demand.
+    MockTransaction.mockImplementationOnce(function () {
+      return {
+        fee: '40000',
+        operations: [{ type: 'payment' }],
+        timeBounds: { maxTime: future() },
+        memo: { type: 'none' },
+        hash: vi.fn().mockReturnValue(Buffer.from('h')),
+      };
+    });
+    mockServerInstance.submitTransaction.mockResolvedValue({
+      hash: 'HIGH_FEE_OK',
+      successful: true,
+    });
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    expect(TransactionBuilder.buildFeeBumpTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      '40000',
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(mockRes.json).toHaveBeenCalledWith({ success: true, txHash: 'HIGH_FEE_OK' });
+  });
+
+  it('returns 400 invalid_tx when buildFeeBumpTransaction throws', async () => {
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
+    (TransactionBuilder.buildFeeBumpTransaction as any).mockImplementationOnce(() => {
+      throw new Error('Invalid inner transaction');
+    });
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    expect(mockRes.status).toHaveBeenCalledWith(400);
+    expect(mockRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'invalid_tx' }),
+    );
+    expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a zero-operation inner tx with invalid_tx', async () => {
+    const { TransactionBuilder } = await import('@stellar/stellar-sdk');
+    MockTransaction.mockImplementationOnce(function () {
+      return {
+        operations: [],
+        timeBounds: { maxTime: future() },
+        memo: { type: 'none' },
+        hash: vi.fn().mockReturnValue(Buffer.from('h')),
+      };
+    });
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    expect(mockRes.status).toHaveBeenCalledWith(400);
+    expect(mockRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'invalid_tx' }),
+    );
+    expect(TransactionBuilder.buildFeeBumpTransaction).not.toHaveBeenCalled();
     expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
   });
 
