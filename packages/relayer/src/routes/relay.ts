@@ -90,12 +90,16 @@ export async function handleRelay(req: Request, res: Response) {
     }
 
     // Require present, non-expired, bounded timebounds so the relayer cannot be
-    // handed a tx that lingers or replays far in the future.
+    // handed a tx that lingers or replays far in the future. Already-expired
+    // bounds are rejected too (<=: core requires the including ledger's
+    // closeTime <= maxTime, so a tx expiring "now" cannot land) — otherwise a
+    // dead tx would burn a reserve/refund cycle, get a hot-wallet signature,
+    // and surface Horizon's codeless tx_too_late 400 instead of this error.
     const nowSec = Math.floor(Date.now() / 1000);
     const maxTime = Number(innerTx.timeBounds?.maxTime ?? 0);
-    if (!maxTime || maxTime > nowSec + maxRelayTimeboundsSeconds()) {
+    if (!maxTime || maxTime <= nowSec || maxTime > nowSec + maxRelayTimeboundsSeconds()) {
       return res.status(400).json({
-        error: 'Inner tx must set bounded, near-future timebounds',
+        error: 'Inner tx must set bounded, unexpired, near-future timebounds',
         code: 'invalid_timebounds',
       });
     }

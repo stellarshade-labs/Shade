@@ -675,6 +675,46 @@ describe('handleRelay abuse guards (default free path)', () => {
     expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
   });
 
+  it('rejects an inner tx whose timebounds already expired', async () => {
+    MockTransaction.mockImplementationOnce(function () {
+      return {
+        operations: [{ type: 'payment' }],
+        timeBounds: { maxTime: String(Math.floor(Date.now() / 1000) - 30) },
+        memo: { type: 'none' },
+        hash: vi.fn().mockReturnValue(Buffer.from('h')),
+      };
+    });
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    expect(mockRes.status).toHaveBeenCalledWith(400);
+    expect(mockRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'invalid_timebounds' }),
+    );
+    expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects an inner tx expiring exactly now (cannot close in time)', async () => {
+    // The handler's nowSec is >= this value by the time it runs, so the
+    // <=-comparison must reject deterministically.
+    MockTransaction.mockImplementationOnce(function () {
+      return {
+        operations: [{ type: 'payment' }],
+        timeBounds: { maxTime: String(Math.floor(Date.now() / 1000)) },
+        memo: { type: 'none' },
+        hash: vi.fn().mockReturnValue(Buffer.from('h')),
+      };
+    });
+
+    await handleRelay(mockReq as Request, mockRes as Response);
+
+    expect(mockRes.status).toHaveBeenCalledWith(400);
+    expect(mockRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'invalid_timebounds' }),
+    );
+    expect(mockServerInstance.submitTransaction).not.toHaveBeenCalled();
+  });
+
   it('rejects an inner tx carrying a memo', async () => {
     MockTransaction.mockImplementationOnce(function () {
       return {
