@@ -1,0 +1,19 @@
+{
+  // Used ONLY by tsup's .d.ts emit (see tsup.config.ts).
+  //
+  // tsconfig.base.json maps "@shade/crypto" to ../crypto/src so day-to-day
+  // typecheck and vitest read the workspace source directly. That mapping is
+  // wrong for the published build: it drags crypto's .ts files into the
+  // declaration program, and they sit outside this package's rootDir, so tsc
+  // fails with TS6059. Clearing "paths" makes resolution fall back to Node —
+  // node_modules/@shade/crypto -> packages/crypto -> its "exports" -> dist —
+  // which is exactly the shape consumers of the bundle see.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {},
+    "declarationMap": false,
+    "composite": false
+  },
+  "include": ["src"],
+  "references": []
+}

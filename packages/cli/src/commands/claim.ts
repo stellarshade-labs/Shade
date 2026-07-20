@@ -7,7 +7,7 @@ import {
   NoHealthyRelayerError,
   type StealthKeys,
   type Payment,
-} from '@shade/sdk';
+} from 'stellar-shade';
 import { StrKey } from '@stellar/stellar-sdk';
 import {
   loadKeystoreOrExit,

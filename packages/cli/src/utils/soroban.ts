@@ -1,4 +1,4 @@
-import { simulateReadOnly } from '@shade/sdk';
+import { simulateReadOnly } from 'stellar-shade';
 import { Address, nativeToScVal } from '@stellar/stellar-sdk';
 import type { rpc } from '@stellar/stellar-sdk';
 

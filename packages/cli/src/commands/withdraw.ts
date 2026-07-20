@@ -19,7 +19,7 @@ import {
   RelayerPool,
   NoHealthyRelayerError,
   type NetworkName,
-} from '@shade/sdk';
+} from 'stellar-shade';
 import {
   loadKeystoreOrExit,
   resolveKeystorePath,

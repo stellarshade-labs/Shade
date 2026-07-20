@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Keypair } from '@stellar/stellar-sdk';
 import { sha256 } from '@noble/hashes/sha256';
 import { buildKeyDerivationMessage, encodeMetaAddress } from '@shade/crypto';
-import { keysFromWalletSignature, DEFAULT_KEY_SCOPE, DEFAULT_APP_ID } from '@shade/sdk';
+import { keysFromWalletSignature, DEFAULT_KEY_SCOPE, DEFAULT_APP_ID } from 'stellar-shade';
 import { deriveFromStellarSecret } from '../src/commands/keygen.js';
 
 // Reproduce the exact SEP-53 signing envelope the CLI/wallet uses: the signer

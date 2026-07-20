@@ -8,7 +8,7 @@ import {
   getNetworkConfig,
   type NetworkName,
   type StealthKeys,
-} from '@shade/sdk';
+} from 'stellar-shade';
 import { StrKey, nativeToScVal } from '@stellar/stellar-sdk';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { loadKeystoreOrExit, resolveKeystorePath } from '../utils/keystore.js';

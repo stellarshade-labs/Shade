@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import type { NetworkName } from '@shade/sdk';
+import type { NetworkName } from 'stellar-shade';
 
 const CONFIG_DIR = path.join(os.homedir(), '.stealth');
 

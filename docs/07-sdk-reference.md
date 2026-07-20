@@ -1,6 +1,6 @@
 ---
 title: SDK Reference
-description: "The @shade/sdk and @shade/crypto API: StealthClient, types, typed errors, Freighter signing, encrypted sessions and the stealth-address primitives."
+description: "The stellar-shade and @shade/crypto API: StealthClient, types, typed errors, Freighter signing, encrypted sessions and the stealth-address primitives."
 ---
 
 # Shade SDK Reference
@@ -8,7 +8,7 @@ description: "The @shade/sdk and @shade/crypto API: StealthClient, types, typed 
 Two packages ship for application developers:
 
 - **`@shade/crypto`** — pure stealth-address math (keys, scanning, recovery, HD/mnemonic). **Zero** Stellar dependency; usable anywhere.
-- **`@shade/sdk`** — the batteries-included client. Wraps all Horizon/Soroban I/O behind `StealthClient`, so you never touch DKSAP math or transaction XDR.
+- **`stellar-shade`** — the batteries-included client. Wraps all Horizon/Soroban I/O behind `StealthClient`, so you never touch DKSAP math or transaction XDR.
 
 Every symbol on this page is exported from the package named in its heading.
 
@@ -17,7 +17,7 @@ Every symbol on this page is exported from the package named in its heading.
 ## Quick start
 
 ```typescript
-import { StealthClient } from '@shade/sdk';
+import { StealthClient } from 'stellar-shade';
 
 const client = new StealthClient({
   network: 'testnet',
@@ -136,7 +136,7 @@ withdraw(
 
 ---
 
-## Types (`@shade/sdk`)
+## Types (`stellar-shade`)
 
 ```typescript
 type DeliveryMethod = 'pool' | 'account' | 'spp';
@@ -268,7 +268,7 @@ On a pool claim with a signer you must also pass `feePayerAddress` (the fee paye
 ## Wallet-derived keys
 
 ```typescript
-import { keysFromWalletSignature, DEFAULT_KEY_SCOPE, DEFAULT_APP_ID } from '@shade/sdk';
+import { keysFromWalletSignature, DEFAULT_KEY_SCOPE, DEFAULT_APP_ID } from 'stellar-shade';
 
 const keys = await keysFromWalletSignature(
   (msg) => freighter.signMessage(msg),
@@ -295,7 +295,7 @@ Determinism is verified **by default**: a randomized or non-canonical signer wou
 Cookie-free browser sessions over any key/value store:
 
 ```typescript
-import { StealthSession } from '@shade/sdk';
+import { StealthSession } from 'stellar-shade';
 
 const session = new StealthSession({ storage: window.localStorage });
 await session.saveKeys(keys, password);
@@ -323,7 +323,7 @@ Methods: `saveKeys`, `unlock`, `lock`, `hasKeys`, `clear`, `loadScanState`, `sav
 ## `RelayerClient`
 
 ```typescript
-import { RelayerClient } from '@shade/sdk';
+import { RelayerClient } from 'stellar-shade';
 
 const relayer = new RelayerClient('http://localhost:3000');
 const { status } = await relayer.health();
@@ -351,7 +351,7 @@ Also exported: `challengeMessage(endpoint, fundingAccount, nonce, amount, bind?)
 Health-probing selector and failover harness over a **list** of relayer URLs. The adapters use it internally whenever `relayer`/`relay` is a list; it is exported for apps that want direct control.
 
 ```typescript
-import { RelayerPool } from '@shade/sdk';
+import { RelayerPool } from 'stellar-shade';
 
 const pool = RelayerPool.from(['https://relay-a.example', 'https://relay-b.example'], {
   network: 'testnet',          // /health must not contradict this
@@ -383,7 +383,7 @@ Also exported: `normalizeRelayList(relay?)` — the canonical `string | string[]
 Thin HTTP client for the [announcement indexer](./03-architecture.md#the-announcement-indexer) — the account method's discovery accelerator. The account adapter uses it internally whenever `ClientConfig.indexerUrl` is set; it is exported for apps that want the feed directly.
 
 ```typescript
-import { IndexerClient } from '@shade/sdk';
+import { IndexerClient } from 'stellar-shade';
 
 const indexer = new IndexerClient('http://localhost:3100');   // (baseUrl, fetchFn?, { timeoutMs? }) — 10 s default timeout
 const { cursor, startCursor } = await indexer.health();
@@ -401,14 +401,14 @@ Every failure is typed so the scan can treat it as "fall back to the Horizon wal
 
 ## Typed errors
 
-All exported from `@shade/sdk` so apps can branch cleanly. Every error extends a shared **`ShadeError`** base and carries a stable **`code`** string (e.g. `method_required`, `transaction_timeout`) — branch on `e.code` when `instanceof` is unreliable across bundling/realm boundaries:
+All exported from `stellar-shade` so apps can branch cleanly. Every error extends a shared **`ShadeError`** base and carries a stable **`code`** string (e.g. `method_required`, `transaction_timeout`) — branch on `e.code` when `instanceof` is unreliable across bundling/realm boundaries:
 
 ```typescript
 import { MethodRequiredError, ContractIdRequiredError, NoBalanceError,
          AnnouncementNotFoundError, StealthAccountNotFoundError,
          DestinationTrustlineError, FeePayerRequiredError,
          TransactionTimeoutError, ClaimAmountRequiresNoMergeError,
-         SponsoredClaimMismatchError, ShadeError } from '@shade/sdk';
+         SponsoredClaimMismatchError, ShadeError } from 'stellar-shade';
 
 try {
   await client.claim(payment, dest, { keys });
@@ -452,7 +452,7 @@ try {
 import { parseStroops, numberToStroops, formatStroops,
          labelForToken, resolveTokenAddress,
          prepareWithRestore, HorizonClient,
-         PoolAdapter, AccountAdapter, SppAdapter } from '@shade/sdk';
+         PoolAdapter, AccountAdapter, SppAdapter } from 'stellar-shade';
 ```
 
 | Helper | Purpose |
@@ -468,7 +468,11 @@ import { parseStroops, numberToStroops, formatStroops,
 
 ## `@shade/crypto`
 
-The primitives, if you're not using the SDK:
+The primitives live in `@shade/crypto`. That package is **not published to
+npm** — it is bundled into `stellar-shade` at build time, and the SDK re-exports
+only a small part of its surface. The import below therefore works **inside this
+monorepo**, where workspaces resolve the name; it is not something an outside
+consumer can install:
 
 ```typescript
 import {
@@ -532,9 +536,9 @@ interface StealthDerivationWithSecret extends StealthDerivation {
 }
 ```
 
-> **⚠️ Two different `StealthKeys`.** `@shade/crypto` and `@shade/sdk` both export a type named `StealthKeys`, and they are **not** the same shape:
+> **⚠️ Two different `StealthKeys`.** `@shade/crypto` and `stellar-shade` both export a type named `StealthKeys`, and they are **not** the same shape:
 >
-> | | `@shade/crypto` | `@shade/sdk` |
+> | | `@shade/crypto` | `stellar-shade` |
 > |---|---|---|
 > | Encoding | `Uint8Array` (raw bytes) | `string` (hex) |
 > | Fields | `spendPrivKey`, `viewPrivKey`, `metaAddress` (an object) | `metaAddress` (a `shade:stellar:` string), `spendPubKey`, `spendPrivKey`, `viewPubKey`, `viewPrivKey` |

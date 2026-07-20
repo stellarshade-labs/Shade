@@ -9,12 +9,7 @@ export {
   type WalletKeysOpts,
 } from './wallet.js';
 
-/**
- * Crypto's raw (Uint8Array-based) stealth keys, re-exported under a distinct
- * name so code that mixes both layers has one import site: convert with
- * {@link stealthKeysFromRaw} to get the SDK's hex-string {@link StealthKeys}.
- */
-export type { StealthKeys as RawStealthKeys } from '@shade/crypto';
+export type { RawStealthKeys, RawStealthMetaAddress } from './raw-keys.js';
 
 export {
   ShadeError,

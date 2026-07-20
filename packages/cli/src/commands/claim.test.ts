@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { numberToStroops } from '@shade/sdk';
+import { numberToStroops } from 'stellar-shade';
 import { parseClaimAmount } from './claim.js';
 
 describe('claim --amount parsing (exact stroops, like send/withdraw)', () => {

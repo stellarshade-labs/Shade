@@ -78,7 +78,7 @@ is captured in [docs/RESULTS-testnet-smoke.md](docs/RESULTS-testnet-smoke.md).
 ## SDK Usage
 
 ```typescript
-import { StealthClient } from '@shade/sdk';
+import { StealthClient } from 'stellar-shade';
 
 // `contractId` is required whenever the pool method is enabled (mandatory on testnet).
 const client = new StealthClient({

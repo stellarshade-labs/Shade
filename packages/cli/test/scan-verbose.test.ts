@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { generateMetaAddress, encodeMetaAddress } from '@shade/crypto';
-import type { StealthKeys } from '@shade/sdk';
+import type { StealthKeys } from 'stellar-shade';
 import { scanAccountMethod } from '../src/commands/scan.js';
 
 // In-memory replacement for ~/.stealth cursor/payment persistence, so the

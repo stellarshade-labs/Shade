@@ -1,7 +1,7 @@
 /**
  * Minimal Horizon REST helper with an injectable `fetch` (same pattern as the
  * SDK's FetchLike). Self-contained on purpose — the indexer depends on neither
- * @shade/sdk nor @stellar/stellar-sdk. Keeping the client tiny and injectable
+ * stellar-shade nor @stellar/stellar-sdk. Keeping the client tiny and injectable
  * makes the ingester unit-testable fully offline: tests pass a stub returning
  * synthetic fixtures, no network required.
  */

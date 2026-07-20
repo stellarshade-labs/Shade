@@ -6,7 +6,7 @@ import {
   encodeMetaAddress,
   deriveStealthAddressWithSecret,
 } from '@shade/crypto';
-import type { StealthKeys } from '@shade/sdk';
+import type { StealthKeys } from 'stellar-shade';
 import { collectAccountBalances } from '../src/commands/balance.js';
 
 /** Minimal PersistedPayment shape for the in-memory cache rows. */

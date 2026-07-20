@@ -108,7 +108,7 @@ Then pass `--indexer http://localhost:3100` to `scan`/`balance` (or set `SHADE_I
 ## Using the SDK instead
 
 ```typescript
-import { StealthClient } from '@shade/sdk';
+import { StealthClient } from 'stellar-shade';
 
 const client = new StealthClient({
   network: 'testnet',

@@ -26,7 +26,7 @@
       "@shade/crypto": ["./packages/crypto/src"],
       "@shade/cli": ["./packages/cli/src"],
       "@shade/relayer": ["./packages/relayer/src"],
-      "@shade/sdk": ["./packages/sdk/src"]
+      "stellar-shade": ["./packages/sdk/src"]
     }
   },
   "exclude": ["node_modules", "dist", "*.config.js", "*.config.ts"]

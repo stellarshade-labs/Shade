@@ -1,5 +1,5 @@
 import { Keypair } from '@stellar/stellar-sdk';
-import type { FundingSigner } from '@shade/sdk';
+import type { FundingSigner } from 'stellar-shade';
 import { resolveSecret } from './secrets.js';
 import chalk from 'chalk';
 

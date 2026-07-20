@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@shade/crypto": "0.1.0",
-    "@shade/sdk": "0.1.0",
+    "stellar-shade": "0.1.0",
     "@stellar/stellar-sdk": "^16.0.0",
     "@noble/hashes": "^1.6.1",
     "chalk": "^5.3.0",
