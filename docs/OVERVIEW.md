@@ -110,8 +110,8 @@ There's a chicken-and-egg problem: to claim your money you'd normally need a fun
 
 The **relayer** solves both. It's the reference service in this repo (`packages/relayer`) that an app or community runs:
 
-- **Fee-bump** (`/relay`) — the relayer pays your withdrawal's fee, so you never reveal a funded account of your own.
-- **Reserve fronting / sponsored claims** (`/sponsor`, `/sponsor-claim/*`) — it fronts the ~1 XLM account reserve (+ ~0.5 XLM trustline reserve for tokens) so you can cash out to a **fresh, unfunded address**.
+- **Fee-bump** (`/relay`) — the relayer fee-bumps your withdrawal, so it hides **who pays the fee**. For a **pool** withdraw, note this hides the fee-payer but **not** the inner author: the fee-payer account you pass is the inner transaction's on-chain `source_account` and is publicly visible — so use a **throwaway funded fee-payer per withdraw** (or a sponsored claim, below) when author unlinkability matters. Relaying stays **trustless** either way: the withdraw signature binds destination + amount + contract + network, so a relayer can't redirect or tamper with it.
+- **Reserve fronting / sponsored claims** (`/sponsor`, `/sponsor-claim/*`) — it fronts the ~1 XLM account reserve (+ ~0.5 XLM trustline reserve for tokens) so you can cash out to a **fresh, unfunded address**. Here the relayer itself is the inner source, so there's no fee-payer of yours on-chain at all.
 
 It's metered by a simple **credit** system so it isn't a free-for-all:
 
@@ -122,7 +122,7 @@ It's metered by a simple **credit** system so it isn't a free-for-all:
 
 Two things to be clear about: today the top-up is a **plain Stellar payment** verified by its `txHash` — a private funding rail (an external Stellar private-payments protocol, say) could do the same job later, but none is integrated yet — and there is **no hard-coded/hosted relayer URL**, so "default" just means the reference service you deploy and point your app at.
 
-> **For developers.** Endpoints in `packages/relayer/src/index.ts`; logic in `routes/{credit,sponsor,sponsorClaim}.ts` and `ledger.ts`. Credit-gating is switched on with `RELAYER_REQUIRE_CREDIT=1`. Clients get `SponsoredClaimMismatchError` protection: the SDK re-derives a sponsored claim from your own inputs and refuses to sign if a malicious relayer altered the payout.
+> **For developers.** Endpoints in `packages/relayer/src/index.ts`; logic in `routes/{credit,sponsor,sponsorClaim}.ts` and `ledger.ts`. `RELAYER_SECRET` is **always required** (the relayer exits 1 without it), and credit-gating is **on by default on every network** (`RELAYER_REQUIRE_CREDIT=0` disables it). For a durable, multi-instance deploy set `DATABASE_URL` (Postgres credit ledger) and `REDIS_URL` (shared nonces + rate limits); both fail fast if set-but-unreachable rather than silently forking the ledger. Clients get `SponsoredClaimMismatchError` protection: the SDK re-derives a sponsored claim from your own inputs and refuses to sign if a malicious relayer altered the payout.
 
 | Endpoint                                  | What it does                                                |
 | ----------------------------------------- | ----------------------------------------------------------- |
@@ -144,7 +144,7 @@ The relayer is a standalone service (no dependency on the crypto package), so it
 
 Step-by-step is in `packages/relayer/README.md`.
 
-> **Roadmap caveat:** Railway's filesystem is ephemeral, so the JSON credit ledger doesn't survive restarts. That's fine for a testnet demo; a durable store (Postgres/Redis) is the production fix.
+> **Durability:** by default the JSON credit ledger lives on local disk, which is ephemeral on Railway (it doesn't survive restarts) — fine for a single-instance testnet demo. For any real deploy, set `DATABASE_URL` (Postgres) to make the ledger durable and multi-instance, and `REDIS_URL` (Redis) to share challenge nonces + rate-limit buckets across instances; both fail fast if set-but-unreachable rather than silently forking the ledger.
 
 ---
 
@@ -200,9 +200,9 @@ Everything is there: delivery methods, cursor-aware `scanWithCursor`, Freighter 
 
 ## 11. What's real vs. what's roadmap
 
-**Implemented today:** `pool` + `account` delivery, the relayer (fee-bump / sponsor / credit), Freighter external signing, encrypted sessions, and wallet-signature key derivation. The `pool` method has been **validated end-to-end on Stellar testnet** (2026-07-17): deposit → scan → balance → direct withdraw → relayer fee-bumped withdraw, for both native XLM and a classic-asset (USDC) SAC. No testnet contract id is pinned — testnet resets quarterly, so you deploy your own. One honest caveat: the `account` method's discovery does **not** scale on public networks — its scan walks the global Horizon transaction feed, so a cold scan for a fresh recipient is impractical there (the Horizon indexer on the roadmap is the fix). Day-to-day development still runs on the Docker local network.
+**Implemented today:** `pool` + `account` delivery, the relayer (fee-bump / sponsor / credit), the announcement indexer, Freighter external signing, encrypted sessions, and wallet-signature key derivation. The `pool` method has been **validated end-to-end on Stellar testnet** (2026-07-17): deposit → scan → balance → direct withdraw → relayer fee-bumped withdraw, for both native XLM and a classic-asset (USDC) SAC. No testnet contract id is pinned — testnet resets quarterly, so you deploy your own. The `account` method's old cold-scan pain — walking the global Horizon transaction feed client-side — is solved by the **announcement indexer** (`packages/indexer`), a standalone service that walks the feed once for everyone and serves a compact candidate feed clients filter locally (validated 2026-07-17 on testnet: a fresh recipient's cold scan found its payment in **631 ms** via a local indexer, claimed it on-chain, and degraded silently to the plain Horizon walk when the indexer was down). An indexer can _hide_ payments but cannot _fabricate_ them — Horizon stays the source of truth and every scan ends with a Horizon tail. Testnet is the current test network (there is no local Docker network anymore).
 
-**On the roadmap (Shade's own work):** an external cryptography audit (so **not for mainnet yet**), a durable credit ledger, a Horizon indexer for faster account-method scans, and a Rust-crate rename. Note: `spp` is **not** on this list — it's a reserved hook for a _separate, external_ private-payments effort, not something Shade is building.
+**On the roadmap (Shade's own work):** an external cryptography audit (so **not for mainnet yet**) and a Rust-crate rename. Note: `spp` is **not** on this list — it's a reserved hook for a _separate, external_ private-payments effort, not something Shade is building.
 
 ---
 

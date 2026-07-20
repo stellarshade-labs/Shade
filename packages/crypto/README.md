@@ -29,7 +29,6 @@ import {
   deriveStealthAddress,
   scanAnnouncements,
   recoverStealthPrivateKey,
-  signWithStealthKey,
 } from 'stellar-stealth';
 
 // 1. Generate a stealth meta-address (receiver)
@@ -58,16 +57,17 @@ const found = scanAnnouncements(
 console.log('Found stealth addresses:', found);
 
 // 4. Recover private key to withdraw (receiver)
-const stealthPrivKey = recoverStealthPrivateKey(
+const stealthKey = recoverStealthPrivateKey(
   receiver.spendPrivKey,
   receiver.viewPrivKey,
   stealth.ephemeralPubKey
-);
-// WARNING: stealthPrivKey is a RAW SCALAR (k_spend + s mod L), NOT an ed25519
-// seed. Sign with signWithStealthKey — never build a Keypair from it via
-// Keypair.fromRawEd25519Seed (that hashes to a different key and the funds
-// become unwithdrawable).
-const signature = signWithStealthKey(withdrawMessage, stealthPrivKey);
+); // StealthScalar wrapper (NOT a raw Uint8Array)
+
+// Sign directly on the wrapper. Because StealthScalar is not a Uint8Array,
+// `Keypair.fromRawEd25519Seed(stealthKey)` is a COMPILE ERROR — the fund-loss
+// footgun (a seed API hashing the raw scalar to a mismatched key) is gone.
+const signature = stealthKey.sign(withdrawMessage);
+stealthKey.zeroize(); // clear the key from memory when done
 ```
 
 ## DKSAP Protocol
@@ -243,7 +243,7 @@ Check if a specific stealth address belongs to the receiver.
 
 ### Private Key Recovery
 
-#### `recoverStealthPrivateKey(spendPrivKey: Uint8Array, viewPrivKey: Uint8Array, ephemeralPubKey: Uint8Array): Uint8Array`
+#### `recoverStealthPrivateKey(spendPrivKey: Uint8Array, viewPrivKey: Uint8Array, ephemeralPubKey: Uint8Array): StealthScalar`
 
 Recover the stealth private key for withdrawing funds.
 
@@ -252,24 +252,37 @@ Recover the stealth private key for withdrawing funds.
 - `viewPrivKey`: Receiver's 32-byte view private key
 - `ephemeralPubKey`: 32-byte ephemeral public key from announcement
 
-**Returns:** 32-byte stealth private key (raw scalar) for signing transactions
+**Returns:** A **`StealthScalar` wrapper** around the recovered raw ed25519 scalar
+(`k_spend + s mod L`). Sign with `.sign(message)`, get the stealth pubkey for
+verification with `.publicKey()`, and clear it with `.zeroize()` when done
+(replaces the old `key.fill(0)`).
 
-> **WARNING:** The returned value is a RAW ed25519 SCALAR (`k_spend + s mod L`),
-> NOT an ed25519 seed. Sign with `signWithStealthKey`. Do **not** build a Keypair
-> via `Keypair.fromRawEd25519Seed()` — that API hashes the input into a different
-> signing key that will not match the stealth public key, so the contract rejects
-> the signature and the funds become unwithdrawable.
+> **WHY A WRAPPER (this is what removes a fund-loss footgun):** the recovered
+> value is a raw ed25519 SCALAR, **not** an ed25519 seed. Seed-based Keypair APIs
+> (`Keypair.fromRawEd25519Seed()`, `ed25519.sign()`, wallet imports) HASH their
+> input into a *different* signing scalar whose public key does not match the
+> stealth address — the contract rejects the signature and the funds become
+> permanently unwithdrawable. Because `StealthScalar` is **not** a `Uint8Array`,
+> `Keypair.fromRawEd25519Seed(key)` is now a **compile error** rather than silent
+> fund loss.
 
 **Example:**
 ```typescript
-const stealthPrivKey = recoverStealthPrivateKey(
+const stealthKey = recoverStealthPrivateKey(
   spendPrivKey,
   viewPrivKey,
   ephemeralPubKey
 );
-// Sign the withdrawal message directly with the raw scalar.
-const signature = signWithStealthKey(withdrawMessage, stealthPrivKey);
+// Sign the withdrawal message directly on the wrapper.
+const signature = stealthKey.sign(withdrawMessage);
+stealthKey.zeroize(); // clear the key from memory when done
 ```
+
+**Deprecated raw-bytes escape hatches (interop only).**
+`recoverStealthPrivateKeyBytes(...)` returns the pre-0.1.0 raw `Uint8Array`, and
+`stealthKey.dangerouslyToRawBytes()` returns a copy of the raw scalar from the
+wrapper. Both are `@deprecated` and carry the same warning: **never** feed those
+bytes to `Keypair.fromRawEd25519Seed()` or any seed-based API.
 
 ### Wallet-Derived Keys (SEP-53)
 
@@ -490,6 +503,12 @@ and documented in the [API Reference](#api-reference) above.
 - **Pre-1.0 caveat.** While the package is below `1.0.0`, minor versions may
   still refine the API. The DKSAP math and the v1 derivation/encoding formats
   are considered stable; ancillary helpers may evolve.
+- **0.1.0 (breaking).** `recoverStealthPrivateKey` now returns a `StealthScalar`
+  wrapper instead of a raw `Uint8Array` — sign with `.sign()`, verify with
+  `.publicKey()`, clear with `.zeroize()`. This is a deliberate breaking change
+  (A5): `Keypair.fromRawEd25519Seed(key)` no longer type-checks, removing a
+  fund-loss footgun. Use the deprecated `recoverStealthPrivateKeyBytes()` if you
+  genuinely need the old raw bytes.
 
 ## Roadmap & Audit Status
 
@@ -504,9 +523,10 @@ represent the gap between "production-track" and "audited for mainnet value."
 - **Constant-time guarantees.** Secret-dependent operations rely on the
   constant-time properties of `@noble/curves`. Formalising and testing the
   end-to-end timing behaviour of the SDK's own code paths is a roadmap item.
-- **Memory hygiene.** Callers are currently responsible for zeroing recovered
-  private keys after use. First-class, opt-in secret-zeroization helpers are
-  planned.
+- **Memory hygiene.** `recoverStealthPrivateKey` now returns a `StealthScalar`
+  wrapper with a first-class `.zeroize()` method; call it when done. Extending
+  the same opt-in zeroization to the remaining raw-`Uint8Array` key paths is a
+  roadmap item.
 - **Stellar Private Payments (`spp`).** The ZK-shielded delivery method is a
   reserved, forward-compatible slot and is not yet implemented.
 
