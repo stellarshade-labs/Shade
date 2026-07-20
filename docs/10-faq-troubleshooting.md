@@ -65,7 +65,7 @@ There is deliberately no implicit default — the privacy trade-off must be a co
 
 ### `ContractIdRequiredError`
 
-The `pool` method is enabled but no contract id resolved. There is a built-in default only for `local`.
+The `pool` method is enabled but no contract id resolved. There is no built-in default on any network:
 
 - **SDK:** pass `contractId: 'C...'` in `ClientConfig`.
 - **CLI:** deploy the contract and write its id to `~/.stealth/<network>-contract`.
@@ -133,6 +133,10 @@ The RPC returned a non-terminal status (e.g. `TRY_AGAIN_LATER`) — **nothing la
 
 Wrong or missing keystore/session password. The CLI prompts on stderr if you omit `--password`; the SDK session throws on an AES-GCM authentication failure.
 
+### "stdin closed before input was received"
+
+A CLI prompt (keystore password, secret) hit end-of-file before any input arrived — typical with piped stdin or in CI. The command exits **1** with this message instead of node's old behaviour of silently exiting **0** mid-command as if it had succeeded. In non-interactive contexts, pass the value via its flag or environment variable (e.g. `--password`, `$SHADE_FEE_PAYER`).
+
 ### `SessionIntegrityError`
 
 The public key stored in the clear doesn't match the one re-derived from the decrypted private key — **the stored session may have been tampered with**. Don't trust the material; re-import your keys.
@@ -149,6 +153,7 @@ The meta-address failed prefix, length, hex, checksum, or on-curve/torsion valid
 
 - Check `--network` matches where the payment was sent.
 - For the account method, the cursor is persisted — a previous scan may have advanced past it. Try `--full-rescan`.
+- With an indexer configured (`--indexer` / `SHADE_INDEXER`), a **cold** scan fast-starts at the indexer's coverage start — a payment older than the indexer's coverage is found only by `--full-rescan` (SDK: `ScanOpts.exhaustive`), which walks the pre-indexer history too.
 - Confirm the sender used *your* meta-address (the checksum makes a corrupted one throw, but a wrong-but-valid one won't).
 - Confirm the deposit transaction actually landed.
 
