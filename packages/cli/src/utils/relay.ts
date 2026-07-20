@@ -1,4 +1,4 @@
-import { NoHealthyRelayerError } from '@shade/sdk';
+import { NoHealthyRelayerError } from 'stellar-shade';
 import chalk from 'chalk';
 
 /** Split one `--relay` value on commas, trimming and dropping empties. */

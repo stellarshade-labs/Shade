@@ -14,7 +14,7 @@ import {
   resolveTokenAddress,
   waitForTransaction,
   type NetworkName,
-} from '@shade/sdk';
+} from 'stellar-shade';
 import { getContractAddress } from '../utils/config.js';
 import { assertNetwork, formatError, validateMetaAddress } from '../utils/network.js';
 import { resolveSecret } from '../utils/secrets.js';

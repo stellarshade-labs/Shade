@@ -62,7 +62,7 @@ Rule of thumb: **`pool`** for the best privacy/cost trade-off and any token (you
 
 One trade-off to know for method 4: your wallet effectively _is_ your stealth key backup — if the wallet is compromised, so are the stealth keys. That's the accepted deal for keyless recovery.
 
-> **For developers.** `packages/crypto/src/{keys.ts, hd.ts, derive-signature.ts}`. Wallet derivation: `keysFromWalletSignature(signer, opts)` in `@shade/sdk` (SEP-53 message via `buildKeyDerivationMessage`; determinism is verified by default so a non-canonical signer fails loudly). Scope keys with a matching `{ appId, keyScope }` across every tool that derives them, or you'll get different, non-interoperable keys. In the CLI: `shade keygen --mnemonic | --recover | --from-stellar-secret`.
+> **For developers.** `packages/crypto/src/{keys.ts, hd.ts, derive-signature.ts}`. Wallet derivation: `keysFromWalletSignature(signer, opts)` in `stellar-shade` (SEP-53 message via `buildKeyDerivationMessage`; determinism is verified by default so a non-canonical signer fails loudly). Scope keys with a matching `{ appId, keyScope }` across every tool that derives them, or you'll get different, non-interoperable keys. In the CLI: `shade keygen --mnemonic | --recover | --from-stellar-secret`.
 
 ---
 
@@ -169,10 +169,10 @@ Secrets are read from env vars (`SHADE_FROM_SECRET`, `SHADE_FEE_PAYER`) or an st
 Two packages:
 
 - **`@shade/crypto`** — pure stealth-address math (keys, scanning, recovery, HD/mnemonic). Zero Stellar dependency; usable anywhere.
-- **`@shade/sdk`** — the batteries-included client. Wraps all Horizon/Soroban I/O behind `StealthClient`, so you never touch DKSAP math or transaction XDR.
+- **`stellar-shade`** — the batteries-included client. Wraps all Horizon/Soroban I/O behind `StealthClient`, so you never touch DKSAP math or transaction XDR.
 
 ```ts
-import { StealthClient } from "@shade/sdk";
+import { StealthClient } from "stellar-shade";
 
 const client = new StealthClient({
   network: "testnet",

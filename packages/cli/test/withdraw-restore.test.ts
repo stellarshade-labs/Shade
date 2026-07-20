@@ -19,7 +19,7 @@ vi.mock('@stellar/stellar-sdk', async (importOriginal) => {
 
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { Keypair, Account, TransactionBuilder, Networks } from '@stellar/stellar-sdk';
-import { prepareWithRestore } from '@shade/sdk';
+import { prepareWithRestore } from 'stellar-shade';
 
 const PASSPHRASE = Networks.TESTNET;
 

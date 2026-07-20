@@ -11,7 +11,7 @@ import {
   type NetworkName,
   type StealthKeys,
   type HorizonClaimableBalance,
-} from '@shade/sdk';
+} from 'stellar-shade';
 import { loadKeystoreOrExit, resolveKeystorePath } from '../utils/keystore.js';
 import { assertNetwork } from '../utils/network.js';
 import { resolveIndexer } from '../utils/indexer.js';

@@ -1,4 +1,4 @@
-# @shade/sdk
+# stellar-shade
 
 High-level client for **stealth payments on Stellar** (DKSAP on ed25519). Wraps the
 `@shade/crypto` math and all Horizon/Soroban I/O behind a small `StealthClient`
@@ -6,13 +6,13 @@ with pluggable **delivery methods**. You never touch DKSAP math or transaction
 serialization directly.
 
 ```bash
-npm install @shade/sdk
+npm install stellar-shade
 ```
 
 ## Quickstart
 
 ```typescript
-import { StealthClient } from '@shade/sdk';
+import { StealthClient } from 'stellar-shade';
 
 // `contractId` is REQUIRED whenever the pool method is enabled (mandatory on testnet
 // — there is no built-in default, and the constructor throws ContractIdRequiredError
@@ -73,7 +73,7 @@ Public failures throw named subclasses of `Error` (all exported) so apps can bra
 import { MethodRequiredError, ContractIdRequiredError, NoBalanceError,
          AnnouncementNotFoundError, StealthAccountNotFoundError,
          DestinationTrustlineError, FeePayerRequiredError,
-         SponsoredClaimMismatchError } from '@shade/sdk';
+         SponsoredClaimMismatchError } from 'stellar-shade';
 
 try {
   await client.claim(payment, dest, { keys });
@@ -110,7 +110,7 @@ returns an object (Freighter resolves to `{ signedTxXdr, signerAddress }`) must
 
 ```typescript
 import freighterApi from '@stellar/freighter-api';
-import { StealthClient, type TransactionSigner } from '@shade/sdk';
+import { StealthClient, type TransactionSigner } from 'stellar-shade';
 
 const signTransaction: TransactionSigner = async (xdr, { networkPassphrase }) => {
   const { signedTxXdr } = await freighterApi.signTransaction(xdr, { networkPassphrase });
@@ -152,7 +152,7 @@ The CLI stays secret-based (no Freighter in the terminal).
   The deprecated `recoverStealthPrivateKeyBytes()` (and `dangerouslyToRawBytes()`
   on the wrapper) still return the old raw bytes for interop, carrying the same
   seed-API warning. `client.claim()` does the signing correctly for you.
-- **Two types named `StealthKeys`.** `@shade/crypto` and `@shade/sdk` both
+- **Two types named `StealthKeys`.** `@shade/crypto` and `stellar-shade` both
   export a type named `StealthKeys` with **different shapes**: crypto's holds
   raw `Uint8Array` private keys plus a nested `metaAddress` object; the SDK's
   holds hex strings plus a `metaAddress` string. Import from the package whose

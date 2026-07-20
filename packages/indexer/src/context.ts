@@ -15,7 +15,7 @@ export interface IndexerNetworkDefinition {
 /**
  * Supported networks (testnet-only today, table-driven so mainnet can be added
  * post-audit without touching call sites). Self-contained on purpose — the
- * indexer does not import @shade/sdk or @stellar/stellar-sdk.
+ * indexer does not import stellar-shade or @stellar/stellar-sdk.
  */
 export const INDEXER_NETWORKS = {
   testnet: {

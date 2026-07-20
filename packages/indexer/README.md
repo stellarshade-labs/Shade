@@ -17,7 +17,7 @@ the stealth address from R and re-verify on-chain at claim. Horizon stays the
 source of truth; cursors are Horizon `paging_token`s, so indexer and Horizon
 cursors are interchangeable.
 
-The indexer has **no `@shade/sdk` or `@stellar/stellar-sdk` dependency** — it
+The indexer has **no `stellar-shade` or `@stellar/stellar-sdk` dependency** — it
 builds and runs standalone.
 
 ## Endpoints

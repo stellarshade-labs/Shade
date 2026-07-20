@@ -3,7 +3,10 @@ import {
   deriveKeysFromSignature,
   encodeMetaAddress,
 } from '@shade/crypto';
-import type { StealthKeys as RawStealthKeys } from '@shade/crypto';
+// Deliberately the SDK's own mirror, not '@shade/crypto' — this type appears in
+// an exported signature, and crypto's version cannot be inlined into the
+// published .d.ts. ./raw-keys.ts proves the two stay structurally identical.
+import type { RawStealthKeys } from './raw-keys.js';
 import type { StealthKeys } from './types.js';
 
 /**

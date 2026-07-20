@@ -37,7 +37,7 @@ export interface RelayerNetworkDefinition {
 /**
  * Supported networks (testnet-only today, table-driven so mainnet can be added
  * post-audit without touching call sites). Self-contained on purpose — the
- * relayer does not import @shade/sdk.
+ * relayer does not import stellar-shade.
  */
 export const RELAYER_NETWORKS = {
   testnet: {

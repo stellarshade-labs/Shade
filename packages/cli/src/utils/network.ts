@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import { decodeMetaAddress } from '@shade/crypto';
-import type { NetworkName } from '@shade/sdk';
+import type { NetworkName } from 'stellar-shade';
 
 /**
  * The networks this CLI accepts today. Mainnet ('public') is added here — and

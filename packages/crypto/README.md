@@ -2,8 +2,8 @@
 
 Pure TypeScript implementation of stealth addresses for Stellar using DKSAP (Dual-Key Stealth Address Protocol) on ed25519.
 
-This is the SDK core: the cryptographic primitives that other applications
-`npm install` and build on. It has **zero dependency on `@stellar/stellar-sdk`** —
+This is the SDK core: the cryptographic primitives the rest of the monorepo
+builds on. It has **zero dependency on `@stellar/stellar-sdk`** —
 all elliptic-curve math runs through [`@noble/curves`](https://github.com/paulmillr/noble-curves)
 and [`@noble/hashes`](https://github.com/paulmillr/noble-hashes), which are the
 same audited primitives used across the Stellar ecosystem. Correctness, a stable
@@ -16,9 +16,18 @@ public API, and a clearly-scoped security model are the priorities here.
 
 ## Installation
 
+**This package is not published to npm.** It is a workspace-internal package,
+bundled into the published SDK at build time — so installing the SDK gives you
+this code without a second dependency:
+
 ```bash
-npm install stellar-stealth
+npm install stellar-shade
 ```
+
+Everything below documents the primitives as they exist inside this repo. Note
+that the SDK re-exports only a small surface of them (see
+[SDK Reference](../../docs/07-sdk-reference.md)); to use the full API directly,
+work inside the monorepo, where workspaces resolve `@shade/crypto` for you.
 
 ## Quick Start
 
@@ -29,7 +38,7 @@ import {
   deriveStealthAddress,
   scanAnnouncements,
   recoverStealthPrivateKey,
-} from 'stellar-stealth';
+} from '@shade/crypto';
 
 // 1. Generate a stealth meta-address (receiver)
 const receiver = generateMetaAddress();
@@ -338,7 +347,7 @@ signed-message envelope. The SDK and CLI reproduce this envelope so that a real
 wallet and the local CLI derive identical keys:
 
 ```typescript
-import { buildKeyDerivationMessage, deriveKeysFromSignature } from 'stellar-stealth';
+import { buildKeyDerivationMessage, deriveKeysFromSignature } from '@shade/crypto';
 import { sha256 } from '@noble/hashes/sha256';
 
 const message = buildKeyDerivationMessage({ network: 'testnet', appId: 'my-app' });
