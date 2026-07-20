@@ -72,7 +72,7 @@ bash contracts/deploy.sh --network testnet --source deployer
 
 Then drive a full send -> scan -> claim cycle with the CLI (below). The worked
 end-to-end smoke flow — deposit -> scan -> balance -> direct withdraw ->
-relayer fee-bumped withdraw, for both native XLM and a classic-asset (USDC) SAC —
+relayer fee-bumped withdraw with native XLM —
 is captured in [docs/RESULTS-testnet-smoke.md](docs/RESULTS-testnet-smoke.md).
 
 ## SDK Usage
@@ -231,8 +231,8 @@ Stealth addresses hide the **identity** of the recipient, not the **flow** of fu
 ## Known Limitations
 
 - **Announcement reads must be paged:** Each announcement is its own keyed entry (`DataKey::Announcement(u64)`), so `deposit` is O(1) and storage has no `Vec` size ceiling. A single `get_announcements(start, limit)` response is still bounded by Soroban's return-size limit, so clients must page — the SDK pages at 200/request, and the CLI's `balance`/`withdraw` reuse `scan`'s paged fetch, so all three page the full announcement set.
-- **Testnet-validated, not audited:** Testnet is the current test network (there is no local Docker network anymore), and the **pool** method has been validated end-to-end on Stellar **testnet** (2026-07-17): deposit → scan → balance → direct withdraw → relayer fee-bumped withdraw, for both native XLM and a classic-asset (USDC) SAC. No testnet contract id is pinned — testnet resets quarterly, so deploy your own. Mainnet ("public") is a post-audit addition, out of scope until an external audit lands.
-- **Account-method discovery doesn't scale on public networks:** the account method's scan (and `balance`) walk the global Horizon transaction feed, so a cold scan for a fresh recipient is impractical on testnet/mainnet-sized histories. A Horizon indexer is the roadmap fix.
+- **Testnet-validated, not audited:** Testnet is the current test network (there is no local Docker network anymore), and the **pool** method has been validated end-to-end on Stellar **testnet** (2026-07-17) with **native XLM**: deposit → scan → balance → direct withdraw → relayer fee-bumped withdraw. The pool contract is **asset-agnostic** — it calls the standard SAC token interface (`token::Client`) with the token address as a parameter, so a classic asset such as USDC takes the identical path, differing only in that address. No testnet contract id is pinned — testnet resets quarterly, so deploy your own. Mainnet ("public") is a post-audit addition, out of scope until an external audit lands.
+- **Account-method discovery needs an indexer:** the account method's scan (and `balance`) walk the global Horizon transaction feed, so a cold scan for a fresh recipient is impractical on testnet/mainnet-sized histories. The **announcement indexer** (`packages/indexer`) closes that gap — run one and point clients at it with `--indexer` / `SHADE_INDEXER`. It stays **advisory**: Horizon remains the source of truth, every scan ends with a Horizon tail, and an unreachable, degraded or stale indexer silently falls back to the full walk — which is still impractical at public-network scale. Configure one, or expect slow cold scans.
 - **No BIP-32/44:** HD derivation uses domain-separated SHA-256, not standard BIP-32 paths (those use secp256k1).
 - **No view key rotation:** Shared view keys cannot be revoked. Generate new keys to stop a viewer from seeing future payments.
 - **Destination account must exist:** The withdrawal destination needs an active Stellar account (1 XLM MBR). Fund it via exchange withdrawal for best privacy.
