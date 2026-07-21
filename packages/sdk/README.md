@@ -9,14 +9,17 @@ serialization directly.
 npm install stellar-shade
 ```
 
+`@shade/crypto` is bundled into `stellar-shade`, so this single install pulls in
+everything. There is no separate `@shade/crypto` package to add.
+
 ## Quickstart
 
 ```typescript
 import { StealthClient } from 'stellar-shade';
 
-// `contractId` is REQUIRED whenever the pool method is enabled (mandatory on testnet
-// — there is no built-in default, and the constructor throws ContractIdRequiredError
-// otherwise).
+// `contractId` is REQUIRED whenever the pool method is enabled (mandatory on testnet).
+// There is no built-in default, and the constructor throws ContractIdRequiredError
+// otherwise.
 const client = new StealthClient({
   network: 'testnet',
   contractId: 'CXXX...',
@@ -27,7 +30,7 @@ const client = new StealthClient({
 // Recipient keys (offline; share metaAddress publicly).
 const bobKeys = StealthClient.keygen();
 
-// Send. A delivery method is REQUIRED — 'pool' | 'account' | 'auto'. There is no
+// Send. A delivery method is REQUIRED: 'pool' | 'account' | 'auto'. There is no
 // implicit default; omitting it throws MethodRequiredError.
 const receipt = await client.send(bobKeys.metaAddress, 100, aliceSecret, {
   method: 'auto',
@@ -45,7 +48,7 @@ const result = await client.claim(payments[0], bobPublicKey, {
 });
 ```
 
-## Delivery methods — pick per privacy / cost trade-off
+## Delivery methods: pick per privacy / cost trade-off
 
 `DeliveryMethod = 'pool' | 'account' | 'spp'`. All three use the same recipient
 meta-address; they differ in where funds sit, discovery, and claim.
@@ -62,7 +65,7 @@ meta-address; they differ in where funds sit, discovery, and claim.
 | **Relayer** | optional fee-bump so the recipient needs no funded account | optional fee-bump / sponsored claim | N/A |
 
 Rule of thumb: **`pool`** for best privacy + multi-token; **`account`** for the
-simplest path that works with vanilla Horizon tooling; **`spp`** is a
+simplest path that works with vanilla Horizon tooling. **`spp`** is a
 forward-compatible slot (opt in later with zero API changes).
 
 ## Errors are typed
@@ -85,7 +88,7 @@ try {
 `SponsoredClaimMismatchError` is a **client-side safety control**: on a sponsored
 token claim the SDK re-derives the relayer-prepared operation list from your own
 inputs and refuses to sign if anything (payout destination/amount/asset, op source,
-extra ops, memo) does not match — a malicious relayer cannot redirect the payout.
+extra ops, memo) does not match. A malicious relayer cannot redirect the payout.
 
 ## Wallet-derived keys
 
@@ -94,7 +97,7 @@ SEP-53 signature (keyless recovery). Determinism is verified by **default**
 (`verifyDeterminism` defaults to `true`) so a randomized/non-canonical signer fails
 loudly instead of deriving unrecoverable keys. Scope keys with a matching
 `{ keyScope, appId }` across every tool that derives them (a mismatch yields
-different, non-interoperable keys). Wallet compromise equals stealth-key compromise —
+different, non-interoperable keys). Wallet compromise equals stealth-key compromise,
 the accepted trade-off for keyless recovery.
 
 ## External signing (Freighter)
@@ -135,7 +138,7 @@ await client.claim(payment, destinationG, {
 
 The recovered **stealth-key** claim/withdraw legs still sign **locally**: Freighter
 cannot hold the derived stealth scalar, so `signTransaction` only ever applies to
-the sender / fee-payer legs. Omitting `signTransaction` keeps the existing
+the sender and fee-payer legs. Omitting `signTransaction` keeps the existing
 secret-based behavior unchanged. Omitting `feePayerAddress` on a signed pool claim
 throws `FeePayerAddressRequiredError` rather than treating a public key as a secret.
 The CLI stays secret-based (no Freighter in the terminal).
@@ -143,12 +146,12 @@ The CLI stays secret-based (no Freighter in the terminal).
 ## Two fund-safety footguns
 
 - **The raw-scalar rule.** `recoverStealthPrivateKey` returns a **`StealthScalar`
-  wrapper** around the raw ed25519 scalar (not a seed). Sign directly on it —
-  `key.sign(message)` — verify with `key.publicKey()`, and `key.zeroize()` when
+  wrapper** around the raw ed25519 scalar (not a seed). Sign directly on it with
+  `key.sign(message)`, verify with `key.publicKey()`, and `key.zeroize()` when
   done. Because the wrapper is **not** a `Uint8Array`,
-  `Keypair.fromRawEd25519Seed(key)` is now a **compile error**, so the old
-  footgun — feeding the raw scalar to a seed-based API, which hashes it into a
-  *different* key and makes the funds **permanently unwithdrawable** — is gone.
+  `Keypair.fromRawEd25519Seed(key)` is now a **compile error**. That closes the old
+  footgun: feeding the raw scalar to a seed-based API hashes it into a
+  *different* key and makes the funds **permanently unwithdrawable**.
   The deprecated `recoverStealthPrivateKeyBytes()` (and `dangerouslyToRawBytes()`
   on the wrapper) still return the old raw bytes for interop, carrying the same
   seed-API warning. `client.claim()` does the signing correctly for you.
@@ -162,4 +165,4 @@ The CLI stays secret-based (no Freighter in the terminal).
 
 Crypto is pending external audit (not for mainnet yet). The relayer's JSON credit
 ledger and bearer-vs-signed funding-account auth, and Horizon full-scan without an
-indexer, are scheduled hardening — see the repo root README.
+indexer, are scheduled hardening. See the repo root README.

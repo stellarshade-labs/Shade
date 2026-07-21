@@ -5,15 +5,15 @@ description: "Run Shade end-to-end on Stellar testnet: prerequisites, install, g
 
 # Getting Started with Shade
 
-Run Shade end-to-end on Stellar **testnet** in a few minutes. This page covers prerequisites, install, generating and funding testnet keys, deploying the contract, and your first real commands.
+Run Shade end-to-end on Stellar **testnet** in a few minutes. This page covers prerequisites, install, generating and funding testnet keys, deploying the contract, and your first commands.
 
 ---
 
 ## Prerequisites
 
 - **Node.js 20+**
-- **Stellar CLI** — needed to build and deploy the Soroban contract, and to generate/fund testnet keys
-- **Rust toolchain** — needed to compile the contract to Wasm
+- **Stellar CLI**, needed to build and deploy the Soroban contract and to generate/fund testnet keys
+- **Rust toolchain**, needed to compile the contract to Wasm
 
 ## Install and build
 
@@ -29,7 +29,7 @@ cd contracts && stellar contract build && cd ..
 
 ## Generate and fund a testnet account
 
-Testnet is the current test network. Generate a keypair and fund it from friendbot — repeat for any accounts you need (a deployer, a sender, a fee payer):
+Testnet is the current test network. Generate a keypair and fund it from friendbot. Repeat for any accounts you need: a deployer, a sender, a fee payer.
 
 ```bash
 stellar keys generate deployer --network testnet
@@ -44,7 +44,7 @@ bash contracts/deploy.sh --network testnet --source deployer
 
 The script builds the contract, deploys it to testnet, and writes the resulting contract id to `~/.stealth/testnet-contract`, where the CLI will find it.
 
-**How the CLI resolves the contract address:** it reads `~/.stealth/<network>-contract`. There is deliberately **no built-in testnet address** — testnet resets periodically, and a stale placeholder would only produce an opaque Soroban failure later. If the file is missing, the CLI throws an actionable error naming the exact file to write, and the SDK throws `ContractIdRequiredError`.
+**How the CLI resolves the contract address:** it reads `~/.stealth/<network>-contract`. There is deliberately **no built-in testnet address**. Testnet resets periodically, and a stale placeholder would only produce an opaque Soroban failure later. If the file is missing, the CLI throws an actionable error naming the exact file to write, and the SDK throws `ContractIdRequiredError`.
 
 If you prefer to deploy by hand instead of the script:
 
@@ -57,7 +57,7 @@ stellar contract deploy \
 echo "C..." > ~/.stealth/testnet-contract
 ```
 
-For the full worked smoke flow (deposit → scan → balance → direct withdraw → relayer fee-bumped withdraw, with native XLM), see [RESULTS-testnet-smoke](./RESULTS-testnet-smoke.md).
+For the full worked smoke flow (deposit, scan, balance, direct withdraw, relayer fee-bumped withdraw, with native XLM), see [RESULTS-testnet-smoke](./RESULTS-testnet-smoke.md).
 
 ## Your first commands
 
@@ -81,7 +81,7 @@ export SHADE_FEE_PAYER=S...
 shade claim <stealth-address> <your-G-address> --network testnet
 ```
 
-> **Secrets never belong on the command line.** `--from` and `--fee-payer` exist for scripting, but a flag leaks into shell history and `ps` output. Prefer `SHADE_FROM_SECRET` / `SHADE_FEE_PAYER` or the stderr prompt.
+> **Secrets never belong on the command line.** `--from` and `--fee-payer` exist for scripting, but a flag leaks into shell history and `ps` output. Prefer `SHADE_FROM_SECRET`, `SHADE_FEE_PAYER`, or the stderr prompt.
 
 ## Running the relayer (optional)
 
@@ -97,13 +97,13 @@ Then pass `--relay http://localhost:3000` to `claim`/`withdraw`. See [Relayer](.
 
 ## Running the indexer (optional)
 
-The announcement indexer makes account-method discovery fast — it walks the global Horizon transaction feed once for everyone, so a cold scan no longer has to:
+The announcement indexer makes account-method discovery fast. It walks the global Horizon transaction feed once for everyone, so a cold scan no longer has to:
 
 ```bash
 cd packages/indexer && npm run dev    # NETWORK=testnet, port 3100
 ```
 
-Then pass `--indexer http://localhost:3100` to `scan`/`balance` (or set `SHADE_INDEXER`). Horizon remains the source of truth — a scan falls back to the plain Horizon walk automatically if the indexer is down. See [Architecture → The announcement indexer](./03-architecture.md#the-announcement-indexer) for the trust model, endpoints, and configuration.
+Then pass `--indexer http://localhost:3100` to `scan`/`balance` (or set `SHADE_INDEXER`). Horizon remains the source of truth: a scan falls back to the plain Horizon walk automatically if the indexer is down. See [Architecture → The announcement indexer](./03-architecture.md#the-announcement-indexer) for the trust model, endpoints, and configuration.
 
 ## Using the SDK instead
 
@@ -144,13 +144,13 @@ cd contracts && cargo test   # Rust contract tests only
 
 `testnet` is the only accepted network today. Mainnet ("public") is a forward-looking, post-audit addition. Fund a testnet account with friendbot before using it.
 
-> **Status note.** Testnet is the current test network. The **pool** method has been validated end-to-end on Stellar **testnet** (2026-07-17) with **native XLM**: deposit → scan → balance → direct withdraw → relayer fee-bumped withdraw. The pool contract is **asset-agnostic** — it calls the standard SAC token interface (`token::Client`) with the token address as a parameter, so a classic asset such as USDC takes the identical path, differing only in that address. No testnet contract id is pinned — testnet **resets quarterly**, so deploy your own and save it as shown above. The **account** method's cold discovery is served by the **announcement indexer**. It is covered by unit and integration tests, and by design every scan ends with a Horizon tail, so an unreachable or degraded indexer falls back to the plain walk. The 2026-07-17 testnet smoke did **not** exercise account-method discovery, though — treat the indexer as implemented and test-covered, **not** testnet-validated. Without an indexer configured, a cold account scan still walks the global Horizon transaction feed — impractical for a fresh recipient on a busy network. There is no CI. Mainnet is **out of scope** until an external audit lands. See [Security](./09-security.md).
+> **Status note.** Testnet is the current test network. The **pool** method has been validated end-to-end on Stellar **testnet** (2026-07-17) with **native XLM**: deposit, scan, balance, direct withdraw, and relayer fee-bumped withdraw. The pool contract is **asset-agnostic**. It calls the standard SAC token interface (`token::Client`) with the token address as a parameter, so a classic asset such as USDC takes the identical path, differing only in that address. No testnet contract id is pinned, because testnet **resets quarterly**, so deploy your own and save it as shown above. The **account** method's cold discovery is served by the **announcement indexer**. It is covered by unit and integration tests, and by design every scan ends with a Horizon tail, so an unreachable or degraded indexer falls back to the plain walk. The 2026-07-17 testnet smoke did **not** exercise account-method discovery, though, so treat the indexer as implemented and test-covered, **not** testnet-validated. Without an indexer configured, a cold account scan still walks the global Horizon transaction feed, which is impractical for a fresh recipient on a busy network. There is no CI. Mainnet is **out of scope** until an external audit lands. See [Security](./09-security.md).
 
 ---
 
 ## Next steps
 
-- [CLI Reference](./06-cli-reference.md) — every command and flag
-- [SDK Reference](./07-sdk-reference.md) — `StealthClient`, types, errors
-- [Delivery Methods](./04-delivery-methods.md) — choosing `pool` vs `account`
-- [FAQ & Troubleshooting](./10-faq-troubleshooting.md) — when something fails
+- [CLI Reference](./06-cli-reference.md): every command and flag
+- [SDK Reference](./07-sdk-reference.md): `StealthClient`, types, errors
+- [Delivery Methods](./04-delivery-methods.md): choosing `pool` vs `account`
+- [FAQ & Troubleshooting](./10-faq-troubleshooting.md): when something fails
