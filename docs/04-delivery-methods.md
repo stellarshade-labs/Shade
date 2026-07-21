@@ -1,11 +1,11 @@
 ---
 title: Delivery Methods
-description: "Compare Shade's delivery methods: the Soroban pool contract versus a direct one-time Stellar account — where funds sit, what they cost, and how you claim them."
+description: "Compare Shade's delivery methods: the Soroban pool contract versus a direct one-time Stellar account. Where funds sit, what they cost, and how you claim them."
 ---
 
 # Delivery Methods: Pool vs Account
 
-The same meta-address works with more than one "delivery method" — the mechanism that actually carries money to the recipient. They differ in where funds sit, what they cost, and how you claim them. This page compares them and tells you which to pick.
+The same meta-address works with more than one "delivery method," the mechanism that actually carries money to the recipient. They differ in where funds sit, what they cost, and how you claim them. This page compares them and tells you which to pick.
 
 ---
 
@@ -15,59 +15,59 @@ The same meta-address works with more than one "delivery method" — the mechani
 
 | | **pool** | **account** | **spp** |
 |---|---|---|---|
-| **Status** | ✅ Implemented | ✅ Implemented | ⏳ Reserved slot — *not built* |
+| **Status** | ✅ Implemented | ✅ Implemented | ⏳ Reserved slot (*not built*) |
 | **Where funds sit** | Shared Soroban **pool contract**, keyed by your stealth key | A one-time real Stellar **account** / claimable balance | — |
-| **New account created?** | **No** — no ~1 XLM reserve locked | **Yes** — ~1 XLM base reserve required | — |
+| **New account created?** | **No** (no ~1 XLM reserve locked) | **Yes** (~1 XLM base reserve required) | — |
 | **Assets** | Any SAC token (XLM, USDC, …) | Native XLM, or any classic/SAC asset (as a claimable balance) | — |
-| **Discovery** | Contract **announcements** + **view-tag** fast path (~2×) | **Horizon** paging for the ephemeral key in a `MemoHash`, then destination match (no view tag) — an optional **announcement indexer** makes cold scans fast | — |
-| **Claim** | Signature-verified `withdraw` — **no Stellar account needed** | Sign with the recovered stealth key, or a relayer-sponsored payout | — |
+| **Discovery** | Contract **announcements** + **view-tag** fast path (~2×) | **Horizon** paging for the ephemeral key in a `MemoHash`, then destination match (no view tag); an optional **announcement indexer** makes cold scans fast | — |
+| **Claim** | Signature-verified `withdraw`, **no Stellar account needed** | Sign with the recovered stealth key, or a relayer-sponsored payout | — |
 | **Cost profile** | Soroban invocation fee (~0.01 XLM) | ~1 XLM reserve (native) or ~1.5 XLM fronted (token) | — |
 
-**Rule of thumb:** use **`pool`** for the best privacy/cost trade-off and any token — you never need a funded account to claim. Use **`account`** for the simplest path that works with vanilla Horizon tooling.
+**Rule of thumb:** use **`pool`** for the best privacy/cost trade-off and any token; you never need a funded account to claim. Use **`account`** for the simplest path that works with vanilla Horizon tooling.
 
-## `pool` — the Soroban contract
+## `pool`: the Soroban contract
 
 Money is deposited into the pool contract and tracked under `Balance(stealth_pk, token)`. No Stellar account is ever created for the stealth key, so **no ~1 XLM MBR is locked**.
 
-The deposit and its announcement are written **atomically** — no deposit, no announcement — which makes announcement spam impossible.
+The deposit and its announcement are written **atomically** (no deposit, no announcement), which makes announcement spam impossible.
 
 **Claiming** calls `withdraw(...)` with an ed25519 signature over the [withdraw message](./03-architecture.md#the-withdraw-message). Because authorization is a signature rather than `require_auth`, *anyone* can submit the transaction for you. Two ways to pay the Soroban fee:
 
-1. **Direct** — you supply a fee-payer account and submit to RPC yourself.
-2. **Relayer fee-bump** — POST to the relayer's `/relay`; it fee-bumps the transaction. See [Relayer](./08-relayer.md).
+1. **Direct:** you supply a fee-payer account and submit to RPC yourself.
+2. **Relayer fee-bump:** POST to the relayer's `/relay`, and it fee-bumps the transaction. See [Relayer](./08-relayer.md).
 
-> **What relaying a pool withdraw hides — and what it doesn't.** A relayed pool withdraw hides **who pays the fee** (the relayer fee-bumps it), but **not who authored it**: the fee-payer account you pass is the inner transaction's on-chain `source_account`, which is **publicly visible**. So pool relay gives **fee-payer privacy, not inner-author unlinkability**. When author unlinkability matters, use a **throwaway funded fee-payer per withdraw**, or the account method's **sponsored-claim** flow (where the relayer itself is the inner source). Either way, relaying stays **trustless**: the withdraw signature binds the destination, amount, contract, and network, so a relayer cannot redirect or tamper with the withdrawal.
+> **What relaying a pool withdraw hides, and what it doesn't.** A relayed pool withdraw hides **who pays the fee** (the relayer fee-bumps it), but **not who authored it**: the fee-payer account you pass is the inner transaction's on-chain `source_account`, which is **publicly visible**. So pool relay gives **fee-payer privacy, not inner-author unlinkability**. When author unlinkability matters, use a **throwaway funded fee-payer per withdraw**, or the account method's **sponsored-claim** flow (where the relayer itself is the inner source). Either way, relaying stays **trustless**: the withdraw signature binds the destination, amount, contract, and network, so a relayer cannot redirect or tamper with the withdrawal.
 
 You may withdraw the **full balance or a partial amount** (`opts.amount`).
 
 **Requirements and caveats**
-- `contractId` is **required** whenever the pool method is enabled — there is no built-in default. A `testnet` client with pool enabled and no explicit `contractId` throws `ContractIdRequiredError`.
+- `contractId` is **required** whenever the pool method is enabled; there is no built-in default. A `testnet` client with pool enabled and no explicit `contractId` throws `ContractIdRequiredError`.
 - The withdrawal **destination must be an existing Stellar account** (it needs its own reserve to exist).
 - **Not a mixer.** The deposit and the withdraw both name the same `stealth_pk` on-chain, so the *flow* remains traceable; only the link to your identity is hidden.
 
-## `account` — a direct one-time account
+## `account`: a direct one-time account
 
 Money goes to a real, one-time Stellar account. The ephemeral key `R` travels in the transaction's 32-byte `MemoHash`; discovery derives the stealth address from `(k_view, R)` and looks for an operation whose destination matches. That destination match **is** the full DKSAP verification, so no view tag is needed.
 
 > **Muxed (`M...`) addresses are handled.** A muxed address shares one underlying `G...` account across many virtual sub-accounts. During scanning, every destination is normalized to its underlying ed25519 account id before comparison, so a payment addressed to the **muxed form** of your stealth address still matches the derived `G...` address and is discovered normally. This applies to `create_account` / `payment` destinations **and** to `create_claimable_balance` claimants. Plain `G...` inputs (and anything unparseable) pass through unchanged, so ordinary matching is unaffected.
 >
-> **For developers.** `normalizeDestination` in `packages/sdk/src/methods/account.ts`, via `MuxedAccount.fromAddress(address, '0').baseAccount().accountId()`. Note this normalizes for **matching only** — Shade never *derives* a muxed stealth address; the sender always creates a plain `G...` one-time account.
+> **For developers.** `normalizeDestination` in `packages/sdk/src/methods/account.ts`, via `MuxedAccount.fromAddress(address, '0').baseAccount().accountId()`. Note this normalizes for **matching only**: Shade never *derives* a muxed stealth address; the sender always creates a plain `G...` one-time account.
 
 ### Discovery and the announcement indexer
 
-Because there is no view tag, **every hash-memo transaction on the network is a discovery candidate** — an unassisted scan walks the global Horizon transaction feed client-side, which makes a cold scan for a fresh recipient take minutes (and grow with the network). The fix is the **announcement indexer** (`packages/indexer`): a standalone service that walks the feed server-side **once for everyone**, keeps only hash-memo candidates with their operations, and serves them as a compact feed the client filters **locally** — it deliberately answers no address- or R-keyed queries, so the operator cannot link keys to requests. Point the SDK at one with `ClientConfig.indexerUrl`, or the CLI with `--indexer` / `SHADE_INDEXER`.
+Because there is no view tag, **every hash-memo transaction on the network is a discovery candidate**. An unassisted scan walks the global Horizon transaction feed client-side, which makes a cold scan for a fresh recipient take minutes (and grow with the network). The fix is the **announcement indexer** (`packages/indexer`): a standalone service that walks the feed server-side **once for everyone**, keeps only hash-memo candidates with their operations, and serves them as a compact feed the client filters **locally**. It deliberately answers no address- or R-keyed queries, so the operator cannot link keys to requests. Point the SDK at one with `ClientConfig.indexerUrl`, or the CLI with `--indexer` / `SHADE_INDEXER`.
 
-**Trust model:** the indexer can *hide* payments but cannot *fabricate* them — the client derives the stealth address from `R` itself and everything is re-verified on-chain at claim. Horizon remains the source of truth: the scan falls back to the pure Horizon walk automatically when the indexer is unreachable, unhealthy, or faults mid-scan, and it **always finishes with a Horizon tail** so indexer lag cannot hide a payment.
+**Trust model:** the indexer can *hide* payments but cannot *fabricate* them. The client derives the stealth address from `R` itself, and everything is re-verified on-chain at claim. Horizon remains the source of truth: the scan falls back to the pure Horizon walk automatically when the indexer is unreachable, unhealthy, or faults mid-scan, and it **always finishes with a Horizon tail** so indexer lag cannot hide a payment.
 
-**One caveat to know:** with an indexer configured, a **cold** scan (no saved cursor) fast-starts at the indexer's coverage start rather than genesis. A payment older than the indexer's coverage is found only by the exhaustive walk — CLI `--full-rescan`, SDK `ScanOpts.exhaustive`. See [Architecture → The announcement indexer](./03-architecture.md#the-announcement-indexer) for endpoints, configuration, and running one.
+**One caveat to know:** with an indexer configured, a **cold** scan (no saved cursor) fast-starts at the indexer's coverage start rather than genesis. A payment older than the indexer's coverage is found only by the exhaustive walk: CLI `--full-rescan`, SDK `ScanOpts.exhaustive`. See [Architecture → The announcement indexer](./03-architecture.md#the-announcement-indexer) for endpoints, configuration, and running one.
 
 ### Native XLM
 
-Sent via `CreateAccount` (falling back to `Payment` if the account already exists). The amount **must be strictly greater than 1 XLM** — below that the account cannot meet its base reserve — otherwise you get `MinimumAmountError`.
+Sent via `CreateAccount` (falling back to `Payment` if the account already exists). The amount **must be strictly greater than 1 XLM**, since below that the account cannot meet its base reserve. Otherwise you get `MinimumAmountError`.
 
 Claiming:
-- **Full sweep** (default, `merge: true`) — `AccountMerge` delivers the entire balance including the reserve to your destination.
-- **Partial** (`merge: false`) — a `Payment` that leaves the account open. The account must retain **2× the base reserve (1.0 XLM)** plus the fee; an over-large request throws `ClaimAmountError` with the maximum named.
+- **Full sweep** (default, `merge: true`): `AccountMerge` delivers the entire balance including the reserve to your destination.
+- **Partial** (`merge: false`): a `Payment` that leaves the account open. The account must retain **2× the base reserve (1.0 XLM)** plus the fee; an over-large request throws `ClaimAmountError` with the maximum named.
 
 Either can be relayer fee-bumped.
 
@@ -84,8 +84,8 @@ One transaction with two operations: `CreateAccount(stealth, 1.5001 XLM)` to ope
 The 0.5 XLM claimable-balance reserve returns to the **sender** when the balance is claimed.
 
 Claiming a token has two paths:
-1. **Self-funded** — the stealth account exists and can pay: `ChangeTrust` → `ClaimClaimableBalance` → (optional full exit: `Payment` → `ChangeTrust(limit 0)` → `AccountMerge`).
-2. **Sponsored** (`sponsored: true`, or automatically when the account stub is missing) — the relayer fronts the reserves under a **sponsorship sandwich** (a Stellar pattern where operations are wrapped between `BeginSponsoringFutureReserves` and `EndSponsoringFutureReserves`, so the sponsor pays the reserves instead of the account itself) and co-signs, so you can cash out to a **fresh, unfunded address**. See [Relayer](./08-relayer.md).
+1. **Self-funded** (the stealth account exists and can pay): `ChangeTrust` → `ClaimClaimableBalance` → (optional full exit: `Payment` → `ChangeTrust(limit 0)` → `AccountMerge`).
+2. **Sponsored** (`sponsored: true`, or automatically when the account stub is missing): the relayer fronts the reserves under a **sponsorship sandwich** (a Stellar pattern where operations are wrapped between `BeginSponsoringFutureReserves` and `EndSponsoringFutureReserves`, so the sponsor pays the reserves instead of the account itself) and co-signs, so you can cash out to a **fresh, unfunded address**. See [Relayer](./08-relayer.md).
 
 **Requirement:** the destination must already **trust the asset**, or you get `DestinationTrustlineError` before anything is submitted.
 
@@ -97,11 +97,9 @@ Claiming a token has two paths:
 
 There is deliberately **no implicit default**: every `send()` must pass a method (or `'auto'`), or it throws `MethodRequiredError`. The privacy trade-off should always be a conscious choice.
 
-## `spp` — reserved, not implemented
+## `spp`: reserved, not implemented
 
-`spp` is a **reserved enum slot** for a possible future integration with a *separate, external* Stellar private-payments effort. It implements the full adapter surface so an application could opt in later with zero API changes — but **every method throws `MethodNotAvailableError`** today.
-
-**Shade does not build `spp`, and it is not on the roadmap.** It exists only as a hook.
+`spp` is a **reserved enum slot** for a possible future integration with a separate, external private-payments effort. It implements the full adapter surface so an application could opt in later with zero API changes by adding `'spp'` to `ClientConfig.methods`, but **every method throws `MethodNotAvailableError`** for now.
 
 ## Choosing
 
@@ -117,7 +115,7 @@ There is deliberately **no implicit default**: every `send()` must pass a method
 
 ## Next steps
 
-- [Core Concepts](./02-core-concepts.md) — what a view tag and announcement actually are
-- [Architecture](./03-architecture.md) — the data flow behind each method
-- [SDK Reference](./07-sdk-reference.md) — `SendOpts` / `ClaimOpts` for each method
-- [Relayer](./08-relayer.md) — fee-bumping and sponsored claims
+- [Core Concepts](./02-core-concepts.md): what a view tag and announcement actually are
+- [Architecture](./03-architecture.md): the data flow behind each method
+- [SDK Reference](./07-sdk-reference.md): `SendOpts` / `ClaimOpts` for each method
+- [Relayer](./08-relayer.md): fee-bumping and sponsored claims
