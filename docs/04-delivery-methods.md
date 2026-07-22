@@ -9,21 +9,20 @@ The same meta-address works with more than one "delivery method," the mechanism 
 
 ---
 
-## The three slots
+## The two methods
 
-`DeliveryMethod = 'pool' | 'account' | 'spp'`
+`DeliveryMethod = 'pool' | 'account'`
 
-| | **pool** | **account** | **spp** |
-|---|---|---|---|
-| **Status** | ✅ Implemented | ✅ Implemented | ⏳ Reserved slot (*not built*) |
-| **Where funds sit** | Shared Soroban **pool contract**, keyed by your stealth key | A one-time real Stellar **account** / claimable balance | — |
-| **New account created?** | **No** (no ~1 XLM reserve locked) | **Yes** (~1 XLM base reserve required) | — |
-| **Assets** | Any SAC token (XLM, USDC, …) | Native XLM, or any classic/SAC asset (as a claimable balance) | — |
-| **Discovery** | Contract **announcements** + **view-tag** fast path (~2×) | **Horizon** paging for the ephemeral key in a `MemoHash`, then destination match (no view tag); an optional **announcement indexer** makes cold scans fast | — |
-| **Claim** | Signature-verified `withdraw`, **no Stellar account needed** | Sign with the recovered stealth key, or a relayer-sponsored payout | — |
-| **Cost profile** | Soroban invocation fee only (no reserve) | 1 XLM reserve (native, reclaimed on sweep) or 1.5001 XLM fronted (token, 0.5 returns to sender) | — |
+| | **pool** | **account** |
+|---|---|---|
+| **Where funds sit** | Shared Soroban **pool contract**, keyed by your stealth key | A one-time real Stellar **account** / claimable balance |
+| **New account created?** | **No** (no ~1 XLM reserve locked) | **Yes** (~1 XLM base reserve required) |
+| **Assets** | Any SAC token (XLM, USDC, …) | Native XLM, or any classic/SAC asset (as a claimable balance) |
+| **Discovery** | Contract **announcements** + **view-tag** fast path (~2×) | **Horizon** paging for the ephemeral key in a `MemoHash`, then destination match (no view tag); an optional **announcement indexer** makes cold scans fast |
+| **Claim** | Signature-verified `withdraw`, **no Stellar account needed** | Sign with the recovered stealth key, or a relayer-sponsored payout |
+| **Cost profile** | Soroban invocation fee only (no reserve) | 1 XLM reserve (native, reclaimed on sweep) or 1.5001 XLM fronted (token, 0.5 returns to sender) |
 
-**Rule of thumb:** use **`pool`** for the best privacy/cost trade-off and any token; you never need a funded account to claim. Use **`account`** for the simplest path that works with vanilla Horizon tooling.
+**Rule of thumb:** both methods give you the same identity privacy, so choose on cost and tooling. For native XLM there's little between them — the account-method reserve is reclaimed when you sweep. `pool` pulls ahead on **tokens**: an `account` token send makes the sender front ~1.5 XLM (0.5 comes back on claim), while `pool` costs only the Soroban fee. The trade-off is that `pool` is the easier method to undo your own privacy with — a relayed pool withdraw hides only the fee-payer, so use a throwaway fee-payer per withdraw (or the `account` sponsored claim). `account` is the simplest path with vanilla Horizon tooling.
 
 ## `pool`: the Soroban contract
 
@@ -91,23 +90,18 @@ Claiming a token has two paths:
 
 ## `auto` — letting the client choose
 
-`method: 'auto'` is not a fourth method; it resolves to a real one at call time:
+`method: 'auto'` is not a third method; it resolves to a real one at call time:
 
 > native asset **AND** amount > 1 **AND** `'account'` enabled → **`account`**; otherwise → **`pool`**.
 
 There is deliberately **no implicit default**: every `send()` must pass a method (or `'auto'`), or it throws `MethodRequiredError`. The privacy trade-off should always be a conscious choice.
 
-## `spp`: reserved, not implemented
-
-`spp` is a **reserved enum slot** for a possible future integration with a separate, external private-payments effort. It implements the full adapter surface so an application could opt in later with zero API changes by adding `'spp'` to `ClientConfig.methods`, but **every method throws `MethodNotAvailableError`** for now.
-
 ## Choosing
 
 | If you want… | Use |
 |---|---|
-| Best privacy/cost trade-off; any SAC token | `pool` |
+| To send a token without the sender fronting ~1.5 XLM | `pool` |
 | To claim without ever having a funded account | `pool` (fee-bumped) or `account` + sponsored claim |
-| To avoid locking ~1 XLM per payment | `pool` |
 | Compatibility with plain Horizon tooling | `account` |
 | Simple XLM transfer with a familiar on-chain shape | `account` |
 

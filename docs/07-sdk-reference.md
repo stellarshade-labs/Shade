@@ -139,7 +139,7 @@ withdraw(
 ## Types (`stellar-shade`)
 
 ```typescript
-type DeliveryMethod = 'pool' | 'account' | 'spp';
+type DeliveryMethod = 'pool' | 'account';
 
 interface StealthKeys {
   metaAddress: string;   // shade:stellar:... (share publicly)
@@ -176,7 +176,7 @@ interface Balance {
 interface ClaimReceipt { txHash: string; amount: number; method: DeliveryMethod; }
 interface WithdrawReceipt { txHash: string; amount: number; }
 
-interface ScanCursor { pool?: string; account?: string; spp?: string; }
+interface ScanCursor { pool?: string; account?: string; }
 interface ScanOpts   {
   methods?: DeliveryMethod[];
   cursor?: ScanCursor;
@@ -421,7 +421,7 @@ try {
 |---|---|
 | `MethodRequiredError` | `send()` called without `opts.method` |
 | `MethodNotEnabledError` | Requested method isn't in `config.methods` |
-| `MethodNotAvailableError` | Method exists but can't service the request (e.g. `spp`) |
+| `MethodNotAvailableError` | Method exists but can't service the request |
 | `MinimumAmountError` | Account-method XLM send ≤ 1 XLM |
 | `ClaimAmountError` | Partial account claim exceeds the max (carries `.max`) |
 | `InvalidAmountError` | Amount isn't a positive finite number |
@@ -452,7 +452,7 @@ try {
 import { parseStroops, numberToStroops, formatStroops,
          labelForToken, resolveTokenAddress,
          prepareWithRestore, HorizonClient,
-         PoolAdapter, AccountAdapter, SppAdapter } from 'stellar-shade';
+         PoolAdapter, AccountAdapter } from 'stellar-shade';
 ```
 
 | Helper | Purpose |
@@ -462,7 +462,7 @@ import { parseStroops, numberToStroops, formatStroops,
 | `labelForToken(address, passphrase)` | Native SAC address → `'XLM'`; otherwise unchanged |
 | `prepareWithRestore(...)` | Restore-aware Soroban prepare (see [Architecture](./03-architecture.md)) |
 | `HorizonClient` | Injectable-fetch Horizon wrapper (testable offline) |
-| `PoolAdapter` / `AccountAdapter` / `SppAdapter` | The delivery adapters, if you need them directly |
+| `PoolAdapter` / `AccountAdapter` | The delivery adapters, if you need them directly |
 
 ---
 

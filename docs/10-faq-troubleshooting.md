@@ -45,10 +45,6 @@ For a token claim, yes: use a relayer **sponsored claim** (`--sponsored`), where
 
 **No.** The project has not had an external cryptographic audit. See [Security](./09-security.md).
 
-### What is `spp`?
-
-A reserved enum slot for a possible future integration with a separate, external private-payments effort. It is **not implemented** and not on Shade's roadmap: every call throws `MethodNotAvailableError`.
-
 ---
 
 ## Troubleshooting by error
@@ -72,7 +68,7 @@ The method isn't in `config.methods`. Add it: `methods: ['pool', 'account']`.
 
 ### `MethodNotAvailableError`
 
-Either you asked for `spp` (never implemented), or you called the deprecated `withdraw()` without the `pool` method enabled.
+You called the deprecated `withdraw()` without the `pool` method enabled.
 
 ### `MinimumAmountError`
 

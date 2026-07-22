@@ -85,7 +85,6 @@ Two hard rules:
 ### Protocol / product
 
 - **Destination account must exist.** A pool withdrawal needs an active Stellar destination (its own ~1 XLM reserve). Fund it via an exchange withdrawal for best privacy, or use a relayer-sponsored claim.
-- **`spp` is not implemented.** It is a reserved slot that always throws.
 - **No external audit.**
 
 ### Implementation gaps worth knowing
