@@ -21,7 +21,7 @@ The same meta-address works with more than one "delivery method," the mechanism 
 | **Assets** | Any SAC token (XLM, USDC, …) | Native XLM, or any classic/SAC asset (as a claimable balance) | — |
 | **Discovery** | Contract **announcements** + **view-tag** fast path (~2×) | **Horizon** paging for the ephemeral key in a `MemoHash`, then destination match (no view tag); an optional **announcement indexer** makes cold scans fast | — |
 | **Claim** | Signature-verified `withdraw`, **no Stellar account needed** | Sign with the recovered stealth key, or a relayer-sponsored payout | — |
-| **Cost profile** | Soroban invocation fee (~0.01 XLM) | ~1 XLM reserve (native) or ~1.5 XLM fronted (token) | — |
+| **Cost profile** | Soroban invocation fee only (no reserve) | 1 XLM reserve (native, reclaimed on sweep) or 1.5001 XLM fronted (token, 0.5 returns to sender) | — |
 
 **Rule of thumb:** use **`pool`** for the best privacy/cost trade-off and any token; you never need a funded account to claim. Use **`account`** for the simplest path that works with vanilla Horizon tooling.
 
@@ -85,7 +85,7 @@ The 0.5 XLM claimable-balance reserve returns to the **sender** when the balance
 
 Claiming a token has two paths:
 1. **Self-funded** (the stealth account exists and can pay): `ChangeTrust` → `ClaimClaimableBalance` → (optional full exit: `Payment` → `ChangeTrust(limit 0)` → `AccountMerge`).
-2. **Sponsored** (`sponsored: true`, or automatically when the account stub is missing): the relayer fronts the reserves under a **sponsorship sandwich** (a Stellar pattern where operations are wrapped between `BeginSponsoringFutureReserves` and `EndSponsoringFutureReserves`, so the sponsor pays the reserves instead of the account itself) and co-signs, so you can cash out to a **fresh, unfunded address**. See [Relayer](./08-relayer.md).
+2. **Sponsored** (`sponsored: true`, or automatically when the account stub is missing): the relayer fronts the reserves under a **sponsorship sandwich** (`BeginSponsoringFutureReserves` … `EndSponsoringFutureReserves`) and co-signs, so you can cash out to a **fresh, unfunded address**. See [Relayer](./08-relayer.md).
 
 **Requirement:** the destination must already **trust the asset**, or you get `DestinationTrustlineError` before anything is submitted.
 

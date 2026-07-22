@@ -48,7 +48,7 @@ For every payment, the sender picks a fresh random scalar `r` and publishes `R =
 - Sender: `S = r · K_view`
 - Receiver: `S = k_view · R`
 
-This is **ECDH** (Elliptic Curve Diffie-Hellman), the standard trick that lets two parties arrive at the same secret without ever transmitting it. `S` is what makes the stealth address derivable by you and nobody else.
+This is **ECDH** (Elliptic Curve Diffie-Hellman): both parties arrive at the same `S` without it ever crossing the wire. `S` is what makes the stealth address derivable by you and nobody else.
 
 ## View tag
 
