@@ -13,7 +13,7 @@ What Shade protects, what it explicitly does not, and what you must not rely on 
 
 The protocol and this implementation have **not undergone an external cryptographic audit**. An audit is on the roadmap. Treat the library as production-track but pre-audit, and **do not handle mainnet value**.
 
-Testnet is the current test network, and there is no CI pipeline. The **pool** method has been validated end-to-end on Stellar **testnet** (2026-07-17) with **native XLM**: deposit → scan → balance → direct withdraw → relayer fee-bumped withdraw. The pool contract is **asset-agnostic**: it calls the standard SAC token interface (`token::Client`) with the token address as a parameter, so a classic asset such as USDC takes the identical path, differing only in that address. No testnet contract id is pinned (testnet resets quarterly, so deploy your own). The **account** method's cold-scan bottleneck, where its scan (and `balance`) walk the global Horizon transaction feed, is addressed by the [announcement indexer](./03-architecture.md#the-announcement-indexer). It is covered by unit and integration tests, and by design every scan ends with a Horizon tail, so an unreachable or degraded indexer falls back to the plain walk. But the 2026-07-17 testnet smoke did **not** exercise account-method discovery: treat the indexer as implemented and test-covered, **not** testnet-validated. Without an indexer, a cold account scan remains impractical at public-network scale.
+The **pool** method has been exercised end-to-end on Stellar **testnet** with **native XLM**. The pool contract is **asset-agnostic**: it calls the standard SAC token interface (`token::Client`) with the token address as a parameter, so a classic asset such as USDC takes the identical path, differing only in that address. No testnet contract id is pinned (testnet resets quarterly, so deploy your own). The **account** method's cold-scan bottleneck, where its scan (and `balance`) walk the global Horizon transaction feed, is addressed by the [announcement indexer](./03-architecture.md#the-announcement-indexer); by design every scan ends with a Horizon tail, so an unreachable or degraded indexer falls back to the plain walk. Without an indexer, a cold account scan remains impractical at public-network scale.
 
 ## Threat model
 
@@ -113,7 +113,7 @@ This project is pre-audit and provided as-is.
 
 ## Next steps
 
-- [Core Concepts](./02-core-concepts.md) — the cryptography these guarantees rest on
-- [Architecture](./03-architecture.md) — where each control is implemented
-- [Relayer](./08-relayer.md) — operational hardening
-- [FAQ & Troubleshooting](./10-faq-troubleshooting.md) — what specific errors mean
+- [Core Concepts](./02-core-concepts.md): the cryptography these guarantees rest on
+- [Architecture](./03-architecture.md): where each control is implemented
+- [Relayer](./08-relayer.md): operational hardening
+- [FAQ & Troubleshooting](./10-faq-troubleshooting.md): what specific errors mean

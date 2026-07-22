@@ -57,8 +57,6 @@ stellar contract deploy \
 echo "C..." > ~/.stealth/testnet-contract
 ```
 
-For the full worked smoke flow (deposit, scan, balance, direct withdraw, relayer fee-bumped withdraw, with native XLM), see [RESULTS-testnet-smoke](./RESULTS-testnet-smoke.md).
-
 ## Your first commands
 
 ```bash
@@ -67,7 +65,7 @@ For the full worked smoke flow (deposit, scan, balance, direct withdraw, relayer
 shade keygen --mnemonic
 # prints your meta-address: shade:stellar:...
 
-# 2. Send. A delivery method is REQUIRED — there is no implicit default.
+# 2. Send. A delivery method is REQUIRED. There is no implicit default.
 #    Supply the secret via $SHADE_FROM_SECRET or the prompt, never a flag.
 export SHADE_FROM_SECRET=S...
 shade send <meta-address> 100 --method pool --network testnet
@@ -144,7 +142,7 @@ cd contracts && cargo test   # Rust contract tests only
 
 `testnet` is the only accepted network today. Mainnet ("public") is a forward-looking, post-audit addition.
 
-> **Status note.** The **pool** method has been validated end-to-end on Stellar **testnet** (2026-07-17) with **native XLM**: deposit, scan, balance, direct withdraw, and relayer fee-bumped withdraw. The pool contract is **asset-agnostic**. It calls the standard SAC token interface (`token::Client`) with the token address as a parameter, so a classic asset such as USDC takes the identical path, differing only in that address. No testnet contract id is pinned, because testnet **resets quarterly**, so deploy your own and save it as shown above. The **account** method's cold discovery is served by the **announcement indexer**. It is covered by unit and integration tests, and by design every scan ends with a Horizon tail, so an unreachable or degraded indexer falls back to the plain walk. The 2026-07-17 testnet smoke did **not** exercise account-method discovery, though, so treat the indexer as implemented and test-covered, **not** testnet-validated. Without an indexer configured, a cold account scan still walks the global Horizon transaction feed, which is impractical for a fresh recipient on a busy network. There is no CI. Mainnet is **out of scope** until an external audit lands. See [Security](./09-security.md).
+> **Status note.** The **pool** method works with native XLM and is asset-agnostic: it calls the standard SAC token interface (`token::Client`) with the token address as a parameter, so a classic asset such as USDC takes the identical path with a different address. No testnet contract id is pinned, because testnet resets, so deploy your own and save it. The **account** method's cold discovery is served by the **announcement indexer**; every scan ends with a Horizon tail, so an unreachable indexer falls back to the plain walk. Without an indexer configured, a cold account scan walks the global Horizon transaction feed, which is impractical for a fresh recipient on a busy network. Mainnet is **out of scope** until an external audit lands. See [Security](./09-security.md).
 
 ---
 

@@ -183,7 +183,7 @@ Your signer is non-deterministic. Wallet-derived keys require an RFC 8032 determ
 
 ## Next steps
 
-- [Getting Started](./05-getting-started.md) — install and first run
-- [CLI Reference](./06-cli-reference.md) — every flag
-- [SDK Reference](./07-sdk-reference.md#typed-errors) — the full error table
-- [Security](./09-security.md) — limits and assumptions
+- [Getting Started](./05-getting-started.md): install and first run
+- [CLI Reference](./06-cli-reference.md): every flag
+- [SDK Reference](./07-sdk-reference.md#typed-errors): the full error table
+- [Security](./09-security.md): limits and assumptions

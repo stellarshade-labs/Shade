@@ -22,9 +22,9 @@ The same meta-address works with more than one "delivery method," the mechanism 
 | **Claim** | Signature-verified `withdraw`, **no Stellar account needed** | Sign with the recovered stealth key, or a relayer-sponsored payout |
 | **Cost profile** | Soroban invocation fee only (no reserve) | 1 XLM reserve (native, reclaimed on sweep) or 1.5001 XLM fronted (token, 0.5 returns to sender) |
 
-**Rule of thumb:** both methods give you the same identity privacy, so choose on cost and tooling. For native XLM there's little between them — the account-method reserve is reclaimed when you sweep. `pool` pulls ahead on **tokens**: an `account` token send makes the sender front ~1.5 XLM (0.5 comes back on claim), while `pool` costs only the Soroban fee. The trade-off is that `pool` is the easier method to undo your own privacy with — a relayed pool withdraw hides only the fee-payer, so use a throwaway fee-payer per withdraw (or the `account` sponsored claim). `account` is the simplest path with vanilla Horizon tooling.
+**Rule of thumb:** both methods give you the same identity privacy, so choose on cost and tooling. For native XLM there's little between them, since the account-method reserve is reclaimed when you sweep. `pool` pulls ahead on tokens: an `account` token send makes the sender front ~1.5 XLM (0.5 comes back on claim), while `pool` costs only the Soroban fee. But `pool` is also the easier method to undo your own privacy with: a relayed pool withdraw hides only the fee-payer, so use a throwaway fee-payer per withdraw (or the `account` sponsored claim). `account` is the simplest path with vanilla Horizon tooling.
 
-## `pool`: the Soroban contract
+## Pool — The Soroban contract
 
 Money is deposited into the pool contract and tracked under `Balance(stealth_pk, token)`. No Stellar account is ever created for the stealth key, so **no ~1 XLM MBR is locked**.
 
@@ -44,7 +44,7 @@ You may withdraw the **full balance or a partial amount** (`opts.amount`).
 - The withdrawal **destination must be an existing Stellar account** (it needs its own reserve to exist).
 - **Not a mixer.** The deposit and the withdraw both name the same `stealth_pk` on-chain, so the *flow* remains traceable; only the link to your identity is hidden.
 
-## `account`: a direct one-time account
+## Account — A direct one-time account
 
 Money goes to a real, one-time Stellar account. The ephemeral key `R` travels in the transaction's 32-byte `MemoHash`; discovery derives the stealth address from `(k_view, R)` and looks for an operation whose destination matches. That destination match **is** the full DKSAP verification, so no view tag is needed.
 
@@ -88,7 +88,7 @@ Claiming a token has two paths:
 
 **Requirement:** the destination must already **trust the asset**, or you get `DestinationTrustlineError` before anything is submitted.
 
-## `auto` — letting the client choose
+## Auto — Letting the client choose
 
 `method: 'auto'` is not a third method; it resolves to a real one at call time:
 
