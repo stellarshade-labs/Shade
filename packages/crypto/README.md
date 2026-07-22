@@ -3,7 +3,7 @@
 Pure TypeScript implementation of stealth addresses for Stellar using DKSAP (Dual-Key Stealth Address Protocol) on ed25519.
 
 This is the SDK core: the cryptographic primitives the rest of the monorepo
-builds on. It has **zero dependency on `@stellar/stellar-sdk`** —
+builds on. It has **zero dependency on `@stellar/stellar-sdk`**:
 all elliptic-curve math runs through [`@noble/curves`](https://github.com/paulmillr/noble-curves)
 and [`@noble/hashes`](https://github.com/paulmillr/noble-hashes), which are the
 same audited primitives used across the Stellar ecosystem. Correctness, a stable
@@ -11,13 +11,13 @@ public API, and a clearly-scoped security model are the priorities here.
 
 > **Security status:** the protocol and this implementation have **not yet
 > undergone external cryptographic audit**. Treat the library as production-track
-> but pre-audit — see [Roadmap & Audit Status](#roadmap--audit-status) before
+> but pre-audit; see [Roadmap & Audit Status](#roadmap--audit-status) before
 > handling mainnet value.
 
 ## Installation
 
 **This package is not published to npm.** It is a workspace-internal package,
-bundled into the published SDK at build time — so installing the SDK gives you
+bundled into the published SDK at build time, so installing the SDK gives you
 this code without a second dependency:
 
 ```bash
@@ -270,7 +270,7 @@ verification with `.publicKey()`, and clear it with `.zeroize()` when done
 > value is a raw ed25519 SCALAR, **not** an ed25519 seed. Seed-based Keypair APIs
 > (`Keypair.fromRawEd25519Seed()`, `ed25519.sign()`, wallet imports) HASH their
 > input into a *different* signing scalar whose public key does not match the
-> stealth address — the contract rejects the signature and the funds become
+> stealth address; the contract rejects the signature and the funds become
 > permanently unwithdrawable. Because `StealthScalar` is **not** a `Uint8Array`,
 > `Keypair.fromRawEd25519Seed(key)` is now a **compile error** rather than silent
 > fund loss.
@@ -300,7 +300,7 @@ deterministically from a signature produced by their existing Stellar wallet.
 The user signs one fixed message; the resulting 64-byte ed25519 signature seeds
 the spend and view keypairs. Because RFC 8032 ed25519 signatures are
 deterministic, the same wallet signing the same message always re-derives the
-same stealth keys — no extra secret to back up.
+same stealth keys, with no extra secret to back up.
 
 #### `buildKeyDerivationMessage(opts?: { network?: string; appId?: string }): string`
 
@@ -335,7 +335,7 @@ derivation in `hd.ts`.
 **Parameters:**
 - `signature`: A 64-byte ed25519 signature over the derivation message
 
-**Returns:** `StealthKeys` — same shape as `generateMetaAddress()`
+**Returns:** `StealthKeys`, the same shape as `generateMetaAddress()`
 
 **Throws:** `InvalidScalar` if the signature is not exactly 64 bytes or is all zeros
 
@@ -402,30 +402,33 @@ Convert Stellar address to ed25519 public key.
 
 **Returns:** 32-byte ed25519 public key
 
-**Throws:** `InvalidStellarAddress` if invalid format
+**Throws:** `Error` if the address format, version byte, or checksum is invalid
 
 ### Advanced Features
 
-#### `proveOwnership(stealthPrivKey: Uint8Array, message: Uint8Array): ProofOfOwnership`
+#### `proveOwnership(stealthPrivKey: StealthScalar | Uint8Array, challenge: Uint8Array): Uint8Array`
 
-Create proof of stealth address ownership.
-
-**Parameters:**
-- `stealthPrivKey`: Stealth private key
-- `message`: Message to sign (typically a challenge)
-
-**Returns:** Proof containing public key and signature
-
-#### `verifyOwnership(proof: ProofOfOwnership, message: Uint8Array, expectedAddress: string): boolean`
-
-Verify proof of stealth address ownership.
+Prove ownership of a stealth address by signing a challenge with the recovered
+stealth key. Uses raw-scalar ed25519 signing so the signature verifies against
+the stealth public key (`scalar × G`).
 
 **Parameters:**
-- `proof`: Ownership proof to verify
-- `message`: Original message that was signed
-- `expectedAddress`: Expected Stellar address
+- `stealthPrivKey`: The recovered stealth key (`StealthScalar`; passing raw 32-byte scalar bytes is deprecated)
+- `challenge`: The challenge to sign (typically a nonce or timestamp)
 
-**Returns:** `true` if proof is valid
+**Returns:** The 64-byte ed25519 signature
+
+#### `verifyOwnership(stealthPubKey: Uint8Array, challenge: Uint8Array, signature: Uint8Array): boolean`
+
+Verify a stealth-address ownership proof: a standard ed25519 signature checked
+against the stealth public key.
+
+**Parameters:**
+- `stealthPubKey`: The 32-byte stealth public key (`scalar × G`)
+- `challenge`: The challenge that was signed
+- `signature`: The 64-byte signature to verify
+
+**Returns:** `true` if the signature is valid
 
 ## Security Considerations
 
@@ -513,7 +516,7 @@ and documented in the [API Reference](#api-reference) above.
   still refine the API. The DKSAP math and the v1 derivation/encoding formats
   are considered stable; ancillary helpers may evolve.
 - **0.1.0 (breaking).** `recoverStealthPrivateKey` now returns a `StealthScalar`
-  wrapper instead of a raw `Uint8Array` — sign with `.sign()`, verify with
+  wrapper instead of a raw `Uint8Array`: sign with `.sign()`, verify with
   `.publicKey()`, clear with `.zeroize()`. This is a deliberate breaking change
   (A5): `Keypair.fromRawEd25519Seed(key)` no longer type-checks, removing a
   fund-loss footgun. Use the deprecated `recoverStealthPrivateKeyBytes()` if you
@@ -521,7 +524,7 @@ and documented in the [API Reference](#api-reference) above.
 
 ## Roadmap & Audit Status
 
-The items below are explicit, tracked limitations — not accepted shortcuts. They
+The items below are explicit, tracked limitations, not accepted shortcuts. They
 represent the gap between "production-track" and "audited for mainnet value."
 
 - **External cryptographic audit (pending).** The DKSAP construction here follows
@@ -536,10 +539,8 @@ represent the gap between "production-track" and "audited for mainnet value."
   wrapper with a first-class `.zeroize()` method; call it when done. Extending
   the same opt-in zeroization to the remaining raw-`Uint8Array` key paths is a
   roadmap item.
-- **Stellar Private Payments (`spp`).** The ZK-shielded delivery method is a
-  reserved, forward-compatible slot and is not yet implemented.
 
-Where this document notes a limitation, it is a roadmap commitment to close it —
+Where this document notes a limitation, it is a roadmap commitment to close it,
 not a permission to ship it unfixed.
 
 ## Links
@@ -550,4 +551,4 @@ not a permission to ship it unfixed.
 
 ## License
 
-Apache License 2.0 — see the repository root [LICENSE](../../LICENSE).
+Apache License 2.0. See the repository root [LICENSE](../../LICENSE).

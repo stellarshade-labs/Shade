@@ -1,5 +1,7 @@
 # stellar-shade
 
+[![npm](https://img.shields.io/npm/v/stellar-shade.svg)](https://www.npmjs.com/package/stellar-shade)
+
 High-level client for **stealth payments on Stellar** (DKSAP on ed25519). Wraps the
 `@shade/crypto` math and all Horizon/Soroban I/O behind a small `StealthClient`
 with pluggable **delivery methods**. You never touch DKSAP math or transaction
@@ -48,25 +50,28 @@ const result = await client.claim(payments[0], bobPublicKey, {
 });
 ```
 
-## Delivery methods: pick per privacy / cost trade-off
+## Delivery methods: same privacy, pick on cost and tooling
 
-`DeliveryMethod = 'pool' | 'account' | 'spp'`. All three use the same recipient
-meta-address; they differ in where funds sit, discovery, and claim.
+`DeliveryMethod = 'pool' | 'account'`. Both use the same recipient meta-address
+and give the same identity privacy; they differ in where funds sit, discovery,
+and claim.
 
-| | `pool` | `account` | `spp` |
-| --- | --- | --- | --- |
-| **Status** | Implemented | Implemented | Reserved (`MethodNotAvailableError`) |
-| **Where funds sit** | Soroban pool contract, keyed by `(stealth_pk, token)` | One-time stealth account: native XLM as balance; tokens in a `ClaimableBalance` | ZK shielded pool (future) |
-| **Sender↔recipient link** | Strong privacy: only touches the shared pool | Weaker: a `CreateAccount`/`CreateClaimableBalance` edge from sender to the one-time account | Strongest (planned) |
-| **Amount** | On-chain per announcement | On-chain (starting balance / CB amount) | Hidden (planned) |
-| **Minimum** | any `> 0` | native strictly `> 1 XLM`; token sender fronts ~1.5 XLM reserves (0.5 returns on claim) | N/A |
-| **Assets** | any SAC token | native XLM or any SAC/classic asset | N/A |
-| **Discovery** | contract announcements + view tag (~2x fast-scan) | `MemoHash(R)` on the funding tx via Horizon paging; destination match IS the verification | reserved |
-| **Relayer** | optional fee-bump so the recipient needs no funded account | optional fee-bump / sponsored claim | N/A |
+| | `pool` | `account` |
+| --- | --- | --- |
+| **Where funds sit** | Soroban pool contract, keyed by `(stealth_pk, token)` | One-time stealth account: native XLM as balance; tokens in a `ClaimableBalance` |
+| **Privacy** | Identity privacy: the stealth key is unlinkable to your meta-address without the view key | Same identity privacy |
+| **Amount** | On-chain per announcement | On-chain (starting balance / CB amount) |
+| **Minimum** | any `> 0` | native strictly `> 1 XLM`; token sender fronts ~1.5 XLM reserves (0.5 returns on claim) |
+| **Assets** | any SAC token | native XLM or any SAC/classic asset |
+| **Discovery** | contract announcements + view tag (~2x fast-scan) | `MemoHash(R)` on the funding tx via Horizon paging; destination match IS the verification |
+| **Relayer** | optional fee-bump so the recipient needs no funded account | optional fee-bump / sponsored claim |
 
-Rule of thumb: **`pool`** for best privacy + multi-token; **`account`** for the
-simplest path that works with vanilla Horizon tooling. **`spp`** is a
-forward-compatible slot (opt in later with zero API changes).
+Rule of thumb: privacy is the same either way, so pick on cost and tooling.
+**`pool`** wins on tokens (an `account` token send makes the sender front ~1.5
+XLM) and never needs a funded account to claim, but a relayed pool withdraw hides
+only the fee-payer, so it's the easier one to deanonymize yourself with (use a
+throwaway fee-payer). **`account`** is the simplest path that works with vanilla
+Horizon tooling.
 
 ## Errors are typed
 
@@ -128,7 +133,7 @@ await client.send(metaAddress, 100, senderGAddress, {
   signTransaction,
 });
 
-// A pool claim needs a fee payer — supply its G-address (never a secret).
+// A pool claim needs a fee payer: supply its G-address (never a secret).
 await client.claim(payment, destinationG, {
   keys,
   signTransaction,
