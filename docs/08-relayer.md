@@ -55,7 +55,7 @@ Abuse guards apply on **every** path, credit-gated or not:
 |---|---|
 | Max operations in the inner tx | 5 (`MAX_RELAY_OPS`); zero-op inner txs are rejected (`invalid_tx`) |
 | Timebounds must be present, unexpired, and bounded | ≤ now + 600s (`MAX_RELAY_TIMEBOUNDS_SECONDS`); already-expired bounds are rejected up front (`invalid_timebounds`) rather than burning a submit |
-| Memos | **Forbidden** (a relayed withdrawal has no legitimate memo, and one could leak or tag metadata) |
+| Memos | **Forbidden.** A relayed withdrawal has no legitimate memo, and one could leak or tag metadata |
 | Fetched base fee clamp | 10,000 stroops (`MAX_BASE_FEE`) |
 | Absolute outer fee cap | 0.1 XLM (`MAX_RELAY_FEE_XLM`) |
 
@@ -73,7 +73,7 @@ There is deliberately **no sponsorship sandwich** here: `EndSponsoringFutureRese
 
 ### `POST /sponsor-claim/prepare` and `/submit`
 
-**prepare** — body `{ stealthAddress, asset, balanceId, destination, amount }` → `{ xdr, expiresAt }`
+**prepare**: body `{ stealthAddress, asset, balanceId, destination, amount }` → `{ xdr, expiresAt }`
 
 Builds a relayer-sourced, **unsigned** transaction (60-second timebounds) with this exact operation sequence:
 
@@ -88,7 +88,7 @@ Payment(destination, asset, amount, source: stealth)
 
 The payout rides in the same transaction because a stealth account created with `startingBalance: '0'` under sponsorship can never pay a fee to move the tokens itself. It also verifies up front that the destination exists and already trusts the asset.
 
-**submit** — body `{ xdr, stealthAddress, asset, balanceId, destination, amount, fundingAccount?, nonce?, signature? }` → `{ txHash }`
+**submit**: body `{ xdr, stealthAddress, asset, balanceId, destination, amount, fundingAccount?, nonce?, signature? }` → `{ txHash }`
 
 The client attaches its stealth signature and returns the XDR. The relayer then rebuilds the expected operation list from the **trusted inputs** and compares field-by-field (type, per-op source, destination, asset, amount, balanceId, sponsoredId) before adding its own signature. A client cannot mutate any operation and still pass. It also enforces a per-op fee cap (200 stroops/op), the advertised 60-second TTL, and a no-memo rule.
 
@@ -132,7 +132,7 @@ SHADE_FUNDING_SECRET=S... shade claim <stealth> <dest> --relay https://relayer.e
 ```
 
 ```typescript
-// SDK: any FundingSigner works — a raw key, a wallet, an HSM
+// SDK: any FundingSigner works: a raw key, a wallet, an HSM
 await client.claim(payment, dest, {
   keys,
   relay: 'https://relayer.example',
@@ -233,7 +233,7 @@ Read these before running a relayer with real value:
 
 ## Next steps
 
-- [Delivery Methods](./04-delivery-methods.md) — when a claim needs the relayer
-- [SDK Reference](./07-sdk-reference.md#relayerclient) — the typed `RelayerClient`
-- [Security](./09-security.md) — the relayer's place in the threat model
-- [FAQ & Troubleshooting](./10-faq-troubleshooting.md) — relayer errors
+- [Delivery Methods](./04-delivery-methods.md): when a claim needs the relayer
+- [SDK Reference](./07-sdk-reference.md#relayerclient): the typed `RelayerClient`
+- [Security](./09-security.md): the relayer's place in the threat model
+- [FAQ & Troubleshooting](./10-faq-troubleshooting.md): relayer errors

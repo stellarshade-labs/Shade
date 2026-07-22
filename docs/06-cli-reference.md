@@ -7,8 +7,6 @@ description: "Every shade CLI command and flag: keygen, address, send, scan, bal
 
 `shade` is the reference command-line tool and the fastest way to run the whole flow. Install it with `npm install -g stellar-shade`. Seven commands: `keygen`, `address`, `send`, `scan`, `balance`, `claim`, `withdraw`.
 
-This page documents every command's arguments and flags.
-
 ---
 
 ## Conventions
@@ -21,7 +19,7 @@ This page documents every command's arguments and flags.
 |---|---|
 | `SHADE_FROM_SECRET` | `send` (sender secret) |
 | `SHADE_FEE_PAYER` | `claim`, `withdraw` (fee-payer secret) |
-| `SHADE_FUNDING_SECRET` | `claim`, `withdraw` (funding-account secret — signs the credit-gated relayer challenge) |
+| `SHADE_FUNDING_SECRET` | `claim`, `withdraw` (funding-account secret; signs the credit-gated relayer challenge) |
 | `SHADE_KEYSTORE` | every command (keystore path) |
 
 **Keystore path** resolves as: `--keystore <path>` → `$SHADE_KEYSTORE` → `~/.shade-keys.json`.
@@ -171,7 +169,7 @@ shade claim <stealth-addr> <destination> --relay http://localhost:3000       # a
 shade claim <stealth-addr> <destination> --sponsored --funding-account G...  # token, no reserves
 
 # Against a credit-gated relayer (the default), the funding account must also
-# SIGN the relayer's challenge — supply its secret (prefer the env var):
+# SIGN the relayer's challenge: supply its secret (prefer the env var):
 SHADE_FUNDING_SECRET=S... shade claim <stealth-addr> <destination> \
   --relay https://relayer.example --funding-account G...
 ```

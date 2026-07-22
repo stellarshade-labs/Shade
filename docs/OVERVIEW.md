@@ -46,7 +46,7 @@ The same meta-address works with two "delivery methods." They give the same iden
 | Discovery (both scan) | Scan the contract's **announcements**, with a **view-tag** fast-path (~2×)                                                                                                                                              | Scan **Horizon** for the ephemeral key in a `MemoHash`, then match the derived address (no view tag)                                  |
 | Claim                 | Signature-verified `withdraw` (no Stellar account needed)                                                                                                                                                                | Sign with the recovered stealth key, or a relayer-sponsored payout                                                                    |
 
-Rule of thumb: privacy is the same either way, so choose on cost and tooling. **`pool`** pulls ahead on **tokens** — an `account` token send makes the sender front ~1.5 XLM (0.5 comes back on claim), while `pool` costs only the Soroban fee — but a relayed pool withdraw hides only the fee-payer, so it's the easier method to undo your own privacy with (use a throwaway fee-payer). **`account`** is the simplest path that works with vanilla Horizon tooling.
+Rule of thumb: privacy is the same either way, so choose on cost and tooling. **`pool`** pulls ahead on **tokens**: an `account` token send makes the sender front ~1.5 XLM (0.5 comes back on claim), while `pool` costs only the Soroban fee. But a relayed pool withdraw hides only the fee-payer, so it's the easier method to undo your own privacy with (use a throwaway fee-payer). **`account`** is the simplest path that works with vanilla Horizon tooling.
 
 > **For developers.** `DeliveryMethod = 'pool' | 'account'` (`packages/sdk/src/types.ts`); adapters in `packages/sdk/src/methods/{pool,account}.ts`.
 
@@ -136,7 +136,7 @@ Two things to be clear about: today the top-up is a **plain Stellar payment** ve
 
 ## 8. Running it for real — Railway (testnet)
 
-The relayer is a standalone service (no dependency on the crypto package), so it deploys anywhere. It ships **ready** for **Railway** — this is a prepared configuration, not a record of a Railway deployment. (The relayer itself has been exercised against testnet: it fee-bumped the pool withdraw in the 2026-07-17 testnet validation, see §11.)
+The relayer is a standalone service (no dependency on the crypto package), so it deploys anywhere. It ships **ready** for **Railway**: a prepared configuration, not a record of a Railway deployment.
 
 - `packages/relayer/railway.json` — NIXPACKS build, `npm run start` (`node dist/index.js`), health check on `/health`.
 - Fund a testnet account via friendbot, set `RELAYER_SECRET` to its secret and `NETWORK=testnet`, point Railway's root at `packages/relayer`, deploy, and hit `/health`.
@@ -199,7 +199,9 @@ Everything is there: delivery methods, cursor-aware `scanWithCursor`, Freighter 
 
 ## 11. What's real vs. what's roadmap
 
-**Implemented today:** `pool` + `account` delivery, the relayer (fee-bump / sponsor / credit), the announcement indexer, Freighter external signing, encrypted sessions, and wallet-signature key derivation. The `pool` method has been **validated end-to-end on Stellar testnet** (2026-07-17) with **native XLM**: deposit → scan → balance → direct withdraw → relayer fee-bumped withdraw. The pool contract is asset-agnostic — it calls the standard SAC token interface (`token::Client`) with the token address as a parameter, so a classic asset such as USDC takes the identical path, differing only in that address. No testnet contract id is pinned — testnet resets quarterly, so you deploy your own. The `account` method's old cold-scan pain — walking the global Horizon transaction feed client-side — is solved by the **announcement indexer** (`packages/indexer`), a standalone service that walks the feed once for everyone and serves a compact candidate feed clients filter locally. It is covered by unit and integration tests, but the 2026-07-17 testnet pass did **not** exercise account-method discovery — implemented and test-covered, not testnet-validated. An indexer can _hide_ payments but cannot _fabricate_ them — Horizon stays the source of truth and every scan ends with a Horizon tail. Testnet is the current test network (there is no local Docker network anymore).
+**Implemented today:** `pool` + `account` delivery, the relayer (fee-bump / sponsor / credit), the announcement indexer, Freighter external signing, encrypted sessions, and wallet-signature key derivation.
+
+The pool contract is asset-agnostic: it calls the standard SAC token interface (`token::Client`) with the token address as a parameter, so a classic asset such as USDC takes the identical path as native XLM. No testnet contract id is pinned. Testnet resets, so you deploy your own. The announcement indexer (`packages/indexer`) is a standalone service that walks the Horizon feed once for everyone and serves a compact candidate feed clients filter locally; it can _hide_ payments but cannot _fabricate_ them, since Horizon stays the source of truth and every scan ends with a Horizon tail.
 
 **On the roadmap (Shade's own work):** an external cryptography audit (so **not for mainnet yet**) and a Rust-crate rename.
 

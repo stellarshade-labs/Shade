@@ -45,8 +45,8 @@ Shade is a monorepo of five TypeScript packages plus one Soroban contract. This 
                   |      contracts/registry           |
                   |      (Soroban pool contract)      |
                   |                                   |
-                  | deposit()  — deposit + announce   |
-                  | withdraw() — ed25519 sig verified |
+                  | deposit()  - deposit + announce   |
+                  | withdraw() - ed25519 sig verified |
                   | + 5 read-only getters             |
                   +-----------------------------------+
 ```

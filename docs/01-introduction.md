@@ -18,7 +18,7 @@ stellar keys fund deployer --network testnet
 bash contracts/deploy.sh --network testnet --source deployer
 ```
 
-Full setup in [Getting Started](./05-getting-started.md); the worked smoke flow is in [RESULTS-testnet-smoke](./RESULTS-testnet-smoke.md).
+Full setup in [Getting Started](./05-getting-started.md).
 
 ---
 
@@ -28,7 +28,7 @@ On a normal blockchain, your address is public and permanent. Every payment to i
 
 Shade gives you a **new mailbox for every single payment**, and only *you* can tell which mailboxes are yours. You hand out one public **meta-address**; senders use it to compute a brand-new one-time address each time. On-chain, those addresses look unrelated to you and to each other.
 
-## What Shade does — and does not — hide
+## What Shade does and does not hide
 
 This distinction is the single most important thing to understand:
 
@@ -52,7 +52,7 @@ Three terms first, so the table below reads cleanly. Full definitions are in [Co
 
 Stellar charges a **minimum balance reserve (MBR)** of ~1 XLM for every account that exists. Because Shade hands out a fresh address per payment, that reserve is the design constraint: on chains where accounts are free or negligible it wouldn't matter, but on Stellar it shapes how each delivery method carries funds.
 
-The two methods sit on opposite sides of that trade-off. The **`pool`** method deposits into a **Soroban pool contract** with per-stealth-key accounting: no new account is created and no base reserve is locked, so you pay only the Soroban transaction fee. The **`account`** method uses a real one-time Stellar account, which holds the ~1 XLM base reserve — reclaimed when you sweep the account to your destination. A token send through the account method fronts a bit more (a trustline reserve on top of the base reserve), part of which returns to the sender when the payment is claimed. See [Delivery Methods](./04-delivery-methods.md) for the exact cost profile of each.
+The two methods sit on opposite sides of that trade-off. The **`pool`** method deposits into a **Soroban pool contract** with per-stealth-key accounting: no new account is created and no base reserve is locked, so you pay only the Soroban transaction fee. The **`account`** method uses a real one-time Stellar account, which holds the ~1 XLM base reserve, reclaimed when you sweep the account to your destination. A token send through the account method fronts a bit more (a trustline reserve on top of the base reserve), part of which returns to the sender when the payment is claimed. See [Delivery Methods](./04-delivery-methods.md) for the exact cost profile of each.
 
 > **For developers.** The pool is a single Soroban contract (`contracts/registry`). It keys balances by `(stealth_pk, token)` and authorizes withdrawals by **ed25519 signature verification** rather than `require_auth`, because a stealth key is not a Stellar account. See [Architecture](./03-architecture.md).
 
