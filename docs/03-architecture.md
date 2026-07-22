@@ -133,7 +133,7 @@ The leading 22-byte ASCII **domain tag** `SHADE-POOL-WITHDRAW-V1` (SH-3) separat
 
 ### Stellar Asset Contract (SAC)
 
-The contract moves value through the standard token interface (`soroban_sdk::token::Client`), so it works with any **Stellar Asset Contract**, the contract that exposes a classic Stellar asset (native XLM, USDC, any issued asset) to Soroban. Cross-contract calls are limited to these SAC `transfer` calls:
+The contract moves value through the standard token interface (`soroban_sdk::token::Client`), so it works with any **Stellar Asset Contract** (native XLM, USDC, any issued asset). Cross-contract calls are limited to these SAC `transfer` calls:
 
 - `deposit` → `transfer(sender → contract)`
 - `withdraw` → `transfer(contract → destination)`

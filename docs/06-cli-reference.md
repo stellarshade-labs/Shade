@@ -5,7 +5,7 @@ description: "Every shade CLI command and flag: keygen, address, send, scan, bal
 
 # Shade CLI Reference
 
-`shade` is the reference command-line tool and the fastest way to run the whole flow. Seven commands: `keygen`, `address`, `send`, `scan`, `balance`, `claim`, `withdraw`.
+`shade` is the reference command-line tool and the fastest way to run the whole flow. Its package is `private`, so it isn't published to npm — run it from a checkout: `npm install && npm run build` builds `@shade/cli`, which exposes the `shade` binary. Seven commands: `keygen`, `address`, `send`, `scan`, `balance`, `claim`, `withdraw`.
 
 This page documents every command's arguments and flags.
 

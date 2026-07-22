@@ -173,7 +173,7 @@ The proof-of-control challenge failed: an expired/unknown nonce (120-second TTL,
 
 ### "The relayer returns 429"
 
-Rate limit: 10 requests/minute per client. Back off (`Retry-After` is set).
+Rate limit: 10 requests/minute per IP. Back off (`Retry-After` is set).
 
 ### "My keys don't match between the CLI and the SDK"
 

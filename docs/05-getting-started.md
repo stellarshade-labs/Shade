@@ -29,7 +29,7 @@ cd contracts && stellar contract build && cd ..
 
 ## Generate and fund a testnet account
 
-Testnet is the current test network. Generate a keypair and fund it from friendbot. Repeat for any accounts you need: a deployer, a sender, a fee payer.
+Generate a keypair and fund it from friendbot. Repeat for any accounts you need: a deployer, a sender, a fee payer.
 
 ```bash
 stellar keys generate deployer --network testnet
@@ -142,9 +142,9 @@ cd contracts && cargo test   # Rust contract tests only
 |---|---|---|---|
 | `testnet` | Testnet | `https://soroban-testnet.stellar.org` | `https://horizon-testnet.stellar.org` |
 
-`testnet` is the only accepted network today. Mainnet ("public") is a forward-looking, post-audit addition. Fund a testnet account with friendbot before using it.
+`testnet` is the only accepted network today. Mainnet ("public") is a forward-looking, post-audit addition.
 
-> **Status note.** Testnet is the current test network. The **pool** method has been validated end-to-end on Stellar **testnet** (2026-07-17) with **native XLM**: deposit, scan, balance, direct withdraw, and relayer fee-bumped withdraw. The pool contract is **asset-agnostic**. It calls the standard SAC token interface (`token::Client`) with the token address as a parameter, so a classic asset such as USDC takes the identical path, differing only in that address. No testnet contract id is pinned, because testnet **resets quarterly**, so deploy your own and save it as shown above. The **account** method's cold discovery is served by the **announcement indexer**. It is covered by unit and integration tests, and by design every scan ends with a Horizon tail, so an unreachable or degraded indexer falls back to the plain walk. The 2026-07-17 testnet smoke did **not** exercise account-method discovery, though, so treat the indexer as implemented and test-covered, **not** testnet-validated. Without an indexer configured, a cold account scan still walks the global Horizon transaction feed, which is impractical for a fresh recipient on a busy network. There is no CI. Mainnet is **out of scope** until an external audit lands. See [Security](./09-security.md).
+> **Status note.** The **pool** method has been validated end-to-end on Stellar **testnet** (2026-07-17) with **native XLM**: deposit, scan, balance, direct withdraw, and relayer fee-bumped withdraw. The pool contract is **asset-agnostic**. It calls the standard SAC token interface (`token::Client`) with the token address as a parameter, so a classic asset such as USDC takes the identical path, differing only in that address. No testnet contract id is pinned, because testnet **resets quarterly**, so deploy your own and save it as shown above. The **account** method's cold discovery is served by the **announcement indexer**. It is covered by unit and integration tests, and by design every scan ends with a Horizon tail, so an unreachable or degraded indexer falls back to the plain walk. The 2026-07-17 testnet smoke did **not** exercise account-method discovery, though, so treat the indexer as implemented and test-covered, **not** testnet-validated. Without an indexer configured, a cold account scan still walks the global Horizon transaction feed, which is impractical for a fresh recipient on a busy network. There is no CI. Mainnet is **out of scope** until an external audit lands. See [Security](./09-security.md).
 
 ---
 
