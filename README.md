@@ -6,7 +6,7 @@ The first implementation of stealth addresses on Stellar. Supports multi-token d
 
 ## Architecture
 
-```
+```text
                         +-----------------------+
                         |    packages/crypto    |
                         |      (SDK core)       |
@@ -21,27 +21,32 @@ The first implementation of stealth addresses on Stellar. Supports multi-token d
                                     |
                   +-----------------+-----------------+
                   |                                   |
-          +-------v--------+                 +--------v-------+
-          |  packages/cli  |                 | packages/relayer|
-          |  (Reference)   |                 |  (Fee-bump)    |
-          |                |                 |                |
-          | keygen / send  |                 | POST /relay    |
-          | scan / balance |                 | Fee-bumps      |
-          | withdraw       |                 | withdrawal txs |
-          +-------+--------+                 +--------+-------+
+          +-------v--------+                 +--------v---------+  +------------------+
+          | packages/sdk   |                 | packages/relayer |  | packages/indexer |
+          | (StealthClient)|                 | (fee-bump /      |  | (announcement    |
+          |                |                 |  sponsor /       |  |  candidate feed  |
+          | pool | account |                 |  credit)         |  |  from Horizon)   |
+          | adapters       |                 |                  |  |                  |
+          +-------+--------+                 +--------+---------+  +------------------+
+                  |                                   |
+          +-------v--------+                          |
+          | packages/cli   |                          |
+          | (shade)        |                          |
+          +-------+--------+                          |
                   |                                   |
                   +-----------------+-----------------+
                                     |
                   +-----------------v-----------------+
                   |      contracts/registry           |
-                  |      (Soroban Pool Contract)      |
+                  |      (Soroban pool contract)      |
                   |                                   |
-                  | deposit() - atomic deposit+announce|
-                  | withdraw() - ed25519 sig verified  |
-                  | get_balance() / get_nonce()        |
-                  | get_announcements()                |
+                  | deposit()  - deposit + announce   |
+                  | withdraw() - ed25519 sig verified |
+                  | + 5 read-only getters             |
                   +-----------------------------------+
 ```
+
+`crypto` is the dependency-free core everything builds on, `sdk` wraps all network I/O behind delivery-method adapters, and `cli` is a reference consumer. `relayer` and `indexer` are standalone services that never import `crypto`. Everything on the `pool` path terminates at the Soroban contract. Full component breakdown in [docs/03-architecture.md](docs/03-architecture.md).
 
 **Key design decisions:**
 - **Why a pool contract?** Stellar charges a ~1 XLM minimum balance reserve (MBR) for every account, so handing out a fresh address per payment would lock ~1 XLM each time. Instead we hold funds in a Soroban contract with per-stealth-key accounting: no account is created and no base reserve is locked, so a deposit costs only the Soroban invocation fee.
@@ -53,6 +58,8 @@ The first implementation of stealth addresses on Stellar. Supports multi-token d
 - Multi-token: any SAC-wrapped asset (native XLM, USDC, custom tokens)
 
 ## Quick Start
+
+Just want the CLI? `npm install -g stellar-shade-cli` is the whole install ([below](#cli-commands)). The steps here are the self-host path: run the monorepo and deploy your own pool contract.
 
 ```bash
 # Prerequisites: Node.js 20+, Stellar CLI, Rust toolchain
@@ -186,16 +193,25 @@ cross-network signature replay.
 
 ## Relayer
 
-The relayer pays the Soroban invocation fee on withdrawal transactions via fee-bumping. This is purely for **privacy**: without it, the recipient would need a funded account to pay the tx fee, linking their identity to the withdrawal. The relayer sees the XDR but learns nothing about the recipient's other accounts.
+The relayer pays the transaction fee on withdrawals via fee-bumping, and fronts the account/trustline reserves for sponsored claims. Both exist for **privacy**: without them the recipient would need a funded account of their own to pay the fee (or ~1 XLM of reserves to receive at all), linking their identity to the withdrawal. The relayer sees the XDR but learns nothing about the recipient's other accounts, and the withdraw signature binds destination + amount + contract + network, so a relayer cannot redirect or tamper with a withdrawal.
 
 ```bash
-# Start relayer
+# Start relayer (RELAYER_SECRET is required — the service exits without it)
 RELAYER_SECRET=SXXX npx tsx packages/relayer/src/index.ts
-
-# Endpoints
-GET  /health          # Service status
-POST /relay           # Submit XDR for fee-bump + broadcast
 ```
+
+| Endpoint | What it does |
+|---|---|
+| `GET /health` | Status, network, relayer address, balance, `requireCredit`, `maxRelayFeeXlm`, `sponsoredReserveEstimate` |
+| `POST /relay` | Fee-bump and submit a signed transaction |
+| `POST /sponsor` | Create a stealth account (funded `CreateAccount` from the relayer) |
+| `POST /sponsor-claim/prepare` | Build an unsigned sponsored-claim transaction |
+| `POST /sponsor-claim/submit` | Co-sign + submit a sponsored claim |
+| `POST /credit/claim` | Top up credit by proving an XLM payment via `txHash` |
+| `GET /credit/challenge` | Issue a proof-of-control nonce |
+| `GET /credit/:account` | Read a credit balance |
+
+**Credit gating is ON by default on every network** (`RELAYER_REQUIRE_CREDIT=0` disables it): a gated endpoint needs a funding account that has topped up via `POST /credit/claim` and signs a `GET /credit/challenge` nonce, or the request is rejected with `401`. Request bodies, auth details and deployment are in [docs/08-relayer.md](docs/08-relayer.md).
 
 ## DKSAP Protocol
 

@@ -56,7 +56,6 @@ Shade is a monorepo of five TypeScript packages plus one Soroban contract. This 
 | Package | Role | Key dependency note |
 |---|---|---|
 | `@shade/crypto` | DKSAP math: keys, derivation, scanning, recovery, HD/mnemonic, raw-scalar signing | **Zero** `@stellar/stellar-sdk` dependency. Uses `@noble/curves`, `@noble/hashes`, `@scure/bip39`. Implements StrKey (`G...`) encoding itself, per **SEP-23**. |
-
 | `stellar-shade` | `StealthClient`, which hides all Horizon/Soroban I/O behind `send`/`scan`/`claim`. Delivery adapters, typed errors, encrypted sessions, relayer client. | Depends on `@shade/crypto` + `@stellar/stellar-sdk`. |
 | `stellar-shade-cli` | The `shade` reference command-line tool. | Delegates the `account` method to the SDK; builds `pool` invocations inline. |
 | `@shade/relayer` | Express service: fee-bump, sponsored claims, credit ledger. | Standalone, with no `@shade/crypto` dependency. |
