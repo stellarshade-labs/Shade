@@ -5,7 +5,7 @@ description: "Every shade CLI command and flag: keygen, address, send, scan, bal
 
 # Shade CLI Reference
 
-`shade` is the reference command-line tool and the fastest way to run the whole flow. Install it with `npm install -g stellar-shade`. Seven commands: `keygen`, `address`, `send`, `scan`, `balance`, `claim`, `withdraw`.
+`shade` is the reference command-line tool and the fastest way to run the whole flow. Install it with `npm install -g stellar-shade-cli`. Seven commands: `keygen`, `address`, `send`, `scan`, `balance`, `claim`, `withdraw`.
 
 ---
 

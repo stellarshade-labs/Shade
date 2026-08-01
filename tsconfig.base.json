@@ -24,7 +24,7 @@
     "baseUrl": ".",
     "paths": {
       "@shade/crypto": ["./packages/crypto/src"],
-      "@shade/cli": ["./packages/cli/src"],
+      "stellar-shade-cli": ["./packages/cli/src"],
       "@shade/relayer": ["./packages/relayer/src"],
       "stellar-shade": ["./packages/sdk/src"]
     }
