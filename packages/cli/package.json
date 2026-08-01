@@ -12,7 +12,7 @@
     "payments"
   ],
   "bin": {
-    "shade": "./dist/index.js"
+    "shade": "dist/index.js"
   },
   "files": [
     "dist",
