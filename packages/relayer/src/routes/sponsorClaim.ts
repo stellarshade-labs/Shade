@@ -142,14 +142,22 @@ function buildSponsorClaimOps(args: {
 }
 
 /**
- * POST /sponsor-claim/prepare { stealthAddress, asset, balanceId? }
+ * POST /sponsor-claim/prepare { stealthAddress, asset, balanceId, destination, amount }
  *   -> { xdr, expiresAt }
+ *
+ * Every field is REQUIRED; a missing or malformed one is rejected 400 as
+ * invalid_address / invalid_asset / invalid_balance / invalid_destination /
+ * invalid_amount. The destination must ALREADY trust the asset — checked here so
+ * the payout cannot fail on-chain after the relayer has burned the fee.
  *
  * Build a relayer-sourced, UNSIGNED transaction (timebounds now+60s):
  * BeginSponsoringFutureReserves -> [CreateAccount if missing] ->
  * ChangeTrust(source: stealth) -> EndSponsoringFutureReserves(source: stealth)
- * -> ClaimClaimableBalance(source: stealth). The client attaches the stealth
- * signature and returns it via /sponsor-claim/submit.
+ * -> ClaimClaimableBalance(source: stealth) -> Payment(destination, source:
+ * stealth). The payout rides in this same tx because the sponsored stealth
+ * account (startingBalance '0') can never pay a fee to move the tokens itself.
+ * The client attaches the stealth signature and returns it via
+ * /sponsor-claim/submit.
  */
 export async function handleSponsorClaimPrepare(req: Request, res: Response) {
   const ctx = getContext();
@@ -324,10 +332,16 @@ function opsMatch(
 }
 
 /**
- * POST /sponsor-claim/submit { xdr, stealthAddress, asset, balanceId, fundingAccount? }
+ * POST /sponsor-claim/submit { xdr, stealthAddress, asset, balanceId, destination,
+ *   amount, fundingAccount?, nonce?, signature? } -> { txHash }
+ *
+ * `xdr` plus the five trusted inputs are REQUIRED (same 400 codes as prepare);
+ * `fundingAccount`/`nonce`/`signature` carry the proof-of-control auth and are
+ * required only when the relayer is credit-gated.
  *
  * Verify the client-signed tx matches exactly what the relayer would have
- * prepared for the trusted inputs (stealthAddress, asset, balanceId) — rebuild
+ * prepared for the trusted inputs (stealthAddress, asset, balanceId,
+ * destination, amount) — rebuild
  * the expected op list with `buildSponsorClaimOps` and compare field-by-field
  * (type + source + destination + asset + balanceId + sponsoredId). A client
  * cannot mutate any operation parameter and still pass. Then add the relayer

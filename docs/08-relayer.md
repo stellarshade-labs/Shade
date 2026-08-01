@@ -111,7 +111,7 @@ Credit gating is **on by default on every network**, so an unconfigured deploy c
 
 Fee-spending requests are authenticated by an **ed25519 challenge/response** (not an API key or HMAC):
 
-1. `GET /credit/challenge?account=G...` returns a fresh random 32-byte nonce (120-second TTL, single-use, in-memory).
+1. `GET /credit/challenge?account=G...` returns a fresh random 32-byte nonce (120-second TTL, single-use). With **`REDIS_URL`** set the nonce store is Redis, so single-use holds across every instance; unset, it is in-process memory and therefore single-instance only (see [Durable & multi-instance state](#durable--multi-instance-state)).
 2. The client signs the canonical message with the funding account's key:
 
 ```text
