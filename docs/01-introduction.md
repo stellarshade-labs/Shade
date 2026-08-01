@@ -9,7 +9,7 @@ Shade gives every payment its own fresh, unlinkable address on Stellar. You publ
 
 This page explains what Shade is, the problem it solves, and who it's for. If you want to start using it, jump to [Getting Started](./05-getting-started.md).
 
-**Try it.** Generate and fund a testnet account, deploy the contract, then walk a full send → scan → claim cycle with the CLI on Stellar **testnet**:
+**Try it.** The CLI installs from npm with `npm install -g stellar-shade-cli`. To run the whole flow end-to-end on Stellar **testnet** — including deploying your own pool contract — clone the repo and:
 
 ```bash
 npm install

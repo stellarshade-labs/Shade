@@ -149,7 +149,7 @@ Step-by-step is in `packages/relayer/README.md`.
 
 ## 9. For CLI users
 
-The `shade` CLI is the reference tool and a great way to feel the whole flow:
+The `shade` CLI is the reference tool and a great way to feel the whole flow. Install it with `npm install -g stellar-shade-cli`, then:
 
 ```bash
 shade keygen --mnemonic                       # 12-word backup; prints your shade:stellar:... meta-address

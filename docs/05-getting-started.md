@@ -11,11 +11,18 @@ Run Shade end-to-end on Stellar **testnet** in a few minutes. This page covers p
 
 ## Prerequisites
 
-- **Node.js 20+**
-- **Stellar CLI**, needed to build and deploy the Soroban contract and to generate/fund testnet keys
-- **Rust toolchain**, needed to compile the contract to Wasm
+- **Node.js 20+** — all you need to install and run the CLI.
+- **Stellar CLI** and a **Rust toolchain** — only needed to build/deploy the Soroban **pool** contract yourself, and to generate/fund testnet keys via `stellar keys`.
 
-## Install and build
+## Install the CLI
+
+The `shade` command ships on npm as [`stellar-shade-cli`](https://www.npmjs.com/package/stellar-shade-cli):
+
+```bash
+npm install -g stellar-shade-cli
+```
+
+That is everything the **account** method needs. The **pool** method additionally needs a deployed pool contract; to deploy your own (below), clone the repo and build:
 
 ```bash
 npm install
