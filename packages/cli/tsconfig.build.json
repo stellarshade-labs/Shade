@@ -1,0 +1,21 @@
+{
+  // Used ONLY by tsup (see tsup.config.ts).
+  //
+  // tsconfig.base.json maps "@shade/crypto" to packages/crypto/src via a
+  // root-relative baseUrl. esbuild's handling of an inherited baseUrl through
+  // `extends` is unreliable, so we redeclare the mapping here relative to THIS
+  // package so the bundler always resolves @shade/crypto from source. Redeclaring
+  // "paths" fully overrides the inherited map, which is intended: every other
+  // dependency (stellar-shade, commander, ...) must stay external, not bundled.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "baseUrl": ".",
+    "paths": {
+      "@shade/crypto": ["../crypto/src/index.ts"]
+    }
+  },
+  "references": []
+}

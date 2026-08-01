@@ -120,6 +120,12 @@ That's it. No DKSAP math, no Soroban transactions, no message serialization.
 
 ## CLI Commands
 
+The `shade` command ships on npm as [`stellar-shade-cli`](https://www.npmjs.com/package/stellar-shade-cli). Install it globally:
+
+```bash
+npm install -g stellar-shade-cli
+```
+
 ```bash
 # Generate stealth keys (keygen prints the meta-address; the keystore path is
 # --keystore <path> or $SHADE_KEYSTORE, honored by every command).
