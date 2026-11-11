@@ -65,6 +65,7 @@ export const claimCommand = new Command('claim')
   .argument('<stealth-address>', 'Stealth address holding the funds')
   .argument('<destination>', 'Destination Stellar address (G...)')
   .option('--network <network>', 'Network to use', 'testnet')
+  .option('--contract <id>', 'Stealth pool contract id (C...) — falls back to SHADE_CONTRACT, then ~/.stealth/<network>-contract')
   .option('--keystore <path>', 'Keystore file path (defaults to $SHADE_KEYSTORE or ~/.shade-keys.json)')
   .option('--password <password>', 'Keystore password (prompts on stderr if omitted for an encrypted keystore)')
   .option('--merge', 'Sweep the whole account via AccountMerge (account method)')
@@ -100,8 +101,9 @@ export const claimCommand = new Command('claim')
       if (!cached) {
         console.log(
           chalk.gray(
-            `No scanned payment for ${stealthAddress} — run 'shade scan' first ` +
-              '(or it may be a pool deposit). Delegating to the pool withdraw path...',
+            `${stealthAddress} is not in the account-method scan cache; ` +
+              'trying it as a pool deposit (pool payments are not cached). ' +
+              "If it is an account-method payment, run 'shade scan' first.",
           ),
         );
         // Pool withdraws need a fee-payer secret; resolve it once here so the
@@ -115,6 +117,7 @@ export const claimCommand = new Command('claim')
           stealthAddress,
           destination,
           network,
+          contract: options.contract,
           relay: relays,
           feePayer,
           asset: options.asset,

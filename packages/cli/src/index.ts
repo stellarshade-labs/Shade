@@ -10,6 +10,7 @@ import { scanCommand } from './commands/scan.js';
 import { withdrawCommand } from './commands/withdraw.js';
 import { claimCommand } from './commands/claim.js';
 import { balanceCommand } from './commands/balance.js';
+import { configCommand } from './commands/config.js';
 
 const { version } = packageJson;
 
@@ -27,6 +28,7 @@ program.addCommand(scanCommand);
 program.addCommand(withdrawCommand);
 program.addCommand(claimCommand);
 program.addCommand(balanceCommand);
+program.addCommand(configCommand);
 
 // parseAsync (not parse) so a rejection escaping a command action — e.g. a
 // prompt whose stdin closed — still prints on stderr and exits non-zero

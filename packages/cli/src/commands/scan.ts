@@ -267,6 +267,7 @@ export async function fetchAnnouncements(
 export const scanCommand = new Command('scan')
   .description('Scan for stealth payments you received (pool + account methods)')
   .option('--network <network>', 'Network to use', 'testnet')
+  .option('--contract <id>', 'Stealth pool contract id (C...) — falls back to SHADE_CONTRACT, then ~/.stealth/<network>-contract')
   .option('--keystore <path>', 'Keystore file path (defaults to $SHADE_KEYSTORE or ~/.shade-keys.json)')
   .option('--password <password>', 'Keystore password (prompts on stderr if omitted for an encrypted keystore)')
   .option('--since-ledger <ledger>', 'Only scan announcements since this ledger', parseInt)
@@ -302,7 +303,7 @@ export const scanCommand = new Command('scan')
       // --- Pool method (Soroban announcements) ---
       console.log(chalk.cyan('Scanning pool announcements...'));
       const poolStarted = Date.now();
-      const contractAddress = getContractAddress(network);
+      const contractAddress = getContractAddress(network, options.contract);
       const announcements = await fetchAnnouncements(
         contractAddress,
         server,

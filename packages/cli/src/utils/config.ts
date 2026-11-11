@@ -1,41 +1,95 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { StrKey } from '@stellar/stellar-sdk';
 import type { NetworkName } from 'stellar-shade';
 
 const CONFIG_DIR = path.join(os.homedir(), '.stealth');
 
-/**
- * Resolve the stealth pool contract address for a network from the per-network
- * config file under `~/.stealth/<network>-contract`.
- *
- * There is deliberately NO built-in default address — testnet resets quarterly
- * and a placeholder C-address only produces an opaque Soroban failure later.
- * If none is configured we throw an actionable error naming the file to write.
- *
- * @throws {Error} When no contract address is configured for the network.
- */
-export function getContractAddress(network: NetworkName): string {
-  const configFile = path.join(CONFIG_DIR, `${network}-contract`);
+/** Environment variable that supplies the pool contract when `--contract` is absent. */
+export const CONTRACT_ENV_VAR = 'SHADE_CONTRACT';
 
+/** Where a resolved pool contract address came from. */
+export type ContractSource = 'flag' | 'env' | 'file';
+
+/** Path of the per-network contract file, `~/.stealth/<network>-contract`. */
+export function contractConfigFile(network: NetworkName): string {
+  return path.join(CONFIG_DIR, `${network}-contract`);
+}
+
+function assertContractId(address: string, source: string): string {
+  if (!StrKey.isValidContract(address)) {
+    throw new Error(
+      `Invalid stealth pool contract address from ${source}: '${address}'. ` +
+        'Expected a Soroban contract id (C...).',
+    );
+  }
+  return address;
+}
+
+/**
+ * Resolve the stealth pool contract address for a network, reporting where it
+ * came from. Precedence: the `--contract` flag (`override`), then the
+ * `SHADE_CONTRACT` env var, then the per-network file `~/.stealth/<network>-contract`
+ * (written by `shade config set-contract`).
+ *
+ * There is deliberately NO built-in default address — testnet resets
+ * periodically and a stale baked-in C-address only produces an opaque Soroban
+ * failure later. The current canonical deployment is published in the repo's
+ * `deployments/<network>.json`. If none is configured we throw an actionable
+ * error naming every way to set it.
+ *
+ * @throws {Error} When no contract is configured, or the configured value is
+ *   not a valid contract id.
+ */
+export function resolveContractAddress(
+  network: NetworkName,
+  override?: string,
+): { address: string; source: ContractSource } {
+  const flag = override?.trim();
+  if (flag) return { address: assertContractId(flag, '--contract'), source: 'flag' };
+
+  const env = process.env[CONTRACT_ENV_VAR]?.trim();
+  if (env) return { address: assertContractId(env, CONTRACT_ENV_VAR), source: 'env' };
+
+  const configFile = contractConfigFile(network);
+  let fromFile: string | undefined;
   try {
-    const address = fs.readFileSync(configFile, 'utf-8').trim();
-    if (address) return address;
+    fromFile = fs.readFileSync(configFile, 'utf-8').trim() || undefined;
   } catch {
     // Fall through to the actionable error below.
   }
+  if (fromFile) return { address: assertContractId(fromFile, configFile), source: 'file' };
 
   throw new Error(
-    `No stealth pool contract configured for network '${network}'. Deploy the ` +
-      `contract and save its C-address to ${configFile} ` +
-      `(e.g. 'stellar contract deploy ...' then write the id there).`,
+    `No stealth pool contract configured for network '${network}'. Pass ` +
+      `--contract <C...>, set ${CONTRACT_ENV_VAR}, or run ` +
+      `'shade config set-contract <C...>' (writes ${configFile}). The canonical ` +
+      `${network} deployment is listed in deployments/${network}.json in the Shade repo.`,
   );
 }
 
-export function saveContractAddress(network: NetworkName, address: string): void {
+/**
+ * Resolve just the pool contract address (see {@link resolveContractAddress}).
+ *
+ * @throws {Error} When no valid contract address is configured for the network.
+ */
+export function getContractAddress(network: NetworkName, override?: string): string {
+  return resolveContractAddress(network, override).address;
+}
+
+/**
+ * Persist the pool contract address for a network to `~/.stealth/<network>-contract`.
+ *
+ * @returns The path written.
+ * @throws {Error} When `address` is not a valid contract id.
+ */
+export function saveContractAddress(network: NetworkName, address: string): string {
+  const trimmed = assertContractId(address.trim(), 'the given address');
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
-  const configFile = path.join(CONFIG_DIR, `${network}-contract`);
-  fs.writeFileSync(configFile, address);
+  const configFile = contractConfigFile(network);
+  fs.writeFileSync(configFile, trimmed);
+  return configFile;
 }
 
 function horizonCursorFile(network: NetworkName): string {

@@ -165,6 +165,7 @@ export async function collectAccountBalances(
 export const balanceCommand = new Command('balance')
   .description('Show total balance across all stealth payments')
   .option('--network <network>', 'Network to use', 'testnet')
+  .option('--contract <id>', 'Stealth pool contract id (C...) — falls back to SHADE_CONTRACT, then ~/.stealth/<network>-contract')
   .option('--keystore <path>', 'Keystore file path (defaults to $SHADE_KEYSTORE or ~/.shade-keys.json)')
   .option('--password <password>', 'Keystore password (prompts on stderr if omitted for an encrypted keystore)')
   .option('--indexer <url>', 'Announcement indexer URL for fast account-method discovery — falls back to SHADE_INDEXER; Horizon remains the source of truth')
@@ -183,7 +184,7 @@ export const balanceCommand = new Command('balance')
 
       console.log(chalk.cyan('Scanning for stealth payments...'));
 
-      const contractAddress = getContractAddress(network);
+      const contractAddress = getContractAddress(network, options.contract);
 
       // Group balances by token (in stroops)
       const tokenBalances = new Map<string, bigint>();

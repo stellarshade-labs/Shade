@@ -63,7 +63,8 @@ echo
 # Check prerequisites
 command -v stellar >/dev/null 2>&1 || {
     echo -e "${RED}✗ Error: Stellar CLI is not installed${NC}" >&2
-    echo "Install with: brew install stellar-cli"
+    echo "Install it: https://developers.stellar.org/docs/tools/cli/install-cli"
+    echo "  (e.g. cargo install --locked stellar-cli, brew install stellar-cli, or winget install --id Stellar.StellarCLI)"
     exit 1
 }
 
@@ -86,6 +87,16 @@ if [[ ! -f "target/wasm32v1-none/release/stealth_registry.wasm" ]]; then
 fi
 
 echo -e "${GREEN}✓ Contract built successfully${NC}"
+
+# Record the wasm hash: it goes into deployments/<network>.json so anyone can
+# check the deployed bytecode against this source (see deployments/README.md).
+WASM_PATH="target/wasm32v1-none/release/stealth_registry.wasm"
+if command -v sha256sum >/dev/null 2>&1; then
+    WASM_SHA256=$(sha256sum "$WASM_PATH" | cut -d' ' -f1)
+else
+    WASM_SHA256=$(shasum -a 256 "$WASM_PATH" | cut -d' ' -f1)
+fi
+echo -e "${CYAN}Wasm sha256: ${YELLOW}$WASM_SHA256${NC}"
 
 # Generate the deployer key if missing, then fund it via friendbot. Funding is
 # idempotent and covers BOTH fresh and pre-existing keys: a key can outlive the
@@ -143,10 +154,16 @@ echo -e "${GREEN}$CONTRACT_ID${NC}"
 echo
 echo -e "${CYAN}Network: ${YELLOW}$NETWORK${NC}"
 echo -e "${CYAN}Deployer: ${YELLOW}$SOURCE_PUBLIC${NC}"
+echo -e "${CYAN}Wasm sha256: ${YELLOW}$WASM_SHA256${NC}"
+echo -e "${CYAN}Source commit: ${YELLOW}$(git rev-parse --short HEAD 2>/dev/null || echo unknown)${NC}"
+echo
+echo "If this is the new canonical deployment, update deployments/${NETWORK}.json"
+echo "(contractId, wasmSha256, sourceCommit, deployedAt, deployer) — see deployments/README.md."
 echo
 echo "The contract ID has been saved to:"
 echo "  $CONFIG_DIR/${NETWORK}-contract"
 echo
 echo "You can now use the CLI with this contract:"
-echo "  npm run cli -- send --network $NETWORK ..."
+echo "  shade send --network $NETWORK --contract $CONTRACT_ID ..."
+echo "  (or npm run cli -- send ... from the monorepo)"
 echo

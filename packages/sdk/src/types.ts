@@ -388,7 +388,7 @@ export interface ClaimReceipt {
 export interface ClientConfig {
   /** Network to connect to (a key of the SDK's `NETWORKS` table) */
   network: NetworkName;
-  /** Override the default contract ID for the stealth pool */
+  /** Stealth pool contract id (required when the pool method is enabled; no built-in default — see deployments/<network>.json) */
   contractId?: string;
   /** Override the Horizon REST endpoint (used by the account method) */
   horizonUrl?: string;

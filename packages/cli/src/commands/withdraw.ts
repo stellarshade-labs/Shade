@@ -121,6 +121,8 @@ export interface RunPoolWithdrawOpts {
   fundingAccount?: string;
   /** Secret controlling `fundingAccount` (signs the relayer challenge). */
   fundingSecret?: string;
+  /** Pool contract id override (`--contract`); see `resolveContractAddress`. */
+  contract?: string;
   /** Show detailed output. */
   verbose?: boolean;
 }
@@ -169,7 +171,7 @@ export async function runPoolWithdraw(options: RunPoolWithdrawOpts): Promise<voi
 
     const { server, networkPassphrase } = getNetworkConfig(network);
 
-    const contractAddress = getContractAddress(network);
+    const contractAddress = getContractAddress(network, options.contract);
 
     // Resolve token
     let tokenAddress: string;
@@ -408,6 +410,7 @@ export const withdrawCommand = new Command('withdraw')
   .argument('<stealth-address>', 'Stealth address to withdraw from')
   .argument('<destination>', 'Destination Stellar address')
   .option('--network <network>', 'Network to use', 'testnet')
+  .option('--contract <id>', 'Stealth pool contract id (C...) — falls back to SHADE_CONTRACT, then ~/.stealth/<network>-contract')
   .option('--keystore <path>', 'Keystore file path (defaults to $SHADE_KEYSTORE or ~/.shade-keys.json)')
   .option('--password <password>', 'Keystore password (prompts on stderr if omitted for an encrypted keystore)')
   .option('--amount <amount>', 'Amount to withdraw (default: full balance)')
@@ -422,6 +425,7 @@ export const withdrawCommand = new Command('withdraw')
       stealthAddress,
       destination,
       network: assertNetwork(options.network),
+      contract: options.contract,
       keystore: options.keystore,
       password: options.password,
       amount: options.amount,

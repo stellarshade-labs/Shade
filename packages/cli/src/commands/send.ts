@@ -83,6 +83,7 @@ export const sendCommand = new Command('send')
   .argument('<amount>', 'Amount to send (in whole units, e.g. 100 for 100 XLM)')
   .option('--method <method>', 'Delivery method: pool | account | auto (you must choose)')
   .option('--network <network>', 'Network to use', 'testnet')
+  .option('--contract <id>', 'Stealth pool contract id (C...) — falls back to SHADE_CONTRACT, then ~/.stealth/<network>-contract')
   .option('--from <secret>', 'Sender secret key (or set SHADE_FROM_SECRET / prompt; flags leak into shell history)')
   .option('--asset <asset>', 'Asset to send (default: native XLM, or CODE:ISSUER)')
   .option('--relay <url>', 'Relayer URL (account method fee-bump)')
@@ -187,7 +188,7 @@ export const sendCommand = new Command('send')
       // Exact stroops parsed above — no lossy float round-trip.
       const stroops = amountStroops;
 
-      const contractAddress = getContractAddress(network);
+      const contractAddress = getContractAddress(network, options.contract);
       const contract = new Contract(contractAddress);
 
       // Build deposit transaction

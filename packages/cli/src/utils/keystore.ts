@@ -59,7 +59,7 @@ function deriveKey(password: string, salt: Buffer, kdf: KdfParams): Buffer {
 }
 
 /** The home-directory default keystore location. */
-export const DEFAULT_KEYSTORE_PATH = path.join(os.homedir(), '.shade-keys.json');
+const DEFAULT_KEYSTORE_PATH = path.join(os.homedir(), '.shade-keys.json');
 
 /**
  * Resolve the keystore path from a single source of truth so `keygen` (writes)
@@ -195,7 +195,7 @@ export function promptPassword(question: string): Promise<string> {
  * so an encrypted keystore round-trips without every command re-implementing the
  * prompt.
  */
-export async function loadKeystoreInteractive(
+async function loadKeystoreInteractive(
   filepath: string = KEYSTORE_PATH,
   password?: string,
 ): Promise<Keystore> {

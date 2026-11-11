@@ -1,0 +1,34 @@
+{
+  "network": "testnet",
+  "networkPassphrase": "Test SDF Network ; September 2015",
+  "rpcUrl": "https://soroban-testnet.stellar.org",
+  "horizonUrl": "https://horizon-testnet.stellar.org",
+  "friendbotUrl": "https://friendbot.stellar.org",
+  "stealthPool": {
+    "contractId": "CDWHNQU2URGJOI6VJU2ZVKRKRMMIKFVXCAMZC45HB6SZKTKGISS7YJ42",
+    "wasmSha256": "7c94dc5d1d3c0a7b4c521583009deea0cbabc51d2a2dc77a19f00f90d9045d10",
+    "wasmSizeBytes": 11680,
+    "sourceCommit": "295d919",
+    "sorobanSdk": "22.0.11",
+    "buildCommand": "cd contracts && stellar contract build",
+    "verifiedBuild": {
+      "commit": "5aa24c5",
+      "rustc": "1.91.1",
+      "stellarCli": "23.2.1",
+      "target": "wasm32v1-none"
+    },
+    "deployedAt": "2026-08-01T15:17:38Z",
+    "deployer": "GCN4X6PVONGWSVIQBSB4KLY7HSAX2DUJSLKZWV6XEM6BG56CQZKMXPGS"
+  },
+  "nativeXlmSac": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+  "relayerUrl": "https://shaderelayer-production.up.railway.app",
+  "indexerUrl": "https://shadeindexer-production.up.railway.app",
+  "deprecated": [
+    {
+      "contractId": "CDQBZZ5B2GUE7RG6NDWLZYE7TLSQAEZODGRO565GKAHN73C2SGVG76BX",
+      "wasmSha256": "cb935fd5cea548c15d107ff14b9cdfd348ed6992b715ad34e56bb59caccd0ff8",
+      "deployedAt": "2026-07-17T10:20:34Z",
+      "reason": "Same interface, but the deployed wasm is not reproducible from any commit in this repo. Funds deposited there can still be withdrawn by pointing the CLI or SDK at this id."
+    }
+  ]
+}

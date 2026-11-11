@@ -214,7 +214,7 @@ function isPredicateSatisfiable(
  * it against the transaction's destination IS the full DKSAP verification, so no
  * separate view tag is required for the account method.
  */
-export function computeReceiverStealthAddress(
+function computeReceiverStealthAddress(
   viewPrivKey: Uint8Array,
   spendPubKey: Uint8Array,
   ephemeralPubKey: Uint8Array,
