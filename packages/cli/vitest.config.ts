@@ -6,14 +6,5 @@ export default defineConfig({
     environment: 'node',
     testTimeout: 30000,
     exclude: ['**/node_modules/**', '**/dist/**'],
-    coverage: {
-      provider: 'v8',
-      reporter: ['text', 'html'],
-      exclude: [
-        'node_modules/',
-        'dist/',
-        '*.config.ts'
-      ]
-    }
-  }
+  },
 });

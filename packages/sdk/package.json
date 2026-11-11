@@ -14,7 +14,7 @@
     }
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "sideEffects": false,
   "keywords": [
@@ -33,17 +33,17 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@stellar/stellar-sdk": "^16.0.0",
+    "@stellar/stellar-sdk": "^16.4.1",
     "@noble/hashes": "^1.6.1",
     "@noble/curves": "^1.7.0",
     "@scure/bip39": "^1.5.0"
   },
   "devDependencies": {
     "@shade/crypto": "*",
-    "@types/node": "^22.10.5",
-    "tsup": "^8.3.5",
-    "typescript": "^5.7.2",
-    "vitest": "^4.1.7"
+    "@types/node": "^22.20.5",
+    "tsup": "^9.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
   },
   "files": [
     "dist",
@@ -58,7 +58,7 @@
     "url": "git+https://github.com/stellarshade-labs/Shade.git",
     "directory": "packages/sdk"
   },
-  "homepage": "https://github.com/stellarshade-labs/Shade#readme",
+  "homepage": "https://www.stellar-shade.com",
   "bugs": {
     "url": "https://github.com/stellarshade-labs/Shade/issues"
   }

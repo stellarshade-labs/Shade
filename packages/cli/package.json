@@ -19,7 +19,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "scripts": {
     "build": "tsup",
@@ -32,7 +32,7 @@
   },
   "dependencies": {
     "stellar-shade": "0.1.0",
-    "@stellar/stellar-sdk": "^16.0.0",
+    "@stellar/stellar-sdk": "^16.4.1",
     "@noble/hashes": "^1.6.1",
     "@noble/curves": "^1.7.0",
     "@scure/bip39": "^1.5.0",
@@ -41,12 +41,12 @@
     "commander": "^12.0.0"
   },
   "devDependencies": {
-    "@shade/crypto": "0.1.0",
-    "@types/node": "^22.0.0",
-    "tsup": "^8.3.5",
+    "@shade/crypto": "*",
+    "@types/node": "^22.20.5",
+    "tsup": "^9.0.0",
     "tsx": "^4.0.0",
-    "typescript": "^5.5.0",
-    "vitest": "^4.1.7"
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
   },
   "publishConfig": {
     "access": "public"
@@ -57,7 +57,7 @@
     "url": "git+https://github.com/stellarshade-labs/Shade.git",
     "directory": "packages/cli"
   },
-  "homepage": "https://github.com/stellarshade-labs/Shade#readme",
+  "homepage": "https://www.stellar-shade.com",
   "bugs": {
     "url": "https://github.com/stellarshade-labs/Shade/issues"
   }
