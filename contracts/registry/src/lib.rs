@@ -1,7 +1,7 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, Bytes, BytesN, Env, Vec, vec,
-    symbol_short,
+    contract, contractevent, contractimpl, contracttype, token, Address, Bytes, BytesN, Env,
+    Vec, vec,
 };
 
 /// Static domain-separation tag prepended to the withdraw signature preimage
@@ -53,6 +53,32 @@ pub enum DataKey {
 const TTL_THRESHOLD: u32 = 518_400; // ~30 days
 const TTL_EXTEND_TO: u32 = 6_312_000; // ~365 days
 
+/// Emitted by `deposit`. Wire shape (unchanged since soroban-sdk 22's
+/// `events().publish`): topics `["deposit", sender]`, data
+/// `[token, amount, stealth_pk, ephemeral_pk, view_tag]` as a vec.
+#[contractevent(topics = ["deposit"], data_format = "vec")]
+pub struct DepositEvent {
+    #[topic]
+    pub sender: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub stealth_pk: BytesN<32>,
+    pub ephemeral_pk: BytesN<32>,
+    pub view_tag: u32,
+}
+
+/// Emitted by `withdraw`. Wire shape (unchanged since soroban-sdk 22's
+/// `events().publish`): topics `["withdraw", destination]`, data
+/// `[stealth_pk, token, amount]` as a vec.
+#[contractevent(topics = ["withdraw"], data_format = "vec")]
+pub struct WithdrawEvent {
+    #[topic]
+    pub destination: Address,
+    pub stealth_pk: BytesN<32>,
+    pub token: Address,
+    pub amount: i128,
+}
+
 #[contract]
 pub struct StealthPoolContract;
 
@@ -79,7 +105,7 @@ impl StealthPoolContract {
 
         // Transfer tokens from sender to contract
         let token_client = token::Client::new(&env, &token_addr);
-        token_client.transfer(&sender, &env.current_contract_address(), &amount);
+        token_client.transfer(&sender, env.current_contract_address(), &amount);
 
         // Update balance.
         // Explicit checked add: fail loudly on i128 overflow in the code itself
@@ -112,10 +138,15 @@ impl StealthPoolContract {
         env.storage().persistent().extend_ttl(&DataKey::AnnouncementCount, TTL_THRESHOLD, TTL_EXTEND_TO);
 
         // Emit event
-        env.events().publish(
-            (symbol_short!("deposit"), sender),
-            (token_addr, amount, stealth_pk, ephemeral_pk, view_tag),
-        );
+        DepositEvent {
+            sender,
+            token: token_addr,
+            amount,
+            stealth_pk,
+            ephemeral_pk,
+            view_tag,
+        }
+        .publish(&env);
     }
 
     /// Withdraw tokens from the stealth pool.
@@ -188,10 +219,13 @@ impl StealthPoolContract {
         token_client.transfer(&env.current_contract_address(), &destination, &amount);
 
         // Emit event
-        env.events().publish(
-            (symbol_short!("withdraw"), destination),
-            (stealth_pk, token_addr, amount),
-        );
+        WithdrawEvent {
+            destination,
+            stealth_pk,
+            token: token_addr,
+            amount,
+        }
+        .publish(&env);
     }
 
     /// Build the message bytes for withdraw signature verification.
@@ -384,8 +418,9 @@ mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
     use soroban_sdk::{
-        testutils::{storage::Persistent as _, Address as _, Ledger as _},
-        Address, Env,
+        symbol_short,
+        testutils::{storage::Persistent as _, Address as _, Events as _, Ledger as _},
+        Address, Env, IntoVal, Val,
     };
 
     fn setup_token(env: &Env) -> (Address, Address, token::StellarAssetClient<'_>) {
@@ -425,6 +460,36 @@ mod tests {
         assert_eq!(ann.stealth_pk, stealth_pk);
         assert_eq!(ann.token, token_id);
         assert_eq!(ann.amount, 100);
+    }
+
+    #[test]
+    fn test_deposit_event_wire_shape() {
+        // Off-chain consumers decode this event; its topics/data layout must
+        // stay exactly what the pre-#[contractevent] `publish` call emitted.
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(StealthPoolContract, ());
+        let client = StealthPoolContractClient::new(&env, &contract_id);
+
+        let (token_id, _admin, sac) = setup_token(&env);
+        let sender = Address::generate(&env);
+        sac.mint(&sender, &1000);
+
+        let stealth_pk = BytesN::from_array(&env, &[1u8; 32]);
+        let ephemeral_pk = BytesN::from_array(&env, &[2u8; 32]);
+        client.deposit(&sender, &token_id, &100, &stealth_pk, &ephemeral_pk, &42);
+
+        let expected: Vec<(Address, Vec<Val>, Val)> = vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("deposit"), sender.clone()).into_val(&env),
+                (token_id.clone(), 100i128, stealth_pk.clone(), ephemeral_pk.clone(), 42u32)
+                    .into_val(&env),
+            ),
+        ];
+        assert_eq!(env.events().all().filter_by_contract(&contract_id), expected);
     }
 
     #[test]
@@ -522,6 +587,19 @@ mod tests {
 
         // Withdraw
         client.withdraw(&stealth_pk, &token_id, &amount, &destination, &nonce, &signature);
+
+        // Checked first: events().all() only holds the LAST invocation's events.
+        // Event wire shape is unchanged: topics ["withdraw", destination],
+        // data [stealth_pk, token, amount].
+        let expected: Vec<(Address, Vec<Val>, Val)> = vec![
+            &env,
+            (
+                contract_id.clone(),
+                (symbol_short!("withdraw"), destination.clone()).into_val(&env),
+                (stealth_pk.clone(), token_id.clone(), amount).into_val(&env),
+            ),
+        ];
+        assert_eq!(env.events().all().filter_by_contract(&contract_id), expected);
 
         // Balance decremented
         assert_eq!(client.get_balance(&stealth_pk, &token_id), 50);
@@ -839,27 +917,37 @@ mod tests {
         // must stay affordable no matter how large the pool grows.
         let n: u64 = 1000;
         let mut expected_202: u32 = 0;
-        // Seeding 990 entries in one host context is test setup, not the
-        // behavior under test — run it unmetered, then restore the default
-        // budget so the windowed reads below are asserted under realistic
-        // resource limits.
+        // Seeding 990 entries is test setup, not the behavior under test —
+        // run it unmetered, then restore the default budget so the windowed
+        // reads below are asserted under realistic resource limits. Since
+        // soroban-sdk 23 every host context (including `as_contract`) is also
+        // checked against the mainnet per-invocation limits (e.g. 50 written
+        // entries), so the seed is written in chunks that fit them.
         env.cost_estimate().budget().reset_unlimited();
-        env.as_contract(&contract_id, || {
-            for i in 10..n {
-                let tag = 200 + (i % 5) as u32;
-                if tag == 202 {
-                    expected_202 += 1;
+        const SEED_CHUNK: u64 = 40;
+        let mut chunk_start: u64 = 10;
+        while chunk_start < n {
+            let chunk_end = (chunk_start + SEED_CHUNK).min(n);
+            env.as_contract(&contract_id, || {
+                for i in chunk_start..chunk_end {
+                    let tag = 200 + (i % 5) as u32;
+                    if tag == 202 {
+                        expected_202 += 1;
+                    }
+                    let entry = AnnouncementEntry {
+                        ephemeral_pk: BytesN::from_array(&env, &[(i % 251) as u8; 32]),
+                        view_tag: tag,
+                        stealth_pk: BytesN::from_array(&env, &[9u8; 32]),
+                        token: token_id.clone(),
+                        amount: 1,
+                        sequence: 0,
+                    };
+                    env.storage().persistent().set(&DataKey::Announcement(i), &entry);
                 }
-                let entry = AnnouncementEntry {
-                    ephemeral_pk: BytesN::from_array(&env, &[(i % 251) as u8; 32]),
-                    view_tag: tag,
-                    stealth_pk: BytesN::from_array(&env, &[9u8; 32]),
-                    token: token_id.clone(),
-                    amount: 1,
-                    sequence: 0,
-                };
-                env.storage().persistent().set(&DataKey::Announcement(i), &entry);
-            }
+            });
+            chunk_start = chunk_end;
+        }
+        env.as_contract(&contract_id, || {
             env.storage().persistent().set(&DataKey::AnnouncementCount, &n);
         });
         env.cost_estimate().budget().reset_default();
