@@ -201,7 +201,7 @@ Everything is there: delivery methods, cursor-aware `scanWithCursor`, Freighter 
 
 **Implemented today:** `pool` + `account` delivery, the relayer (fee-bump / sponsor / credit), the announcement indexer, Freighter external signing, encrypted sessions, and wallet-signature key derivation.
 
-The pool contract is asset-agnostic: it calls the standard SAC token interface (`token::Client`) with the token address as a parameter, so a classic asset such as USDC takes the identical path as native XLM. No testnet contract id is pinned. Testnet resets, so you deploy your own. The announcement indexer (`packages/indexer`) is a standalone service that walks the Horizon feed once for everyone and serves a compact candidate feed clients filter locally; it can _hide_ payments but cannot _fabricate_ them, since Horizon stays the source of truth and every scan ends with a Horizon tail.
+The pool contract is asset-agnostic: it calls the standard SAC token interface (`token::Client`) with the token address as a parameter, so a classic asset such as USDC takes the identical path as native XLM. The canonical testnet contract id, with its wasm sha256 and source commit, is pinned in [`deployments/testnet.json`](../deployments/testnet.json); testnet resets, so the file is updated on redeploy, and you can still deploy your own. The announcement indexer (`packages/indexer`) is a standalone service that walks the Horizon feed once for everyone and serves a compact candidate feed clients filter locally; it can _hide_ payments but cannot _fabricate_ them, since Horizon stays the source of truth and every scan ends with a Horizon tail.
 
 **On the roadmap (Shade's own work):** an external cryptography audit (so **not for mainnet yet**) and a Rust-crate rename.
 

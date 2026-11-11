@@ -188,6 +188,7 @@ Client identity comes from the direct IP by default. `X-Forwarded-For` is only t
 | `DATABASE_URL` | — | Postgres URL (pooled, `sslmode=require`) backing the **credit ledger**, durable + shared across instances. Auto-migrates on boot. Set-but-unreachable → exit 1 (never a silent JSON fallback). Unset → JSON-file ledger. |
 | `REDIS_URL` | — | Redis (`rediss://`) URL backing **challenge nonces + rate-limit buckets** shared fleet-wide. Set-but-unreachable → exit 1. Unset → in-memory (single instance). |
 | `PGPOOL_MAX` | `5` | Max Postgres pool connections (free tiers cap low) |
+| `PGSSL` | — | `true` forces TLS even without `sslmode=require` in the URL |
 | `CREDIT_LEDGER_PATH` | `./data/credit-ledger.json` | JSON-ledger file path (dev fallback; used only when `DATABASE_URL` is unset). **Point at a mounted persistent volume**: the default is ephemeral on Railway (see warning below). |
 | `TRUST_PROXY_HOPS` | `0` | Trusted reverse-proxy hops, counted from the right |
 | `TRUST_PROXY` | — | Legacy: `true` → 1 hop |

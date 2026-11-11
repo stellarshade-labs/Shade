@@ -60,7 +60,7 @@ The two methods sit on opposite sides of that trade-off. The **`pool`** method d
 
 - **People receiving payments** who don't want a public, permanent link between their identity and every incoming transfer: freelancers, donation recipients, anyone publishing a payment handle.
 - **Application developers** who want stealth payments without implementing elliptic-curve math or hand-building Soroban transactions. See the [SDK Reference](./07-sdk-reference.md).
-- **Wallet and tooling builders** who want the primitives only. `@shade/crypto` is pure TypeScript with **zero** `@stellar/stellar-sdk` dependency.
+- **Wallet and tooling builders** who want the primitives only. `@shade/crypto` is pure TypeScript with **zero** `@stellar/stellar-sdk` dependency. It is an internal monorepo package, **not published to npm**: it is bundled into `stellar-shade`, so outside the monorepo use the SDK, or vendor the package from this repo (see [SDK Reference → `@shade/crypto`](./07-sdk-reference.md#shadecrypto)).
 
 ## What's implemented today
 

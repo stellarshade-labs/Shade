@@ -33,7 +33,7 @@ shade:stellar:<hex(spend_pk || view_pk || checksum)>
 
 It is **not a Stellar account**: you cannot send funds to it directly. It is only an input a sender uses to *compute* a one-time address. Share it freely: profile, DM, business card.
 
-> **For developers.** `encodeMetaAddress` / `decodeMetaAddress` in `@shade/crypto`. Payload is 64 bytes (32-byte spend pubkey ‖ 32-byte view pubkey) plus a 4-byte checksum = `SHA256(payload)[28..32]`, hex-encoded (136 hex chars). Decoding validates the prefix, strict hex, the checksum, and that both points are on-curve **and torsion-free** (rejecting small-order/identity points).
+> **For developers.** `encodeMetaAddress` / `decodeMetaAddress` in `@shade/crypto` (an internal package bundled into `stellar-shade`, not installable from npm; see [SDK Reference → `@shade/crypto`](./07-sdk-reference.md#shadecrypto)). Payload is 64 bytes (32-byte spend pubkey ‖ 32-byte view pubkey) plus a 4-byte checksum = `SHA256(payload)[28..32]`, hex-encoded (136 hex chars). Decoding validates the prefix, strict hex, the checksum, and that both points are on-curve **and torsion-free** (rejecting small-order/identity points).
 
 ## Stealth address
 
@@ -88,7 +88,7 @@ The **view tag** is a single byte, `SHA256(S)[0]`, published alongside each anno
 - Curve: ed25519
 - Order: `L = 2^252 + 27742317777372353535851937790883648493`
 
-> **For developers: a critical footgun.** `recoverStealthPrivateKey` returns a **raw ed25519 scalar** (`k_spend + s mod L`), *not* an ed25519 seed. You must sign with `signWithStealthKey` from `@shade/crypto`. Never build a keypair from it via `Keypair.fromRawEd25519Seed()` or any seed-based API: those **hash** the input to derive a different signing scalar, producing a key that does not match the stealth public key. The contract would reject the signature and the funds would be unspendable.
+> **For developers: a critical footgun.** `recoverStealthPrivateKey` returns a **raw ed25519 scalar** (`k_spend + s mod L`), *not* an ed25519 seed. You must sign with `signWithStealthKey` from `@shade/crypto` (`StealthClient.claim` already does this for you; the primitive itself is only importable inside the monorepo). Never build a keypair from it via `Keypair.fromRawEd25519Seed()` or any seed-based API: those **hash** the input to derive a different signing scalar, producing a key that does not match the stealth public key. The contract would reject the signature and the funds would be unspendable.
 
 ## Why the ECDH runs client-side
 

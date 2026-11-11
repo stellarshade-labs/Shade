@@ -59,10 +59,10 @@ The first implementation of stealth addresses on Stellar. Supports multi-token d
 
 ## Quick Start
 
-Just want the CLI? `npm install -g stellar-shade-cli` is the whole install ([below](#cli-commands)). The steps here are the self-host path: run the monorepo and deploy your own pool contract.
+Just want the CLI? `npm install -g stellar-shade-cli` is the whole install ([below](#cli-commands)), and the canonical testnet pool contract, relayer and indexer are listed in [`deployments/testnet.json`](deployments/testnet.json). The steps here are the self-host path: run the monorepo and deploy your own pool contract.
 
 ```bash
-# Prerequisites: Node.js 20+, Stellar CLI, Rust toolchain
+# Prerequisites: Node.js 22+, Stellar CLI, Rust toolchain
 npm install
 
 # Build everything
@@ -76,6 +76,8 @@ stellar keys fund deployer --network testnet
 # Deploy the pool contract to testnet (writes the id to ~/.stealth/testnet-contract)
 bash contracts/deploy.sh --network testnet --source deployer
 ```
+
+To use the canonical deployment instead of your own, skip the deploy and point the CLI at `stealthPool.contractId` from [`deployments/testnet.json`](deployments/testnet.json) (`shade config set-contract C...`, `SHADE_CONTRACT`, or `--contract`).
 
 Then drive a full send -> scan -> claim cycle with the CLI (below).
 
@@ -91,9 +93,11 @@ npm install stellar-shade
 import { StealthClient } from 'stellar-shade';
 
 // `contractId` is required whenever the pool method is enabled (mandatory on testnet).
+// The canonical testnet values live in deployments/testnet.json.
 const client = new StealthClient({
   network: 'testnet',
-  contractId: 'CXXX...',
+  contractId: 'CXXX...',                                        // stealthPool.contractId
+  indexerUrl: 'https://shadeindexer-production.up.railway.app', // optional, speeds up account scans
   methods: ['pool', 'account'],
 });
 
@@ -147,12 +151,19 @@ shade keygen --force                      # Required to OVERWRITE an existing ke
 # (public keys are stored in the clear; use this instead of re-running keygen).
 shade address
 
+# Point the pool method at a contract once (canonical id: deployments/testnet.json).
+# Precedence on every command: --contract <C...> > $SHADE_CONTRACT > this file.
+shade config set-contract <contract-id>
+shade config show
+
 # Send: a delivery method is REQUIRED (pool = private, account = direct, auto = pick).
 # --network defaults to testnet and only testnet is accepted (local was removed;
 # mainnet is rejected as unaudited).
-# Supply the secret via $SHADE_FROM_SECRET or the prompt so it never hits shell history.
+# Secrets come from env vars or a stderr prompt; the --from / --fee-payer flags
+# exist for scripting but leak into shell history and `ps`, so avoid them.
+export SHADE_FROM_SECRET=S...             # or omit it and answer the prompt
 shade send <meta-address> 100 --method auto --network testnet
-shade send <meta-address> 100 --method pool --from SXXX
+shade send <meta-address> 100 --method pool
 shade send <meta-address> 200 --method account --asset USDC:GISSUER
 
 # Scan + balance (pool AND account); balance shows the asset label (e.g. XLM, not the SAC C-address)
@@ -160,12 +171,13 @@ shade scan --network testnet
 shade balance --network testnet
 
 # Claim a discovered payment to your real address (unified pool + account path)
+export SHADE_FEE_PAYER=S...               # pool withdraws: account paying the Soroban fee
 shade claim <stealth-addr> <destination> --relay http://localhost:3000        # account sweep
-shade claim <stealth-addr> <destination> --fee-payer SXXX                      # pool withdraw
+shade claim <stealth-addr> <destination>                                      # pool withdraw
 shade claim <stealth-addr> <destination> --sponsored --funding-account G...    # token, no reserves
 
 # (Legacy) direct pool withdraw; `claim` is the preferred unified command
-shade withdraw <stealth-addr> <destination> --fee-payer SXXX --asset USDC:GISSUER
+shade withdraw <stealth-addr> <destination> --asset USDC:GISSUER
 ```
 
 ## Soroban Pool Contract
@@ -254,7 +266,7 @@ Stealth addresses hide the **identity** of the recipient, not the **flow** of fu
 ## Known Limitations
 
 - **Announcement reads must be paged:** Each announcement is its own keyed entry (`DataKey::Announcement(u64)`), so `deposit` is O(1) and storage has no `Vec` size ceiling. A single `get_announcements(start, limit)` response is still bounded by Soroban's return-size limit, so clients must page: the SDK pages at 200/request, and the CLI's `balance`/`withdraw` reuse `scan`'s paged fetch, so all three page the full announcement set.
-- **Pre-audit, not for mainnet:** the **pool** method has been exercised end-to-end on Stellar **testnet** with **native XLM**. The pool contract is **asset-agnostic**: it calls the standard SAC token interface (`token::Client`) with the token address as a parameter, so a classic asset such as USDC takes the identical path, differing only in that address. No testnet contract id is pinned (testnet resets, so deploy your own). Mainnet is out of scope until an external audit lands.
+- **Pre-audit, not for mainnet:** the **pool** method has been exercised end-to-end on Stellar **testnet** with **native XLM**. The pool contract is **asset-agnostic**: it calls the standard SAC token interface (`token::Client`) with the token address as a parameter, so a classic asset such as USDC takes the identical path, differing only in that address. The canonical testnet deployment (contract id, wasm sha256 and source commit, relayer, indexer) is pinned in [`deployments/testnet.json`](deployments/testnet.json); testnet resets periodically, so that file is updated on redeploy (see [`deployments/README.md`](deployments/README.md)). The CLI and SDK still have no built-in contract default. Mainnet is out of scope until an external audit lands.
 - **Account-method discovery needs an indexer:** the account method's scan (and `balance`) walk the global Horizon transaction feed, so a cold scan for a fresh recipient is impractical on testnet/mainnet-sized histories. The **announcement indexer** (`packages/indexer`) closes that gap: run one and point clients at it with `--indexer` / `SHADE_INDEXER`. It stays **advisory**: Horizon remains the source of truth, every scan ends with a Horizon tail, and an unreachable, degraded or stale indexer silently falls back to the full walk, which is still impractical at public-network scale. Configure one, or expect slow cold scans.
 - **No BIP-32/44:** HD derivation uses domain-separated SHA-256, not standard BIP-32 paths (those use secp256k1).
 - **No view key rotation:** Shared view keys cannot be revoked. Generate new keys to stop a viewer from seeing future payments.

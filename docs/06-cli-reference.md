@@ -1,11 +1,11 @@
 ---
 title: CLI Reference
-description: "Every shade CLI command and flag: keygen, address, send, scan, balance, claim and withdraw, plus secret handling and the encrypted keystore format."
+description: "Every shade CLI command and flag: keygen, address, send, scan, balance, claim, withdraw and config, plus secret handling, pool contract resolution and the encrypted keystore format."
 ---
 
 # Shade CLI Reference
 
-`shade` is the reference command-line tool and the fastest way to run the whole flow. Install it with `npm install -g stellar-shade-cli`. Seven commands: `keygen`, `address`, `send`, `scan`, `balance`, `claim`, `withdraw`.
+`shade` is the reference command-line tool and the fastest way to run the whole flow. Install it with `npm install -g stellar-shade-cli`. Eight commands: `keygen`, `address`, `send`, `scan`, `balance`, `claim`, `withdraw`, `config`.
 
 ---
 
@@ -21,8 +21,11 @@ description: "Every shade CLI command and flag: keygen, address, send, scan, bal
 | `SHADE_FEE_PAYER` | `claim`, `withdraw` (fee-payer secret) |
 | `SHADE_FUNDING_SECRET` | `claim`, `withdraw` (funding-account secret; signs the credit-gated relayer challenge) |
 | `SHADE_KEYSTORE` | every command (keystore path) |
+| `SHADE_CONTRACT` | `send`, `scan`, `balance`, `claim`, `withdraw` (pool contract id) |
 
 **Keystore path** resolves as: `--keystore <path>` → `$SHADE_KEYSTORE` → `~/.shade-keys.json`.
+
+**Pool contract.** Every pool-touching command resolves the contract as `--contract <C...>` → `$SHADE_CONTRACT` → `~/.stealth/<network>-contract` (written by `shade config set-contract` or `contracts/deploy.sh`). A value that is not a valid contract id is rejected, naming its source. There is no built-in default; the canonical testnet id is published in [`deployments/testnet.json`](../deployments/testnet.json). See [`shade config`](#shade-config).
 
 **Relayers.** `--relay` (on `claim` and `withdraw`) is **repeatable and comma-separated**: `--relay https://a,https://b` and `--relay https://a --relay https://b` both work. It falls back to the comma-separated **`SHADE_RELAYERS`** env var when omitted. With more than one URL the client health-probes all candidates in parallel, routes to a healthy one (random by default, spreading users across the set), and fails over on relayer faults. `--verbose` prints the chosen relayer. When none is usable, the error lists every candidate with its rejection reason. See [Relayer → Choosing a relayer](./08-relayer.md#choosing-a-relayer).
 
@@ -103,6 +106,7 @@ shade send <meta-address> 200 --method account --asset USDC:GISSUER
 |---|---|
 | `--method <method>` | **Required.** `pool` \| `account` \| `auto` |
 | `--network <network>` | Network to use (default: `testnet`; only `testnet` accepted) |
+| `--contract <id>` | Pool contract id (`C...`); falls back to `$SHADE_CONTRACT`, then `~/.stealth/<network>-contract` |
 | `--from <secret>` | Sender secret key (prefer `$SHADE_FROM_SECRET` or the prompt) |
 | `--asset <asset>` | Asset to send (default: native XLM, or `CODE:ISSUER`) |
 | `--relay <url>` | Relayer URL for the account-method fee-bump (single URL; ignored by the pool method, which is a plain sender-signed deposit) |
@@ -127,6 +131,7 @@ shade scan --full-rescan
 | Flag | Description |
 |---|---|
 | `--network <network>` | Network to use (default: `testnet`; only `testnet` accepted) |
+| `--contract <id>` | Pool contract id (`C...`); falls back to `$SHADE_CONTRACT`, then `~/.stealth/<network>-contract` |
 | `--keystore <path>` | Keystore file path |
 | `--password <password>` | Keystore password (prompts on stderr if omitted for an encrypted keystore) |
 | `--since-ledger <ledger>` | Only scan announcements since this ledger |
@@ -149,6 +154,7 @@ shade balance --network testnet
 | Flag | Description |
 |---|---|
 | `--network <network>` | Network to use (default: `testnet`; only `testnet` accepted) |
+| `--contract <id>` | Pool contract id (`C...`); falls back to `$SHADE_CONTRACT`, then `~/.stealth/<network>-contract` |
 | `--keystore <path>` | Keystore file path |
 | `--password <password>` | Keystore password (prompts if omitted) |
 | `--indexer <url>` | Announcement indexer URL for fast account-method discovery. Falls back to `$SHADE_INDEXER`; Horizon remains the source of truth |
@@ -164,7 +170,7 @@ Balances are aggregated per token in stroops and displayed with a readable asset
 Claim a discovered payment to a destination address. This is the **preferred, unified** command: it handles both pool and account payments.
 
 ```bash
-shade claim <stealth-addr> <destination> --fee-payer S...                    # pool withdraw
+SHADE_FEE_PAYER=S... shade claim <stealth-addr> <destination>               # pool withdraw
 shade claim <stealth-addr> <destination> --relay http://localhost:3000       # account sweep
 shade claim <stealth-addr> <destination> --sponsored --funding-account G...  # token, no reserves
 
@@ -184,6 +190,7 @@ The funding secret alone is enough: the account is derived from it, and passing 
 | Flag | Description |
 |---|---|
 | `--network <network>` | Network to use (default: `testnet`; only `testnet` accepted) |
+| `--contract <id>` | Pool contract id (`C...`); falls back to `$SHADE_CONTRACT`, then `~/.stealth/<network>-contract` |
 | `--keystore <path>` | Keystore file path |
 | `--password <password>` | Keystore password (prompts if omitted) |
 | `--merge` | Sweep the whole account via `AccountMerge` (account method) |
@@ -206,7 +213,7 @@ The funding secret alone is enough: the account is derived from it, and passing 
 Direct pool withdrawal. **Deprecated:** `claim` is the preferred unified command and routes pool payments through this same path. `withdraw` remains for the explicit pool case and for scripts that already use it.
 
 ```bash
-shade withdraw <stealth-addr> <destination> --fee-payer S... --asset USDC:GISSUER
+SHADE_FEE_PAYER=S... shade withdraw <stealth-addr> <destination> --asset USDC:GISSUER
 ```
 
 | Argument | Description |
@@ -217,6 +224,7 @@ shade withdraw <stealth-addr> <destination> --fee-payer S... --asset USDC:GISSUE
 | Flag | Description |
 |---|---|
 | `--network <network>` | Network to use (default: `testnet`; only `testnet` accepted) |
+| `--contract <id>` | Pool contract id (`C...`); falls back to `$SHADE_CONTRACT`, then `~/.stealth/<network>-contract` |
 | `--keystore <path>` | Keystore file path |
 | `--password <password>` | Keystore password (prompts if omitted) |
 | `--amount <amount>` | Amount to withdraw (default: full balance) |
@@ -231,13 +239,32 @@ A fee payer is **required**. If the recipient's pool entry has archived, the CLI
 
 ---
 
+## `shade config`
+
+Show or set the pool contract the other commands use.
+
+```bash
+shade config set-contract <contract-id>     # validate and write ~/.stealth/<network>-contract
+shade config show                           # print the contract in use and where it came from
+SHADE_CONTRACT=C... shade config show       # Source: SHADE_CONTRACT env var
+```
+
+| Subcommand | Flags | Description |
+|---|---|---|
+| `set-contract <contract-id>` | `--network <network>` | Validates the id (`C...`) and saves it for the network. Warns when `$SHADE_CONTRACT` is set, since the env var takes precedence |
+| `show` | `--network <network>`, `--contract <id>` | Prints the resolved contract and its source (`--contract` flag, `SHADE_CONTRACT` env var, or config file); exits 1 with the actionable error when none is configured |
+
+The canonical testnet deployment, with its wasm sha256 and source commit, is listed in [`deployments/testnet.json`](../deployments/testnet.json).
+
+---
+
 ## Local state
 
 The CLI keeps state under `~/.stealth/`:
 
 | File | Contents |
 |---|---|
-| `<network>-contract` | The pool contract address |
+| `<network>-contract` | The pool contract address (`shade config set-contract`); overridden by `$SHADE_CONTRACT` and `--contract` |
 | `horizon-cursor-<network>` | Account-method Horizon paging cursor |
 | `horizon-payments-<network>.json` | Discovered account-method payments (deduplicated) |
 

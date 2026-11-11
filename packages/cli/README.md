@@ -11,9 +11,16 @@ send → scan → claim flow from a terminal, built on the
 npm install -g stellar-shade-cli
 ```
 
-This installs a single `shade` command with seven subcommands: `keygen`,
-`address`, `send`, `scan`, `balance`, `claim`, and `withdraw`. Currently
-**testnet-only** — mainnet is rejected pending an external crypto audit.
+This installs a single `shade` command with eight subcommands: `keygen`,
+`address`, `send`, `scan`, `balance`, `claim`, `withdraw`, and `config`.
+Currently **testnet-only** — mainnet is rejected pending an external crypto audit.
+
+The **account** method works right after install. The **pool** method needs the
+pool contract id: the canonical testnet deployment (contract, relayer, indexer)
+is published in
+[`deployments/testnet.json`](https://github.com/stellarshade-labs/Shade/blob/main/deployments/testnet.json).
+Set it once with `shade config set-contract <C...>`, or per run with
+`--contract` / `SHADE_CONTRACT`.
 
 ## Commands
 
@@ -29,6 +36,10 @@ shade keygen --force              # overwrite an existing keystore (DESTROYS old
 # Re-print your meta-address from an existing keystore (no password needed).
 shade address
 
+# Configure the pool contract (precedence: --contract > $SHADE_CONTRACT > this file).
+shade config set-contract <contract-id>   # writes ~/.stealth/testnet-contract
+shade config show                         # prints the contract in use and its source
+
 # Send. A delivery method is REQUIRED: pool (private), account (direct), auto (pick).
 # Supply the sender secret via $SHADE_FROM_SECRET or the stderr prompt.
 shade send <meta-address> 100 --method auto --network testnet
@@ -39,11 +50,13 @@ shade scan --network testnet
 shade balance --network testnet
 
 # Claim a discovered payment to your real address (unified pool + account path).
+# Pool withdraws need a fee payer: set SHADE_FEE_PAYER or answer the prompt.
+export SHADE_FEE_PAYER=S...
 shade claim <stealth-addr> <destination> --relay https://relay.example   # account sweep
-shade claim <stealth-addr> <destination> --fee-payer SXXX                # pool withdraw
+shade claim <stealth-addr> <destination>                                 # pool withdraw
 
 # (Legacy) direct pool withdraw; `claim` is the preferred unified command.
-shade withdraw <stealth-addr> <destination> --fee-payer SXXX --asset USDC:GISSUER
+shade withdraw <stealth-addr> <destination> --asset USDC:GISSUER
 ```
 
 Run `shade <command> --help` for every flag.
@@ -62,6 +75,7 @@ shell history and `ps` output.
 | `SHADE_KEYSTORE` | every command (keystore path) |
 | `SHADE_RELAYERS` | `claim`, `withdraw` (comma-separated fallback for `--relay`) |
 | `SHADE_INDEXER` | `scan`, `balance` (announcement-indexer fallback for `--indexer`) |
+| `SHADE_CONTRACT` | `send`, `scan`, `balance`, `claim`, `withdraw` (pool contract fallback for `--contract`) |
 
 The keystore path resolves as `--keystore <path>` → `$SHADE_KEYSTORE` →
 `~/.shade-keys.json`.

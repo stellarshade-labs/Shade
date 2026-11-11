@@ -5,6 +5,8 @@ target/
 *.wasm
 .env
 .env.local
+.env.*
+!.env.example
 .DS_Store
 coverage/
 *.log
@@ -61,3 +63,5 @@ out/
 *.tsbuildinfo
 # CLI local state (contract address cache, cursors)
 .stealth/
+# Relayer JSON credit ledger (dev fallback; CREDIT_LEDGER_PATH default ./data/)
+packages/relayer/data/

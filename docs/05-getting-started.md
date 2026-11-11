@@ -11,7 +11,7 @@ Run Shade end-to-end on Stellar **testnet** in a few minutes. This page covers p
 
 ## Prerequisites
 
-- **Node.js 20+** — all you need to install and run the CLI.
+- **Node.js 22+** — all you need to install and run the CLI (`@stellar/stellar-sdk` 16 requires Node 22).
 - **Stellar CLI** and a **Rust toolchain** — only needed to build/deploy the Soroban **pool** contract yourself, and to generate/fund testnet keys via `stellar keys`.
 
 ## Install the CLI
@@ -22,7 +22,7 @@ The `shade` command ships on npm as [`stellar-shade-cli`](https://www.npmjs.com/
 npm install -g stellar-shade-cli
 ```
 
-That is everything the **account** method needs. The **pool** method additionally needs a deployed pool contract; to deploy your own (below), clone the repo and build:
+That is everything the **account** method needs. The **pool** method additionally needs a pool contract id. To use the canonical testnet deployment, take `stealthPool.contractId` from [`deployments/testnet.json`](../deployments/testnet.json) and run `shade config set-contract <C...>`; you can then skip to [Your first commands](#your-first-commands). To deploy your own (below), clone the repo and build:
 
 ```bash
 npm install
@@ -51,17 +51,17 @@ bash contracts/deploy.sh --network testnet --source deployer
 
 The script builds the contract, deploys it to testnet, and writes the resulting contract id to `~/.stealth/testnet-contract`, where the CLI will find it.
 
-**How the CLI resolves the contract address:** it reads `~/.stealth/<network>-contract`. There is deliberately **no built-in testnet address**. Testnet resets periodically, and a stale placeholder would only produce an opaque Soroban failure later. If the file is missing, the CLI throws an actionable error naming the exact file to write, and the SDK throws `ContractIdRequiredError`.
+**How the CLI resolves the contract address:** `--contract <C...>` on the command, then the `SHADE_CONTRACT` env var, then the file `~/.stealth/<network>-contract` (written by the deploy script or `shade config set-contract`). `shade config show` prints the address in use and where it came from. There is deliberately **no built-in testnet address**. Testnet resets periodically, and a stale placeholder would only produce an opaque Soroban failure later; the current canonical id is published in [`deployments/testnet.json`](../deployments/testnet.json) instead. If nothing is configured, the CLI throws an actionable error naming every option, and the SDK throws `ContractIdRequiredError`.
 
 If you prefer to deploy by hand instead of the script:
 
 ```bash
 stellar contract deploy \
-  --wasm contracts/registry/target/wasm32-unknown-unknown/release/stealth_registry.wasm \
+  --wasm contracts/target/wasm32v1-none/release/stealth_registry.wasm \
   --source deployer --network testnet
 
 # then save it where the CLI looks:
-echo "C..." > ~/.stealth/testnet-contract
+shade config set-contract C...
 ```
 
 ## Your first commands
@@ -149,7 +149,7 @@ cd contracts && cargo test   # Rust contract tests only
 
 `testnet` is the only accepted network today. Mainnet ("public") is a forward-looking, post-audit addition.
 
-> **Status note.** The **pool** method works with native XLM and is asset-agnostic: it calls the standard SAC token interface (`token::Client`) with the token address as a parameter, so a classic asset such as USDC takes the identical path with a different address. No testnet contract id is pinned, because testnet resets, so deploy your own and save it. The **account** method's cold discovery is served by the **announcement indexer**; every scan ends with a Horizon tail, so an unreachable indexer falls back to the plain walk. Without an indexer configured, a cold account scan walks the global Horizon transaction feed, which is impractical for a fresh recipient on a busy network. Mainnet is **out of scope** until an external audit lands. See [Security](./09-security.md).
+> **Status note.** The **pool** method works with native XLM and is asset-agnostic: it calls the standard SAC token interface (`token::Client`) with the token address as a parameter, so a classic asset such as USDC takes the identical path with a different address. The canonical testnet contract id is pinned in [`deployments/testnet.json`](../deployments/testnet.json) and updated whenever testnet resets; you can also deploy your own and save it. The **account** method's cold discovery is served by the **announcement indexer**; every scan ends with a Horizon tail, so an unreachable indexer falls back to the plain walk. Without an indexer configured, a cold account scan walks the global Horizon transaction feed, which is impractical for a fresh recipient on a busy network. Mainnet is **out of scope** until an external audit lands. See [Security](./09-security.md).
 
 ---
 
